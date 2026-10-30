@@ -182,7 +182,7 @@ cd mod
 ./gradlew build
 ```
 
-On Windows use `.\gradlew.bat build`. Output: `mod/build/libs/voxy-map-0.1.0.jar`.
+On Windows use `.\gradlew.bat build`. Output: `mod/build/libs/voxy-map-0.1.0+1.21.1.jar`.
 
 > Behind a restrictive network Gradle needs a proxy; see `systemProp.https.proxyHost` / `proxyPort` in `mod/gradle.properties`.
 
@@ -400,7 +400,7 @@ cd mod
 ./gradlew build
 ```
 
-Windows 用 `.\gradlew.bat build`。产物：`mod/build/libs/voxy-map-0.1.0.jar`。
+Windows 用 `.\gradlew.bat build`。产物：`mod/build/libs/voxy-map-0.1.0+1.21.1.jar`。
 
 > 国内网络下 Gradle 需要代理，可参考 `mod/gradle.properties` 里的 `systemProp.https.proxyHost` / `proxyPort` 配置。
 
