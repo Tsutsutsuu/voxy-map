@@ -4,7 +4,7 @@
 
 **[English](#voxy-map)** | [简体中文](#简体中文)
 
-***What you see is what you get*** — the map reaches exactly as far as the world renders: it reads Voxy's level-of-detail data directly, loads no chunks, flies nowhere, and renders a full-screen terrain map in about a second.
+***What you see is what you get*** — the map reaches exactly as far as the world renders: it reads Voxy's level-of-detail data directly, loads no chunks, flies nowhere, and turns the explored world into a full-screen terrain map (a first build takes around 10–20 seconds depending on the explored area; reopening uses the cache and is instant).
 
 A Minecraft world map mod (mod id `voxymap`). Currently supports **Minecraft 1.21.1 NeoForge**, client-side only; other versions, loaders and dimensions are planned.
 
@@ -99,7 +99,7 @@ Tested with: Minecraft 1.21.1 / NeoForge 21.1.265, Voxy 0.2.16-beta (via Roxy 0.
 3. Download `voxy-map-x.y.z.jar` from [Releases](https://github.com/Tsutsutsuu/voxy-map/releases) and drop it into the instance's `mods` folder
 4. Launch the game and press **N**
 
-The first open reads Voxy's storage and renders (about a second depending on the explored area); after that it uses the disk cache.
+The first open reads Voxy's storage and renders — around 10–20 seconds depending on the explored area; after that it reuses the disk cache and opens instantly.
 
 ## Controls
 
@@ -221,7 +221,7 @@ Icon and screenshots © Tsutsutsu; map data comes from Voxy and its SeedGen add-
 
 [English](#voxy-map) | **[简体中文](#简体中文)**
 
-*****所见即所得*** —— 能看多远，地图就画多远：直接读取 Voxy 的 LOD 数据，不加载区块、不跑图，秒级生成全屏地形图。**
+*****所见即所得*** —— 能看多远，地图就画多远：直接读取 Voxy 的 LOD 数据，不加载区块、不跑图，把探索过的世界变成一张全屏地形图（首次生成视范围约 10–20 秒，之后走缓存秒开）。**
 
 一个 Minecraft 世界地图模组（mod id `voxymap`）。目前支持 **Minecraft 1.21.1 NeoForge**，纯客户端；其他版本/加载器与维度支持计划中。
 
@@ -317,7 +317,7 @@ Icon and screenshots © Tsutsutsu; map data comes from Voxy and its SeedGen add-
 3. 从 [Releases](https://github.com/Tsutsutsuu/voxy-map/releases) 下载 `voxy-map-x.y.z.jar`，放进实例的 `mods` 目录
 4. 启动游戏，按 **N** 打开地图
 
-首次打开需要读取 Voxy 存储并渲染（视探索范围约 1 秒），之后走磁盘缓存。
+首次打开需要读取 Voxy 存储并渲染，视探索范围约 **10–20 秒**；之后复用磁盘缓存，秒开。
 
 ## 使用
 
