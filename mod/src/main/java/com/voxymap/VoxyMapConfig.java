@@ -73,8 +73,6 @@ public final class VoxyMapConfig {
                 .comment("最多保留几个存档缓存（按最近写入排序，多余的自动删除；1 表示只保留当前存档） / How many world caches to keep (oldest are deleted automatically; 1 keeps only the current world)")
                 .translation("voxymap.config.cacheKeepCount")
                 .defineInRange("cacheKeepCount", 5, 1, 100);
-        b.pop();
-
         AUTO_SEA_LEVEL = b
                 .comment("从世界读取海平面（自动适配地形模组） / Read the sea level from the world (adapts to terrain mods)")
                 .translation("voxymap.config.autoSeaLevel")
@@ -83,6 +81,7 @@ public final class VoxyMapConfig {
                 .comment("关闭自动海平面时使用的海平面 / Sea level used when autoSeaLevel is disabled")
                 .translation("voxymap.config.seaLevelOverride")
                 .defineInRange("seaLevelOverride", 63, -64, 384);
+        b.pop();
 
         b.comment("Rendering").push("rendering");
         DEFAULT_STYLE = b
@@ -124,7 +123,7 @@ public final class VoxyMapConfig {
         BIOME_LABEL_BACKGROUND = b
                 .comment("在群系文字标签后面绘制半透明背景 / Draw a semi-transparent background behind biome labels")
                 .translation("voxymap.config.biomeLabelBackground")
-                .define("biomeLabelBackground", false);
+                .define("biomeLabelBackground", true);
         DRAW_HILLSHADE = b
                 .comment("为地形应用光照阴影 / Apply hillshade to the terrain")
                 .translation("voxymap.config.drawHillshade")
@@ -187,7 +186,7 @@ public final class VoxyMapConfig {
         DEBUG_ENABLED = b
                 .comment("调试：在地图界面按 Q 显示/隐藏调试信息 / Debug: press Q in the map screen to toggle the debug panel")
                 .translation("voxymap.config.debugEnabled")
-                .define("debugEnabled", false);
+                .define("debugEnabled", true);
         b.pop();
 
         SPEC = b.build();

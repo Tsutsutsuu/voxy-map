@@ -27,7 +27,8 @@ public class MapScreen extends Screen {
     /** Top-right rows: map scale slider above the palette dropdown. */
     private static final int SCALE_ROW_Y = 8;
     private static final int STYLE_ROW_Y = 32;
-    private static final int SCALE_SLIDER_W = 110;
+    private static final int SCALE_SLIDER_W = 56;
+    private static final int SCALE_KNOB_W = 6;
 
     private double centerX;
     private double centerZ;
@@ -61,11 +62,37 @@ public class MapScreen extends Screen {
 
     private final Map<Integer, LabelInfo> labelCache = new HashMap<>();
     private String labelLanguage;
+    /** Animated hover progress per control (0..1), and dropdown open progress. */
+    private final Map<String, Float> hoverStates = new HashMap<>();
+    private float styleMenuT;
+    private float contextMenuT;
+    /** Screen-space UI panels; biome labels overlapping these are culled (x0,y0,x1,y1). */
+    private final List<int[]> labelBlockers = new ArrayList<>();
     private static final ResourceLocation ARROW_CLEAN = ResourceLocation.fromNamespaceAndPath("voxymap", "textures/gui/arrow_clean.png");
     private static final ResourceLocation ARROW_CLASSIC = ResourceLocation.fromNamespaceAndPath("voxymap", "textures/gui/arrow_classic.png");
 
     private static Component styleName(String st) {
         return Component.translatable("voxymap.style." + st);
+    }
+
+    private static Boolean classicArrowAvailable;
+
+    /** Falls back to the clean marker when the classic texture is missing instead of a purple cube. */
+    private static ResourceLocation arrowTex() {
+        if ("classic".equals(VoxyMapConfig.ARROW_STYLE.get())) {
+            if (classicArrowAvailable == null) {
+                classicArrowAvailable = Minecraft.getInstance().getResourceManager()
+                        .getResource(ARROW_CLASSIC).isPresent();
+                if (!classicArrowAvailable) {
+                    System.err.println("[voxymap] arrow_classic.png is missing from the resources, "
+                            + "using the clean marker instead");
+                }
+            }
+            if (classicArrowAvailable) {
+                return ARROW_CLASSIC;
+            }
+        }
+        return ARROW_CLEAN;
     }
 
     // ---- map scale slider geometry (draw and hit test share these) ----
@@ -88,16 +115,80 @@ public class MapScreen extends Screen {
     }
 
     private int scaleKnobX() {
-        return scaleSliderX() + (int) Math.round((sliderValue - 1) / 7.0 * (SCALE_SLIDER_W - 10));
+        return scaleSliderX() + (int) Math.round((sliderValue - 1) / 7.0 * (SCALE_SLIDER_W - SCALE_KNOB_W));
     }
 
     private int scaleSliderValueAt(double mx) {
-        double t = (mx - scaleSliderX()) / (double) (SCALE_SLIDER_W - 10);
+        double t = (mx - scaleSliderX()) / (double) (SCALE_SLIDER_W - SCALE_KNOB_W);
         return Math.max(1, Math.min(8, (int) Math.round(t * 7.0) + 1));
     }
 
-    private static ResourceLocation arrowTex() {
-        return "classic".equals(VoxyMapConfig.ARROW_STYLE.get()) ? ARROW_CLASSIC : ARROW_CLEAN;
+    // ---- theme: one accent colour, three interaction states ----
+
+    private static final int COL_PANEL = 0xF014171C;
+    private static final int COL_PANEL_HOVER = 0xFF1E232A;
+    private static final int COL_PANEL_OFF = 0xE0101216;
+    private static final int COL_BORDER = 0xFF3A424C;
+    private static final int COL_BORDER_OFF = 0xFF272C33;
+    private static final int COL_ACCENT = 0xFF4F9BC4;
+    /** Selected / enabled tint: the same deep translucent blue as the dropdown selection. */
+    private static final int COL_SELECTED = 0xE02A3A50;
+    private static final int COL_SELECTED_HOVER = 0xF03A4F6E;
+    /** Row hover behind the cursor inside menus. */
+    private static final int COL_ROW_HOVER = 0x504F9BC4;
+    private static final int COL_TEXT = 0xFFE8EAED;
+    private static final int COL_TEXT_DIM = 0xFF8C949E;
+    private static final int COL_TEXT_OFF = 0xFF5A6068;
+    private static final int COL_WARN = 0xFFE0A040;
+
+    private static int lerpColor(int from, int to, float t) {
+        t = Math.max(0f, Math.min(1f, t));
+        int a = (int) (((from >>> 24) & 0xFF) + (((to >>> 24) & 0xFF) - ((from >>> 24) & 0xFF)) * t);
+        int r = (int) (((from >> 16) & 0xFF) + (((to >> 16) & 0xFF) - ((from >> 16) & 0xFF)) * t);
+        int g = (int) (((from >> 8) & 0xFF) + (((to >> 8) & 0xFF) - ((from >> 8) & 0xFF)) * t);
+        int b = (int) ((from & 0xFF) + ((to & 0xFF) - (from & 0xFF)) * t);
+        return (a << 24) | (r << 16) | (g << 8) | b;
+    }
+
+    private static int withAlpha(int color, float alpha) {
+        int a = (int) (((color >>> 24) & 0xFF) * Math.max(0f, Math.min(1f, alpha)));
+        return (a << 24) | (color & 0x00FFFFFF);
+    }
+
+    private static float approach(float cur, float target) {
+        if (Math.abs(cur - target) < 0.01f) return target;
+        return cur + (target - cur) * 0.14f;
+    }
+
+    private float hoverAmount(String key, boolean hovered) {
+        float cur = hoverStates.getOrDefault(key, 0f);
+        float target = hovered ? 1f : 0f;
+        if (Math.abs(cur - target) < 0.01f) cur = target;
+        else cur += (target - cur) * 0.14f;
+        hoverStates.put(key, cur);
+        return cur;
+    }
+
+    /** Flat button, height 20, text vertically centred, tinted by the hover progress. */
+    private void drawButton(GuiGraphics g, int x, int y, int w, Component label, float hover, boolean enabled) {
+        int bg = enabled ? lerpColor(COL_PANEL, COL_PANEL_HOVER, hover) : COL_PANEL_OFF;
+        g.fill(x, y, x + w, y + 20, bg);
+        g.fill(x, y, x + w, y + 1, enabled ? lerpColor(COL_BORDER, COL_ACCENT, hover * 0.5f) : COL_BORDER_OFF);
+        int color = enabled ? lerpColor(COL_TEXT, 0xFFFFFFFF, hover) : COL_TEXT_OFF;
+        g.drawString(font, label, x + 6, y + 6, color, false);
+    }
+
+    /** Toggle button: deep blue tint while enabled (same as a selected dropdown row). */
+    private void drawToggle(GuiGraphics g, String key, int x, int y, int w, Component label, boolean on, boolean hovered) {
+        float hov = hoverAmount(key, hovered);
+        int bg = on
+                ? lerpColor(COL_SELECTED, COL_SELECTED_HOVER, hov)
+                : lerpColor(COL_PANEL, COL_PANEL_HOVER, hov);
+        g.fill(x, y, x + w, y + 20, bg);
+        g.fill(x, y, x + w, y + 1, on ? lerpColor(COL_ACCENT, 0xFFFFFFFF, hov * 0.4f)
+                : lerpColor(COL_BORDER, COL_ACCENT, hov * 0.5f));
+        g.drawString(font, label, x + 6, y + 6,
+                on ? 0xFFFFFFFF : lerpColor(COL_TEXT, 0xFFFFFFFF, hov), false);
     }
 
     public MapScreen() {
@@ -111,6 +202,10 @@ public class MapScreen extends Screen {
         var p0 = Minecraft.getInstance().player;
         MapData data = MapData.INSTANCE;
         sliderValue = data.getMapScale();
+        if (!data.isOverworld()) {
+            // the map only knows the overworld LOD storage: nothing to load here
+            return;
+        }
         // A world created minutes ago is still being filled by SeedGen: show the dialog and wait
         // instead of building a nearly empty map. Either the initial delay expires (MapData.tick)
         // or the dialog's "refresh now" button starts the build.
@@ -182,7 +277,16 @@ public class MapScreen extends Screen {
     public void render(GuiGraphics g, int mouseX, int mouseY, float partialTick) {
         g.fill(0, 0, width, height, 0xFF0A0A0A);
         MapData data = MapData.INSTANCE;
+        if (!data.isOverworld()) {
+            // nether / end: no map is built or drawn, only the notice
+            drawStatusLine(g, Component.translatable("voxymap.ui.overworldOnly"), 24, COL_WARN);
+            g.flush();
+            return;
+        }
         double uiScale = Minecraft.getInstance().getWindow().getGuiScale();
+        // dropdown open/close animation
+        styleMenuT = approach(styleMenuT, styleMenuOpen ? 1f : 0f);
+        contextMenuT = approach(contextMenuT, menuOpen ? 1f : 0f);
 
         // draw order is the stacking order, bottom to top:
         //   1 map, 2 map overlays, 3 biome labels, 4 readouts/status text, 5 buttons, 6 dialog
@@ -200,19 +304,22 @@ public class MapScreen extends Screen {
             g.flush();
         } else if (!lodWarning) {
             // labels only when the map is at or above point-to-point, otherwise they cost more than they show
-            if (data.isBiomeOverlay() && zoom * uiScale >= 1.0) drawBiomeLabels(g);
+            if (data.isBiomeOverlay() && zoom * uiScale >= 1.0) {
+                collectLabelBlockers(mouseX, mouseY);
+                drawBiomeLabels(g);
+            }
             drawStatusText(g, data);
             drawReadouts(g, mouseX, mouseY);
             g.flush();
-            drawButtons(g, data);
-            if (menuOpen) {
-                drawContextMenu(g);
+            drawButtons(g, data, mouseX, mouseY);
+            if (contextMenuT > 0.02f) {
+                drawContextMenu(g, mouseX, mouseY);
             }
             g.flush();
         }
         // the modal dialog always wins, whatever the map state is
         if (lodWarning) {
-            drawLodWarning(g);
+            drawLodWarning(g, mouseX, mouseY);
             g.flush();
         }
     }
@@ -316,12 +423,11 @@ public class MapScreen extends Screen {
         int y = 34;
         int pw = panelW + pad * 2;
         int ph = shown.size() * lineH + pad * 2;
-        g.fill(x, y, x + pw, y + ph, 0xE8101010);
-        g.fill(x, y, x + pw, y + 1, 0xFF606060);
-        g.fill(x, y + ph - 1, x + pw, y + ph, 0xFF404040);
+        g.fill(x, y, x + pw, y + ph, 0xE014171C);
+        g.fill(x, y, x + pw, y + 1, COL_BORDER);
         int ty = y + pad;
         for (String l : shown) {
-            g.drawString(font, l, x + pad, ty, 0xFFD8E8FF, false);
+            g.drawString(font, l, x + pad, ty, COL_TEXT_DIM, false);
             ty += lineH;
         }
     }
@@ -339,78 +445,145 @@ public class MapScreen extends Screen {
     /** Layer 4: loading / empty / style-change messages, below the buttons and the dialog. */
     private void drawStatusText(GuiGraphics g, MapData data) {
         if (!data.isReady()) {
+            // no map on screen yet: the centred message is the only status, the top line would be
+            // the same information twice
             Component msg = data.isLoading()
-                    ? Component.translatable("voxymap.ui.loading", data.getProgress())
+                    ? Component.translatable("voxymap.ui.updating", data.getProgress())
                     : (data.getError().isEmpty() ? Component.translatable("voxymap.ui.no_data") : Component.literal(data.getError()));
-            g.drawCenteredString(font, msg, width / 2, height / 2 - 10, 0xFFFFFF);
-        }
-        if (data.isLoading()) {
-            g.drawCenteredString(font, Component.translatable("voxymap.ui.updating", data.getProgress()), width / 2, 24, 0xFFAA00);
+            drawStatusLine(g, msg, height / 2 - 10, COL_TEXT);
+        } else if (data.isLoading()) {
+            // an old map is on screen while the refresh runs in the background
+            drawStatusLine(g, Component.translatable("voxymap.ui.updating", data.getProgress()), 24, COL_WARN);
         }
         if (data.isStyleChanging()) {
-            g.drawCenteredString(font, Component.translatable("voxymap.ui.styleChanging"), width / 2, 24, 0xFFFF80);
+            drawStatusLine(g, Component.translatable("voxymap.ui.styleChanging"), 24, COL_ACCENT);
         }
+    }
+
+    /** Centred status text with a faint plate so it stays readable over the terrain. */
+    private void drawStatusLine(GuiGraphics g, Component text, int y, int color) {
+        int w = font.width(text);
+        int x = width / 2 - w / 2;
+        g.fill(x - 5, y - 2, x + w + 5, y + font.lineHeight + 2, 0x59000000);
+        g.drawCenteredString(font, text, width / 2, y, color);
+    }
+
+    // ---- shared layout/text helpers (drawing and label culling must agree) ----
+
+    private int configWidth() {
+        return font.width(Component.translatable("voxymap.ui.config")) + 12;
+    }
+
+    private int biomesWidth() {
+        return font.width(Component.translatable("voxymap.ui.biomes")) + 12;
+    }
+
+    private int distanceWidth() {
+        return font.width(Component.translatable("voxymap.ui.renderDistance")) + 12;
+    }
+
+    private int styleSelWidth() {
+        return font.width(Component.translatable("voxymap.ui.styleButton", styleName(MapData.INSTANCE.getStyle()))) + 28;
+    }
+
+    private int styleMenuWidth() {
+        int w = 0;
+        for (String st : MapStyles.NAMES) {
+            w = Math.max(w, font.width(styleName(st)) + 24);
+        }
+        return w;
+    }
+
+    private Component refreshComponent() {
+        return MapData.INSTANCE.isLoading()
+                ? Component.translatable("voxymap.ui.refreshing")
+                : Component.translatable("voxymap.ui.refresh");
+    }
+
+    private Component hintComponent() {
+        Component openKey = VoxyMapMod.openKey != null
+                ? VoxyMapMod.openKey.getTranslatedKeyMessage() : Component.literal("N");
+        Component centerKey = VoxyMapMod.centerKey != null
+                ? VoxyMapMod.centerKey.getTranslatedKeyMessage() : Component.literal("Space");
+        return Component.translatable("voxymap.ui.hint", openKey, centerKey);
+    }
+
+    /** Cursor coordinate line: world position, ground height and biome name. */
+    private Component coordsComponent(int mouseX, int mouseY) {
+        double wx = screenToWorldX(mouseX);
+        double wz = screenToWorldZ(mouseY);
+        MapData md = MapData.INSTANCE;
+        int gy = md.heightAt((int) Math.round(wx), (int) Math.round(wz));
+        int biomeId = md.biomeAt((int) Math.round(wx), (int) Math.round(wz));
+        String biomeSuffix = "";
+        if (biomeId >= 0) {
+            String key = md.getBiomeTranslationKey(biomeId);
+            if (!key.isEmpty()) {
+                biomeSuffix = "  " + net.minecraft.client.resources.language.I18n.get(key);
+            } else {
+                String fallback = md.getBiomeFallbackName(biomeId);
+                if (fallback != null && !fallback.isEmpty()) biomeSuffix = "  " + fallback;
+            }
+        }
+        return Component.literal(String.format(Locale.ROOT, "X %.0f  Y %d  Z %.0f", wx, gy, wz) + biomeSuffix);
     }
 
     /** Layer 4: cursor coordinates and the key hint, above the labels but below the buttons. */
     private void drawReadouts(GuiGraphics g, int mouseX, int mouseY) {
         if (VoxyMapConfig.SHOW_COORDINATES.get()) {
-            double wx = screenToWorldX(mouseX);
-            double wz = screenToWorldZ(mouseY);
-            MapData md = MapData.INSTANCE;
-            int gy = md.heightAt((int) Math.round(wx), (int) Math.round(wz));
-            int biomeId = md.biomeAt((int) Math.round(wx), (int) Math.round(wz));
-            String biomeSuffix = "";
-            if (biomeId >= 0) {
-                String key = md.getBiomeTranslationKey(biomeId);
-                if (!key.isEmpty()) {
-                    biomeSuffix = "  " + net.minecraft.client.resources.language.I18n.get(key);
-                } else {
-                    String fallback = md.getBiomeFallbackName(biomeId);
-                    if (fallback != null && !fallback.isEmpty()) biomeSuffix = "  " + fallback;
-                }
-            }
-            String coords = String.format(Locale.ROOT, "X %.0f  Y %d  Z %.0f", wx, gy, wz) + biomeSuffix;
-            g.drawCenteredString(font, coords, width / 2, height - 16, 0xFFFFFF);
+            Component coords = coordsComponent(mouseX, mouseY);
+            int tw = font.width(coords);
+            int tx = width / 2 - tw / 2;
+            // a faint plate keeps the text readable over bright terrain
+            g.fill(tx - 5, height - 20, tx + tw + 5, height - 6, 0x59000000);
+            g.drawString(font, coords, tx, height - 16, COL_TEXT, true);
         }
-
         if (VoxyMapConfig.SHOW_HINT.get()) {
-            g.drawCenteredString(font, Component.translatable("voxymap.ui.hint",
-                    VoxyMapMod.openKey != null ? VoxyMapMod.openKey.getTranslatedKeyMessage() : Component.literal("N"),
-                    VoxyMapMod.centerKey != null ? VoxyMapMod.centerKey.getTranslatedKeyMessage() : Component.literal("Space")),
-                    width / 2, 8, 0xFFFFFF);
+            Component hint = hintComponent();
+            int hintW = font.width(hint);
+            g.fill(width / 2 - hintW / 2 - 5, 6, width / 2 + hintW / 2 + 5, 20, 0x59000000);
+            g.drawCenteredString(font, hint, width / 2, 8, COL_TEXT);
         }
     }
 
     /** Layer 5: buttons and their dropdown, above every readout but below the modal dialog. */
-    private void drawButtons(GuiGraphics g, MapData data) {
-        // map scale slider (top-right, above the palette dropdown); uses the same panel as the buttons
+    private void drawButtons(GuiGraphics g, MapData data, int mouseX, int mouseY) {
+        // map scale slider (top-right, above the palette dropdown)
         boolean scaleEnabled = !data.isLoading();
         Component scaleLabel = Component.translatable("voxymap.ui.mapScale");
         String scaleValue = scaleValueText();
         int panelLeft = scalePanelLeft();
         int panelRight = width - 8;
         int rowTop = SCALE_ROW_Y;
-        g.fill(panelLeft, rowTop, panelRight, rowTop + 20, 0xC0202020);
-        g.drawString(font, scaleLabel, panelLeft + 6, rowTop + 6, scaleEnabled ? 0xFFE0E0E0 : 0xFF808080, false);
+        boolean sliderHover = mouseX >= panelLeft && mouseX <= panelRight && mouseY >= rowTop && mouseY <= rowTop + 20;
+        float sliderHov = scaleEnabled ? hoverAmount("scale", sliderHover || sliderDragging) : 0f;
+        g.fill(panelLeft, rowTop, panelRight, rowTop + 20,
+                scaleEnabled ? lerpColor(COL_PANEL, COL_PANEL_HOVER, sliderHov) : COL_PANEL_OFF);
+        g.fill(panelLeft, rowTop, panelRight, rowTop + 1,
+                scaleEnabled ? lerpColor(COL_BORDER, COL_ACCENT, sliderHov * 0.5f) : COL_BORDER_OFF);
+        g.drawString(font, scaleLabel, panelLeft + 6, rowTop + 6, scaleEnabled ? COL_TEXT : COL_TEXT_OFF, false);
         int sliderX = scaleSliderX();
         int sliderRight = sliderX + SCALE_SLIDER_W;
         int trackY = rowTop + 8;
-        g.fill(sliderX, trackY, sliderRight, trackY + 4, scaleEnabled ? 0xFF3A3A3A : 0xFF242424);
+        g.fill(sliderX, trackY, sliderRight, trackY + 4, scaleEnabled ? 0xFF343A42 : 0xFF24282E);
         int knobX = scaleKnobX();
-        g.fill(sliderX, trackY, knobX + 5, trackY + 4, scaleEnabled ? 0xFF8FA8C8 : 0xFF4A4A4A);
-        g.fill(knobX, trackY - 4, knobX + 10, trackY + 8, scaleEnabled ? 0xFFE6E6E6 : 0xFF707070);
-        g.drawString(font, scaleValue, sliderRight + 8, rowTop + 6, scaleEnabled ? 0xFFE0E0E0 : 0xFF808080, false);
+        int knobW = sliderDragging || sliderHov > 0.4f ? SCALE_KNOB_W + 2 : SCALE_KNOB_W;
+        int knobLeft = knobX - (knobW - SCALE_KNOB_W) / 2;
+        g.fill(sliderX, trackY, knobLeft + knobW / 2, trackY + 4, scaleEnabled ? COL_ACCENT : 0xFF3F4850);
+        g.fill(knobLeft, trackY - 3, knobLeft + knobW, trackY + 7,
+                scaleEnabled ? lerpColor(COL_TEXT, 0xFFFFFFFF, sliderHov) : COL_TEXT_OFF);
+        g.drawString(font, scaleValue, sliderRight + 8, rowTop + 6, scaleEnabled ? COL_TEXT : COL_TEXT_OFF, false);
 
-        // style selector button (top-right) with a dropdown menu
+        // style selector button (top-right) with an animated dropdown
         Component styleLabel = Component.translatable("voxymap.ui.styleButton", styleName(data.getStyle()));
         int selW = font.width(styleLabel) + 28;
         int selX = width - 8 - selW;
         int selY = STYLE_ROW_Y;
-        g.fill(selX, selY, selX + selW, selY + 20, 0xC0202020);
-        g.drawString(font, styleLabel, selX + 6, selY + 4, 0xFFE0E0E0, false);
-        g.drawString(font, Component.literal("v"), selX + selW - 14, selY + 4, 0xFFB0B0B0, false);
-        if (styleMenuOpen) {
+        float styleHov = hoverAmount("style", mouseX >= selX && mouseX <= selX + selW && mouseY >= selY && mouseY <= selY + 20);
+        drawButton(g, selX, selY, selW, styleLabel, styleHov, true);
+        g.drawString(font, Component.literal("v"), selX + selW - 14, selY + 6,
+                lerpColor(COL_TEXT_DIM, COL_TEXT, styleHov), false);
+        if (styleMenuT > 0.02f) {
             int rowH = 20;
             int menuW = 0;
             for (String st : MapStyles.NAMES) {
@@ -418,14 +591,24 @@ public class MapScreen extends Screen {
             }
             int menuX = width - 8 - menuW;
             int menuY = selY + 24;
-            g.fill(menuX, menuY, menuX + menuW, menuY + 6 * rowH + 4, 0xF0121212);
-            g.fill(menuX, menuY, menuX + menuW, menuY + 1, 0xFF404040);
+            // solid panel (same opacity as every other control); only the rows fade in
+            g.fill(menuX, menuY, menuX + menuW, menuY + 6 * rowH + 4, COL_PANEL);
+            g.fill(menuX, menuY, menuX + menuW, menuY + 1, COL_BORDER);
             for (int k = 0; k < MapStyles.NAMES.length; k++) {
+                float rowT = rowAlpha(styleMenuT, k);
+                if (rowT <= 0.02f) continue;
                 String st = MapStyles.NAMES[k];
-                boolean sel = st.equals(data.getStyle());
+                boolean selected = st.equals(data.getStyle());
                 int ry = menuY + 2 + k * rowH;
-                if (sel) g.fill(menuX, ry, menuX + menuW, ry + rowH, 0xE02A3A50);
-                g.drawString(font, styleName(st), menuX + 6, ry + 6, sel ? 0xFFFFFF : 0xFFC0C0C0, false);
+                boolean rowHover = rowT > 0.6f && mouseX >= menuX && mouseX <= menuX + menuW
+                        && mouseY >= ry && mouseY <= ry + rowH;
+                if (selected) {
+                    g.fill(menuX, ry, menuX + menuW, ry + rowH, withAlpha(COL_SELECTED, rowT));
+                } else if (rowHover) {
+                    g.fill(menuX, ry, menuX + menuW, ry + rowH, withAlpha(COL_ROW_HOVER, rowT));
+                }
+                int rowColor = selected ? COL_ACCENT : (rowHover ? 0xFFFFFFFF : COL_TEXT);
+                g.drawString(font, styleName(st), menuX + 6, ry + 6, withAlpha(rowColor, rowT), false);
             }
         }
 
@@ -436,29 +619,31 @@ public class MapScreen extends Screen {
         int bw = font.width(biomeText) + 12;
         int bx = 8;
         int by = height - 30;
-        g.fill(bx, by, bx + bw, by + 20, biomesOn ? 0xC0405020 : 0xC0202020);
-        g.drawString(font, biomeText, bx + 6, by + 4, biomesOn ? 0xFFFFFF : 0xFFE0E0E0, false);
+        drawToggle(g, "biomes", bx, by, bw, biomeText, biomesOn,
+                mouseX >= bx && mouseX <= bx + bw && mouseY >= by && mouseY <= by + 20);
         Component rdText = Component.translatable("voxymap.ui.renderDistance");
         int rdw = font.width(rdText) + 12;
-        int rx2 = bx;
         int ry2 = by - 24;
-        g.fill(rx2, ry2, rx2 + rdw, ry2 + 20, distanceOn ? 0xC0405020 : 0xC0202020);
-        g.drawString(font, rdText, rx2 + 6, ry2 + 4, distanceOn ? 0xFFFFFF : 0xFFE0E0E0, false);
+        drawToggle(g, "distance", bx, ry2, rdw, rdText, distanceOn,
+                mouseX >= bx && mouseX <= bx + rdw && mouseY >= ry2 && mouseY <= ry2 + 20);
 
         // refresh button bottom-right
-        Component refresh = MapData.INSTANCE.isLoading()
+        boolean refreshing = data.isLoading();
+        Component refresh = refreshing
                 ? Component.translatable("voxymap.ui.refreshing")
                 : Component.translatable("voxymap.ui.refresh");
         int rw = font.width(refresh) + 12;
         int rx = width - 8 - rw;
-        g.fill(rx, height - 30, width - 8, height - 10, 0xC0202020);
-        g.drawString(font, refresh, rx + 6, height - 26, 0xFFE0E0E0, false);
+        drawButton(g, rx, height - 30, rw, refresh,
+                hoverAmount("refresh", mouseX >= rx && mouseX <= width - 8 && mouseY >= height - 30 && mouseY <= height - 10),
+                !refreshing);
 
         // config button top-left
         Component cfg = Component.translatable("voxymap.ui.config");
         int cw = font.width(cfg) + 12;
-        g.fill(8, 8, 8 + cw, 28, 0xC0202020);
-        g.drawString(font, cfg, 14, 12, 0xFFE0E0E0, false);
+        drawButton(g, 8, 8, cw, cfg,
+                hoverAmount("config", mouseX >= 8 && mouseX <= 8 + cw && mouseY >= 8 && mouseY <= 28),
+                true);
     }
 
     private void drawRenderDistanceBox(GuiGraphics g) {
@@ -516,26 +701,101 @@ public class MapScreen extends Screen {
         return new DialogBox(x, y, w, h, btnW, 20, firstBtnX, secondBtnX, btnY, lines);
     }
 
-    private void drawLodWarning(GuiGraphics g) {
+    private void drawLodWarning(GuiGraphics g, int mouseX, int mouseY) {
         DialogBox box = dialogBox();
         g.fill(0, 0, width, height, 0x99000000);
-        g.fill(box.x(), box.y(), box.x() + box.w(), box.y() + box.h(), 0xF0181818);
-        g.fill(box.x(), box.y(), box.x() + box.w(), box.y() + 1, 0xFF606060);
+        g.fill(box.x(), box.y(), box.x() + box.w(), box.y() + box.h(), 0xF014171C);
+        g.fill(box.x(), box.y(), box.x() + box.w(), box.y() + 1, COL_BORDER);
         g.drawCenteredString(font, Component.translatable("voxymap.ui.lodWarning.title"),
-                width / 2, box.y() + 10, 0xFFFF80);
+                width / 2, box.y() + 10, COL_WARN);
         int ty = box.y() + 10 + font.lineHeight + 8;
         for (FormattedCharSequence line : box.lines()) {
-            g.drawString(font, line, width / 2 - font.width(line) / 2, ty, 0xFFE0E0E0, false);
+            g.drawString(font, line, width / 2 - font.width(line) / 2, ty, COL_TEXT, false);
             ty += font.lineHeight;
         }
-        g.fill(box.firstBtnX(), box.btnY(), box.firstBtnX() + box.btnW(), box.btnY() + box.btnH(), 0xFF3A2A2A);
-        g.drawCenteredString(font, Component.translatable("voxymap.ui.lodWarning.refreshNow"),
-                box.firstBtnX() + box.btnW() / 2, box.btnY() + 6, 0xFFE0E0E0);
-        g.fill(box.secondBtnX(), box.btnY(), box.secondBtnX() + box.btnW(), box.btnY() + box.btnH(), 0xFF2A3A2A);
-        g.drawCenteredString(font, Component.translatable("voxymap.ui.lodWarning.wait"),
-                box.secondBtnX() + box.btnW() / 2, box.btnY() + 6, 0xFFE0E0E0);
+        drawDialogButton(g, box.firstBtnX(), box.btnY(), box.btnW(), box.btnH(),
+                Component.translatable("voxymap.ui.lodWarning.refreshNow"), COL_WARN, mouseX, mouseY);
+        drawDialogButton(g, box.secondBtnX(), box.btnY(), box.btnW(), box.btnH(),
+                Component.translatable("voxymap.ui.lodWarning.wait"), COL_ACCENT, mouseX, mouseY);
     }
 
+    /** Dialog button: same panel language as the HUD buttons, with a coloured top edge. */
+    private void drawDialogButton(GuiGraphics g, int x, int y, int w, int h, Component label, int accent, int mouseX, int mouseY) {
+        boolean hovered = mouseX >= x && mouseX <= x + w && mouseY >= y && mouseY <= y + h;
+        float hov = hoverAmount("dialog:" + label.getString(), hovered);
+        g.fill(x, y, x + w, y + h, lerpColor(COL_PANEL, COL_PANEL_HOVER, hov));
+        g.fill(x, y, x + w, y + 1, lerpColor(accent, 0xFFFFFFFF, hov * 0.3f));
+        g.drawCenteredString(font, label, x + w / 2, y + (h - font.lineHeight) / 2 + 1,
+                lerpColor(COL_TEXT, 0xFFFFFFFF, hov));
+    }
+
+
+    /**
+     * Collects the exact screen rectangles of the HUD controls and text plates. Biome labels whose
+     * box overlaps one of them are skipped: GuiGraphics batches text in its own order, so a label
+     * can otherwise end up drawn on top of a button even though the button is drawn later.
+     */
+    private void collectLabelBlockers(int mouseX, int mouseY) {
+        labelBlockers.clear();
+        // config button (top-left)
+        labelBlockers.add(new int[]{6, 6, 8 + configWidth() + 2, 30});
+        // map scale panel (top-right)
+        labelBlockers.add(new int[]{scalePanelLeft() - 2, SCALE_ROW_Y - 2, width - 6, SCALE_ROW_Y + 22});
+        // palette button
+        int selW = styleSelWidth();
+        labelBlockers.add(new int[]{width - 8 - selW - 2, STYLE_ROW_Y - 2, width - 6, STYLE_ROW_Y + 22});
+        // palette dropdown (only while open)
+        if (styleMenuOpen) {
+            int menuW = styleMenuWidth();
+            labelBlockers.add(new int[]{width - 8 - menuW - 2, STYLE_ROW_Y + 22, width - 6,
+                    STYLE_ROW_Y + 24 + 6 * 20 + 6});
+        }
+        // biome / distance toggles (bottom-left)
+        labelBlockers.add(new int[]{6, height - 32, 8 + biomesWidth() + 2, height - 8});
+        labelBlockers.add(new int[]{6, height - 56, 8 + distanceWidth() + 2, height - 32});
+        // refresh (bottom-right)
+        Component refresh = refreshComponent();
+        int rw = font.width(refresh) + 12;
+        labelBlockers.add(new int[]{width - 8 - rw - 2, height - 32, width - 6, height - 8});
+        // right-click menu
+        if (contextMenuT > 0.02f) {
+            int rowH = 20;
+            int menuW = Math.max(font.width(Component.translatable("voxymap.ui.copy")),
+                    Math.max(font.width(Component.translatable("voxymap.ui.teleport")),
+                            font.width(Component.translatable("voxymap.ui.export")))) + 24;
+            int rows = VoxyMapConfig.TELEPORT_ENABLED.get() ? 3 : 2;
+            int menuH = rowH * rows + 4;
+            int x = Math.min(menuX, width - menuW - 4);
+            int y = Math.min(menuY, height - menuH - 4);
+            labelBlockers.add(new int[]{x - 2, y - 2, x + menuW + 2, y + menuH + 2});
+        }
+        // top hint plate
+        if (VoxyMapConfig.SHOW_HINT.get()) {
+            int w = font.width(hintComponent());
+            labelBlockers.add(new int[]{width / 2 - w / 2 - 6, 4, width / 2 + w / 2 + 6, 22});
+        }
+        // bottom coordinate plate
+        if (VoxyMapConfig.SHOW_COORDINATES.get()) {
+            int w = font.width(coordsComponent(mouseX, mouseY));
+            labelBlockers.add(new int[]{width / 2 - w / 2 - 6, height - 22, width / 2 + w / 2 + 6, height - 4});
+        }
+        // status line plates (same place as drawStatusLine uses)
+        if (MapData.INSTANCE.isLoading() && MapData.INSTANCE.isReady()) {
+            int w = font.width(Component.translatable("voxymap.ui.updating", MapData.INSTANCE.getProgress()));
+            labelBlockers.add(new int[]{width / 2 - w / 2 - 6, 22, width / 2 + w / 2 + 6, 40});
+        }
+        if (MapData.INSTANCE.isStyleChanging()) {
+            int w = font.width(Component.translatable("voxymap.ui.styleChanging"));
+            labelBlockers.add(new int[]{width / 2 - w / 2 - 6, 22, width / 2 + w / 2 + 6, 40});
+        }
+    }
+
+    private boolean labelBlocked(double x0, double y0, double x1, double y1) {
+        for (int[] r : labelBlockers) {
+            if (x1 > r[0] && x0 < r[2] && y1 > r[1] && y0 < r[3]) return true;
+        }
+        return false;
+    }
 
     private void drawBiomeLabels(GuiGraphics g) {
         MapData data = MapData.INSTANCE;
@@ -557,13 +817,15 @@ public class MapScreen extends Screen {
             // exact culling with the real label size: skip boxes that do not intersect the window
             double halfW = info.width * labelScale / 2.0 + 2;
             if (sx + halfW < 0 || sx - halfW > width) continue;
+            // and skip labels covered by a HUD control
+            if (labelBlocked(sx - halfW, sy - halfLine, sx + halfW, sy + halfLine)) continue;
             g.pose().pushPose();
             g.pose().translate((float) sx, (float) sy, 0f);
             g.pose().scale(labelScale, labelScale, 1f);
             if (VoxyMapConfig.BIOME_LABEL_BACKGROUND.get()) {
                 int bx0 = -info.width / 2 - 2;
                 int by0 = -font.lineHeight / 2 - 1;
-                g.fill(bx0, by0, bx0 + info.width + 4, by0 + font.lineHeight + 2, 0x80000000);
+                g.fill(bx0, by0, bx0 + info.width + 4, by0 + font.lineHeight + 2, 0x40000000);
             }
             g.drawString(font, info.text, -(int) (info.width / 2f), -font.lineHeight / 2, 0xFFFFFF, true);
             g.pose().popPose();
@@ -629,7 +891,7 @@ public class MapScreen extends Screen {
         return count;
     }
 
-    private void drawContextMenu(GuiGraphics g) {
+    private void drawContextMenu(GuiGraphics g, int mouseX, int mouseY) {
         boolean teleport = VoxyMapConfig.TELEPORT_ENABLED.get();
         Component copy = Component.translatable("voxymap.ui.copy");
         Component tp = Component.translatable("voxymap.ui.teleport");
@@ -640,15 +902,29 @@ public class MapScreen extends Screen {
         int h = rowH * rows + 4;
         int x = Math.min(menuX, width - w - 4);
         int y = Math.min(menuY, height - h - 4);
-        g.fill(x, y, x + w, y + h, 0xF0181818);
-        g.fill(x, y, x + w, y + 1, 0xFF505050);
-        g.drawString(font, copy, x + 8, y + 6, 0xFFE0E0E0, false);
-        int row = 1;
+        float t = contextMenuT;
+        // solid panel, rows fade in one after another
+        g.fill(x, y, x + w, y + h, COL_PANEL);
+        g.fill(x, y, x + w, y + 1, COL_BORDER);
+        drawMenuRow(g, x, y + 2, w, rowH, copy, mouseX, mouseY, rowAlpha(t, 0));
         if (teleport) {
-            g.drawString(font, tp, x + 8, y + 6 + rowH * row, 0xFFE0E0E0, false);
-            row++;
+            drawMenuRow(g, x, y + 2 + rowH, w, rowH, tp, mouseX, mouseY, rowAlpha(t, 1));
         }
-        g.drawString(font, exp, x + 8, y + 6 + rowH * row, 0xFFE0E0E0, false);
+        drawMenuRow(g, x, y + 2 + rowH * (teleport ? 2 : 1), w, rowH, exp, mouseX, mouseY,
+                rowAlpha(t, teleport ? 2 : 1));
+    }
+
+    /** Staggered fade-in for menu rows. */
+    private static float rowAlpha(float t, int index) {
+        return Math.min(1f, Math.max(0f, t * 1.6f - index * 0.12f));
+    }
+
+    private void drawMenuRow(GuiGraphics g, int x, int y, int w, int rowH, Component label, int mouseX, int mouseY, float alpha) {
+        boolean hovered = alpha > 0.5f && mouseX >= x && mouseX <= x + w && mouseY >= y && mouseY <= y + rowH;
+        if (hovered) {
+            g.fill(x, y, x + w, y + rowH, withAlpha(COL_ROW_HOVER, alpha));
+        }
+        g.drawString(font, label, x + 8, y + 6, withAlpha(hovered ? 0xFFFFFFFF : COL_TEXT, alpha), false);
     }
 
     private void exportMap() {
@@ -726,6 +1002,7 @@ public class MapScreen extends Screen {
     @Override
     public boolean mouseClicked(double mx, double my, int button) {
         MapData data = MapData.INSTANCE;
+        if (!data.isOverworld()) return true;
         if (lodWarning && button == 0) {
             DialogBox box = dialogBox();
             if (mx >= box.firstBtnX() && mx <= box.firstBtnX() + box.btnW()
@@ -901,6 +1178,7 @@ public class MapScreen extends Screen {
 
     @Override
     public boolean mouseScrolled(double mx, double my, double scrollX, double scrollY) {
+        if (!MapData.INSTANCE.isOverworld()) return true;
         if (scrollY == 0) return false;
         double worldX = screenToWorldX(mx);
         double worldZ = screenToWorldZ(my);

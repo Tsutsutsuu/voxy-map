@@ -5,6 +5,7 @@ import com.mojang.blaze3d.platform.NativeImage;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.texture.DynamicTexture;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.level.storage.LevelResource;
 
 import java.io.ByteArrayInputStream;
@@ -267,9 +268,14 @@ public final class MapData {
         return (int) ((p >>> 53) & 0x1FF);
     }
 
+    /** The map reads Voxy's overworld LOD storage, so other dimensions are not supported yet. */
+    public boolean isOverworld() {
+        var level = Minecraft.getInstance().level;
+        return level == null || level.dimension() == Level.OVERWORLD;
+    }
+
     /** Sea level: read from the world so terrain mods are handled automatically. */
-    public int seaLevel() {
-        if (VoxyMapConfig.AUTO_SEA_LEVEL.get()) {
+    public int seaLevel() {        if (VoxyMapConfig.AUTO_SEA_LEVEL.get()) {
             var level = Minecraft.getInstance().level;
             if (level != null) return level.getSeaLevel();
             return FALLBACK_SEA;
@@ -399,6 +405,7 @@ public final class MapData {
                 + "  origin=" + (s == null ? "-" : s.minWX + "," + s.minWZ));
         out.add("state: ready=" + isReady() + " loading=" + loading + " prog=" + progress + " styleChanging=" + styleChanging);
         out.add("style: " + style + "  error: " + (error.isEmpty() ? "-" : error));
+        out.add("scale: 1:" + mapScale + "  (" + effectivePixelBlocks() + " blocks/px)");
         out.add("epoch=" + worldEpoch + " initDone=" + initialRefreshDone
                 + " pending=" + isInitialRefreshPending() + " newWorld=" + isNewWorldNow());
         long secs = sessionStartMs == 0 ? 0 : (System.currentTimeMillis() - sessionStartMs) / 1000L;
@@ -430,11 +437,6 @@ public final class MapData {
                 styleChanging = false;
             }
         });
-    }
-
-    public void cycleStyle() {
-        int i = Arrays.asList(MapStyles.NAMES).indexOf(style);
-        setStyle(MapStyles.NAMES[(i + 1) % MapStyles.NAMES.length]);
     }
 
     private void ensureDefaultStyle() {
@@ -497,6 +499,14 @@ public final class MapData {
      */
     public void updateAsync(boolean forceReload) {
         ensureDefaultStyle();
+        if (!isOverworld()) {
+            // only the overworld LOD storage is supported; do not build anything elsewhere
+            error = "";
+            progress = -1;
+            loading = false;
+            requested.set(false);
+            return;
+        }
         if (requested.getAndSet(true)) return;
         loading = true;
         progress = 0;
@@ -652,14 +662,22 @@ public final class MapData {
         return false;
     }
 
+    /** True while the player is in the overworld (the only dimension with a supported storage). */
+    private boolean overworldActive = true;
+
     /** Called once per client tick. */
     public void tick() {
         Minecraft mc = Minecraft.getInstance();
-        if (mc.player == null) {
-            // only reset once per world exit instead of every tick while sitting in a menu
-            if (sessionStartMs != 0 || snap != null || initialRefreshDone) resetForNewWorld();
+        boolean active = mc.player != null && isOverworld();
+        if (!active) {
+            // nether / end / menus: reset once on entry, then stay idle
+            if (overworldActive) {
+                resetForNewWorld();
+                overworldActive = false;
+            }
             return;
         }
+        overworldActive = true;
         if (!VoxyMapConfig.AUTO_REFRESH.get()) return;
         long now = System.currentTimeMillis();
         if (sessionStartMs == 0) sessionStartMs = now;
