@@ -1,0 +1,54 @@
+plugins {
+    id 'net.neoforged.moddev' version "2.0.42-beta"
+}
+
+version = project.mod_version
+group = project.maven_group
+base {
+    archivesName = project.archives_base_name
+}
+
+java {
+    toolchain.languageVersion = JavaLanguageVersion.of(21)
+}
+
+repositories {
+    mavenCentral()
+    maven { name = 'NeoForged'; url = 'https://maven.neoforged.net/releases' }
+}
+
+neoForge {
+    version = project.neoforge_version
+
+    parchment {
+        minecraftVersion = project.minecraft_version
+        mappingsVersion = "2024.11.17"
+    }
+
+    mods {
+        voxymap {
+            sourceSet sourceSets.main
+        }
+    }
+}
+
+dependencies {
+    // rocksdbjni is provided at runtime by voxy's own jar-in-jar (roxy.jij.rocksdbjni);
+    // bundling a second copy causes a JPMS split-package failure. Compile against the
+    // standalone jar and reach the loaded classes reflectively.
+    compileOnly files('libs/rocksdbjni-10.2.1.jar')
+    implementation 'com.github.luben:zstd-jni:1.5.6-3'
+    jarJar 'com.github.luben:zstd-jni:1.5.6-3'
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 21
+}
+
+processResources {
+    inputs.property 'version', project.version
+    filesMatching('META-INF/neoforge.mods.toml') {
+        expand version: project.version
+    }
+}

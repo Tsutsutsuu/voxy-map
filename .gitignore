@@ -1,0 +1,16 @@
+# Gradle / IDE / build output
+.gradle/
+build/
+out/
+.idea/
+*.iml
+*.ipr
+*.iws
+# OS
+Thumbs.db
+desktop.ini
+# logs
+*.log
+# local tool outputs
+*.png
+*.tmp
