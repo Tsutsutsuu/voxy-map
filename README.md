@@ -87,4 +87,5 @@ java -Xmx8G -cp "<rocksdbjni>;<zstd-jni>;out" VoxyMapPoC10 "<storage目录>" out
 ## 已知限制
 
 - 缓存不随 Voxy 数据变化自动失效（需手动刷新地图）
-- 缓存不随存档删除自动移除
+- 缓存不随存档删除自动移除（需手动清理，但是缓存文件很小）
+
