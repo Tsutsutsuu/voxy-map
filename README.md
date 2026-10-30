@@ -1,7 +1,5 @@
 # Voxy Map（voxymap）
 
-![Voxy Map 全屏地图总览](img/3.jpg)
-
 ## Mod简介
 
 一个Minecraft世界地图Mod
@@ -44,23 +42,33 @@ Voxy SeedGen Mod : https://modrinth.com/mod/voxy-seedgen
 
 ### 6 种配色
 
-同一片地形，六种配色一览（自然地形 / 渐变 / GMT / 航海 / 彩虹渐变 / 柔和渐变）：
+使用 Tectonic Mod 的 "i use voxy btw" 预设地形，Voxy SeedGen 距离 382 区块，黄色框为真实渲染距离
 
-![6 种配色对比](img/1.jpg)
+（自然地形 / 渐变 / GMT / 航海 / 彩虹渐变 / 柔和渐变）：
 
-海洋群系场景，带群系边界与群系名标签：
+![6 种配色对比（Tectonic地形）](img/1.jpg)
 
-![6 种配色对比（含群系标签）](img/2.jpg)
+原版地形，Voxy SeedGen 距离 382 区块，黄色框为真实渲染距离
+
+带群系边界与群系名标签：
+
+![6 种配色对比（原版地形）](img/2.jpg)
 
 ### 全屏地图
 
-远处视角：完整渲染的探索范围与视距框：
+使用 Tectonic Mod 的 "i use voxy btw" 预设地形，Voxy SeedGen 距离 382 区块，黄色框为真实渲染距离：
 
-![全屏地图远景](img/4.jpg)
+![全屏地图远景（Tectonic地形）](img/3.jpg)
+
+原版地形，Voxy SeedGen 距离 382 区块，黄色框为真实渲染距离：
+
+![全屏地图远景（原版地形）](img/4.jpg)
 
 近景细节：等高线、山体阴影、水深着色、群系边界与标签：
 
 ![地形细节](img/5.jpg)
+
+
 
 ## 目录结构
 
