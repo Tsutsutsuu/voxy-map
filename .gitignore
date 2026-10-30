@@ -15,3 +15,5 @@ desktop.ini
 *.png
 !mod/src/main/resources/**/*.png
 *.tmp
+
+doc/
