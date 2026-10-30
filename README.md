@@ -1,6 +1,42 @@
 # Voxy Map（voxymap）
 
-Minecraft 1.21.1 NeoForge 客户端模组：读取 Voxy 的 LOD 数据，生成全屏地形图。
+## Mod简介
+
+一个Minecraft世界地图Mod
+
+快速读取 Voxy 的 LOD 数据，生成全屏地形图及群系图
+
+**速度很快**
+
+&nbsp;
+
+目前支持 **Minecraft 1.21.1 NeoForge**
+
+其他版本/加载器支持计划中
+
+**（依赖使用 Roxy Mod 翻译层的 Voxy mod，其他第三方 Voxy 移植版本未测试）**
+
+&nbsp;
+
+**配合 Voxy SeedGen Mod 使用最佳：**
+
+Voxy SeedGen Mod : https://modrinth.com/mod/voxy-seedgen
+
+## 功能概览
+
+- 按 N 打开/关闭全屏地图
+- 滚轮缩放、拖拽平移、空格对准玩家位置
+- 6 种配色：自然地形、渐变、GMT、航海、彩虹渐变、柔和渐变
+- 等高线、山体阴影、水深着色、海洋模糊、补洞、可选去噪
+- 自适应色带
+- 群系边界叠加 + 群系标签
+- 视距框、坐标显示、右键菜单（复制坐标 / 传送 / 导出 PNG）
+- 地图自动刷新、磁盘缓存（voxymap-cache/）、多人支持
+- 关闭地图自动释放显存
+
+**几乎都能配置**
+
+配置文件：实例 `config/voxymap-client.toml`。
 
 ## 目录结构
 
@@ -17,10 +53,8 @@ voxy-map/
 
 ## 构建
 
-依赖 JDK 21：`C:\Users\Tsutsutsu\.jdks\jdk-21.0.12.1+1`
-
 ```powershell
-$env:JAVA_HOME='C:\Users\Tsutsutsu\.jdks\jdk-21.0.12.1+1'
+$env:JAVA_HOME='...\jdk-21.0.12.1+1'
 $env:GRADLE_OPTS='-Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=7897 -Dhttp.proxyHost=127.0.0.1 -Dhttp.proxyPort=7897 -Xmx3g'
 cd mod
 .\gradlew.bat build --no-daemon --no-configuration-cache
@@ -35,24 +69,8 @@ cd mod
 把 jar 复制到：
 
 ```
-D:\Minecraft\AxolotlLauncher\Data\profiles\1.21.1-NeoForge 21.1.265\mods\voxy-map-0.1.0.jar
+Minecraft游戏目录\mods\voxy-map-0.1.0.jar
 ```
-
-## 功能概览
-
-- 按 N 打开/关闭全屏地图（按键可在「选项 → 控制 → 按键绑定 → Voxy Map」修改）
-- 滚轮缩放、拖拽平移、空格对准玩家
-- 6 种配色：自然地形、渐变、GMT、航海、彩虹渐变、柔和渐变
-- 等高线、山体阴影、水深着色、海洋模糊、补洞、可选去噪
-- 自适应色带（可切换"陆地拉伸到最高点"模式）
-- 群系边界叠加（蓝色虚线）+ 群系标签（字号两段式，可加半透明底）
-- 视距框（黄色）、坐标显示、右键菜单（复制坐标 / 传送 / 导出 PNG）
-- 自动刷新、磁盘缓存（voxymap-cache/）、多人支持
-- 关闭地图释放纹理（约 560MB）
-
-## 配置
-
-配置文件：实例 `config/voxymap-client.toml`（默认值 = 当前使用配置）。
 
 ## POC / 离线工具
 
@@ -68,6 +86,5 @@ java -Xmx8G -cp "<rocksdbjni>;<zstd-jni>;out" VoxyMapPoC10 "<storage目录>" out
 
 ## 已知限制
 
-- 颜色调色板为 6 套预定义
-- 群系标签在 GUI 缩放 ≥4 且缩小地图时为半字号
 - 缓存不随 Voxy 数据变化自动失效（需手动刷新地图）
+- 缓存不随存档删除自动移除
