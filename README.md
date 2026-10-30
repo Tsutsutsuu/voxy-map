@@ -1,58 +1,28 @@
 # Voxy Map（voxymap）
 
-![icon](img/icon.png)
+<p align="left"><img src="img/icon.png" width="120" alt="Voxy Map icon"></p>
 
-## Mod简介
 
-一个Minecraft世界地图Mod
+**把整个世界画成一张地图：直接读取 Voxy 的 LOD 数据，不加载区块、不跑图，秒级生成全屏地形图。**
 
-快速读取 Voxy 的 LOD 数据，生成全屏地形图及群系图
+一个 Minecraft 世界地图模组。目前支持 **Minecraft 1.21.1 NeoForge**，纯客户端；其他版本/加载器支持计划中。
 
-**速度很快**
+配合 **Voxy SeedGen** 使用效果最佳 —— 它按世界种子预生成远景数据，地图才完整：
 
-&nbsp;
+- Voxy SeedGen：<https://modrinth.com/mod/voxy-seedgen>
 
-目前支持 **Minecraft 1.21.1 NeoForge**
+---
 
-其他版本/加载器支持计划中
-
-**（依赖使用 Roxy Mod 翻译层的 Voxy mod，其他第三方 Voxy 移植版本未测试）**
-
-&nbsp;
-
-**配合 Voxy SeedGen Mod 使用最佳：**
-
-Voxy SeedGen Mod : https://modrinth.com/mod/voxy-seedgen
-
-## 功能概览
-
-- 按 N 打开/关闭全屏地图
-- 滚轮缩放、拖拽平移、空格对准玩家位置
-- 6 种配色：自然地形、渐变、GMT、航海、彩虹渐变、柔和渐变
-- 等高线、山体阴影、水深着色、海洋模糊、补洞、可选去噪
-- 自适应色带
-- 群系边界叠加 + 群系标签
-- 视距框、坐标显示、右键菜单（复制坐标 / 传送 / 导出 PNG）
-- 地图自动刷新、磁盘缓存（voxymap-cache/）、多人支持
-- 关闭地图自动释放显存
-
-**几乎都能配置**
-
-配置文件：实例 `config/voxymap-client.toml`。
 
 ## 截图
 
 ### 6 种配色
 
-使用 Tectonic Mod 的 "i use voxy btw" 预设地形，Voxy SeedGen 距离 382 区块，黄色框为真实渲染距离
+使用 Tectonic Mod 的 "i use voxy btw" 预设地形，Voxy SeedGen 距离 382 区块，黄色框为真实渲染距离（自然地形 / 渐变 / GMT / 航海 / 彩虹渐变 / 柔和渐变）：
 
-（自然地形 / 渐变 / GMT / 航海 / 彩虹渐变 / 柔和渐变）：
+![6 种配色对比（Tectonic 地形）](img/1.jpg)
 
-![6 种配色对比（Tectonic地形）](img/1.jpg)
-
-原版地形，Voxy SeedGen 距离 382 区块，黄色框为真实渲染距离
-
-带群系边界与群系名标签：
+原版地形，同一组配色，带群系边界与群系名标签：
 
 ![6 种配色对比（原版地形）](img/2.jpg)
 
@@ -60,7 +30,7 @@ Voxy SeedGen Mod : https://modrinth.com/mod/voxy-seedgen
 
 使用 Tectonic Mod 的 "i use voxy btw" 预设地形，Voxy SeedGen 距离 382 区块，黄色框为真实渲染距离：
 
-![全屏地图远景（Tectonic地形）](img/3.jpg)
+![全屏地图远景（Tectonic 地形）](img/3.jpg)
 
 原版地形，Voxy SeedGen 距离 382 区块，黄色框为真实渲染距离：
 
@@ -70,15 +40,129 @@ Voxy SeedGen Mod : https://modrinth.com/mod/voxy-seedgen
 
 ![地形细节](img/5.jpg)
 
+## 功能概览
+
+**地图与交互**
+
+- 按 **N** 打开/关闭全屏地图，**空格**对准玩家，滚轮缩放，拖拽平移
+- 视距框、鼠标坐标与群系显示，右键菜单（复制坐标 / 传送 / 导出 PNG）
+- 界面按钮：左上「配置」、右上「地图样式」下拉、左下「视距」「群系」开关、右下「刷新」
+
+**渲染**
+
+- 6 种配色：自然地形、渐变、GMT、航海、彩虹渐变、柔和渐变
+- 等高线、山体阴影、水深着色、海洋模糊、补洞、可选去噪、自适应色带
+- 群系边界叠加 + 群系名标签（按区域面积过滤小群系）
+
+**数据与性能**
+
+- 直接解码 Voxy 的 LOD 存储并合并所有层级，**不加载区块**
+- 玩家移动较远时自动刷新；每个存档一份磁盘缓存（`voxymap-cache/`），重开秒进
+- 关闭地图自动释放纹理
+
+**几乎都能配置** —— 游戏内「模组 → Voxy Map → 配置」，或 `config/voxymap-client.toml`。
+
+## 前置要求
+
+| 依赖 | 版本 | 必需性 | 说明 |
+| --- | --- | --- | --- |
+| Minecraft | 1.21.1 | 必需 | 游戏本体 |
+| NeoForge | 21.1.224+ | 必需 | 模组加载器；Roxy 要求 21.1.224+，本项目编译目标为 21.1.217 |
+| [Voxy](https://modrinth.com/mod/voxy) | 0.2+ | 必需 | 提供地图数据：本模组直接读取它的 LOD 存储 |
+| [Roxy](https://modrinth.com/mod/roxy) | 0.4+ | 必需/使用第三方移植Voxy时不必须 | 把 Fabric 版 Voxy 加载到 NeoForge 的桥接层，没有它 Voxy 无法运行 |
+| Sodium | 0.6.13+ | 必需 | Voxy 的渲染依赖（由 Roxy 的依赖声明要求） |
+| [Voxy SeedGen](https://modrinth.com/mod/voxy-seedgen) | 0.3+ | 推荐（可选） | 按世界种子预生成远景；不装时地图只覆盖你实际探索过的区域 |
+
+> 本模组为纯客户端模组。依赖的是使用 Roxy 翻译层的 Voxy，其他第三方 Voxy 移植版本未测试。
+
+已验证环境：Minecraft 1.21.1 / NeoForge 21.1.265、Voxy 0.2.16-beta（经 Roxy 0.4.1 桥接）、Voxy SeedGen 0.3.1。
+
+## 安装
+
+1. 安装 Minecraft 1.21.1 与 NeoForge 21.1.224+
+2. 安装前置：Voxy、Roxy、Sodium（推荐再加 SeedGen）
+3. 从 [Releases](https://github.com/Tsutsutsuu/voxy-map/releases) 下载 `voxy-map-x.y.z.jar`，放进实例的 `mods` 目录
+4. 启动游戏，按 **N** 打开地图
+
+首次打开需要读取 Voxy 存储并渲染（视探索范围约 1 秒），之后走磁盘缓存。
+
+## 使用
+
+| 操作 | 默认按键 |
+| --- | --- |
+| 打开 / 关闭地图 | `N` |
+| 对准玩家位置 | `空格` |
+| 缩放 | 鼠标滚轮 |
+| 平移 | 按住鼠标左键拖拽 |
+| 地图菜单 | 鼠标右键（复制坐标 / 传送 / 导出 PNG） |
+| 关闭地图 | `Esc` |
+
+两个按键都可改：**选项 → 控制 → 按键绑定 → Voxy Map**。
+
+右键菜单里的「传送」需要 OP 权限（可在配置里关闭），「导出 PNG」把当前地图保存到实例的 `voxymap-exports/` 目录。
 
 
-## 目录结构
+## 配置
+
+所有选项都带中英双语注释，可在游戏内配置界面修改，或直接编辑实例的 `config/voxymap-client.toml`。常用项：
+
+| 配置项 | 默认 | 说明 |
+| --- | --- | --- |
+| `pixelBlocks` | 2 | 每像素方块数（1 最精细也最慢，4 更粗更快） |
+| `maxLodLevel` | 4 | 合并的最高 Voxy LOD 层级（0–4） |
+| `defaultStyle` | `current` | 默认配色 |
+| `defaultZoom` | 0.5 | 打开地图时的缩放 |
+| `autoRefresh` / `refreshDistanceChunks` | `true` / 128 | 玩家移动超过 N 区块后自动刷新 |
+| `initialRefreshDelayMinutes` | 3 | 进世界多少分钟后刷新一次（留时间给 SeedGen） |
+| `drawContours` / `contourDensity` | `true` / 12 | 等高线开关与密度 |
+| `drawHillshade` / `drawWaterDepth` | `true` / `true` | 山体阴影 / 水深着色 |
+| `waterBlur` / `waterBlurRadius` | `true` / 8 | 海洋模糊 |
+| `fillHoles` / `denoise` | `true` / `false` | 补洞 / 去噪 |
+| `showBiomes` / `biomeLabelMinArea` | `false` / 600 | 群系叠加开关 / 标签最小面积（像素） |
+| `releaseTexturesOnClose` | `true` | 关闭地图时释放纹理 |
+
+## 常见问题
+
+**地图打不开 / 只显示一部分？**
+先确认 Voxy 与 Roxy 已装好。没有 SeedGen 时，地图只覆盖 Voxy 已存下的数据，边缘未探索的区域是空的，属于正常现象。
+
+**数据更新了但地图还是旧的？**
+磁盘缓存不会自动失效，点右下角「**刷新**」强制重建即可。
+
+**群系和 F3 显示的不一致？**
+`pixelBlocks = 2` 时一个像素代表 2×2 方块，边界处可能取到相邻列。把 `pixelBlocks` 调小并刷新会更精细。
+
+**内存/显存占用偏高？**
+纹理尺寸随探索范围增长；关闭地图默认会释放纹理（`releaseTexturesOnClose`），也可以打开群系叠加前先确认显存充足。
+
+## 已知限制
+
+- 缓存不随 Voxy 数据变化自动失效（需手动刷新地图）
+- 缓存不随存档删除自动移除（需手动清理，但文件很小）
+- 群系按注册名 path 反查，多个模组存在同名群系时可能显示错误（概率低）
+- 群系边界叠加使用全分辨率纹理，开启时会占用较多内存/显存
+
+## 从源码构建
+
+需要 JDK 21：
+
+```bash
+cd mod
+./gradlew build
+```
+
+Windows 用 `.\gradlew.bat build`。产物：`mod/build/libs/voxy-map-0.1.0.jar`。
+
+> 国内网络下 Gradle 需要代理，可参考 `mod/gradle.properties` 里的 `systemProp.https.proxyHost` / `proxyPort` 配置。
+
+<details>
+<summary>仓库结构与离线 POC 工具（开发者）</summary>
 
 ```
 voxy-map/
 ├── mod/                  Gradle 工程（源码 + 构建脚本）
 │   ├── src/main/java/com/voxymap/   模组源码
-│   ├── src/main/resources/          资源（lang、纹理）
+│   ├── src/main/resources/          资源（lang、纹理、图标）
 │   ├── build.gradle / gradle.properties / settings.gradle
 │   ├── gradle/ gradlew gradlew.bat  构建包装器
 │   └── libs/            rocksdbjni 编译依赖（compileOnly，运行时不打包）
@@ -86,47 +170,16 @@ voxy-map/
 └── img/                 README 截图（raw/ 为本地原图，不入库）
 ```
 
-## 构建
+`poc/` 里的工具可以直接读取实例的 Voxy storage 离线渲染/诊断地图，编译运行需要 rocksdbjni 10.2.1 与 zstd-jni 1.5.6-3：
 
-```powershell
-$env:JAVA_HOME='...\jdk-21.0.12.1+1'
-$env:GRADLE_OPTS='-Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=7897 -Dhttp.proxyHost=127.0.0.1 -Dhttp.proxyPort=7897 -Xmx3g'
-cd mod
-.\gradlew.bat build --no-daemon --no-configuration-cache
-```
-
-代理已写入 `mod/gradle.properties`（systemProp.https.proxyHost=127.0.0.1 / proxyPort=7897）。
-
-产物：`mod/build/libs/voxy-map-0.1.0.jar`
-
-## 安装
-
-把 jar 复制到：
-
-```
-Minecraft游戏目录\mods\voxy-map-0.1.0.jar
-```
-
-## POC / 离线工具
-
-`poc/` 为单文件 Java 工具（用实例的 Voxy storage 离线渲染/诊断），编译运行需要：
-
-- rocksdbjni 10.2.1 jar
-- zstd-jni 1.5.6-3 jar
-
-例：
 ```powershell
 java -Xmx8G -cp "<rocksdbjni>;<zstd-jni>;out" VoxyMapPoC10 "<storage目录>" out.png 2 63 4 current
 ```
 
-## 已知限制
-
-- 缓存不随 Voxy 数据变化自动失效（需手动刷新地图）
-- 缓存不随存档删除自动移除（需手动清理，但是缓存文件很小）
+</details>
 
 ## 许可证
 
 本项目采用 **MIT** 许可证，详见 [LICENSE](LICENSE)。
 
 图标与截图 © Tsutsutsu；地图数据来自 Voxy 与其 SeedGen 插件。
-
