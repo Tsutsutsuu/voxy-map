@@ -1,18 +1,203 @@
-# Voxy Map（voxymap）
+# Voxy Map
 
 <p align="left"><img src="img/icon.png" width="120" alt="Voxy Map icon"></p>
 
+**[English](#voxy-map)** | [简体中文](#简体中文)
+
+**The whole world on one map: Voxy Map reads Voxy's level-of-detail data directly — no chunk loading, no flying around — and renders a full-screen terrain map in about a second.**
+
+A Minecraft world map mod (mod id `voxymap`). Currently supports **Minecraft 1.21.1 NeoForge**, client-side only; other versions and loaders are planned.
+
+Best used together with **Voxy SeedGen** — it pre-generates distant terrain from the world seed so the map actually covers the world:
+
+- Voxy SeedGen: <https://modrinth.com/mod/voxy-seedgen>
+
+---
+
+## Screenshots
+
+### Six palettes
+
+Tectonic mod with the "i use voxy btw" preset; Voxy SeedGen distance 382 chunks, yellow box = actual render distance (natural / gradient / GMT / nautical / gradient-turbo / gradient-soft):
+
+![Six palettes compared (Tectonic terrain)](img/1.jpg)
+
+Vanilla terrain, same set of palettes, with biome boundaries and biome labels:
+
+![Six palettes compared (vanilla terrain)](img/2.jpg)
+
+### Fullscreen map
+
+Tectonic mod with the "i use voxy btw" preset; Voxy SeedGen distance 382 chunks, yellow box = actual render distance:
+
+![Fullscreen map (Tectonic terrain)](img/3.jpg)
+
+Vanilla terrain, Voxy SeedGen distance 382 chunks, yellow box = actual render distance:
+
+![Fullscreen map (vanilla terrain)](img/4.jpg)
+
+Close-up: contour lines, hillshade, water-depth shading, biome boundaries and labels:
+
+![Terrain detail](img/5.jpg)
+
+## Features
+
+**Map and interaction**
+
+- **N** opens/closes the fullscreen map, **Space** re-centres on the player, scroll to zoom, drag to pan
+- Render-distance box, cursor coordinates and biome name, right-click menu (copy coordinates / teleport / export PNG)
+- UI buttons: "Config" (top-left), palette dropdown (top-right), "Render distance" / "Biomes" toggles (bottom-left), "Refresh" (bottom-right)
+
+**Rendering**
+
+- Six palettes: natural, gradient, GMT, nautical, gradient-turbo, gradient-soft
+- Contour lines, hillshade, water-depth shading, ocean blur, hole filling, optional denoise, adaptive colour ramp
+- Biome boundary overlay and biome labels (small regions filtered by area)
+
+**Data and performance**
+
+- Decodes Voxy's LOD storage and merges every level — **no chunk loading**
+- Automatic refresh when the player moves far; one disk cache per world (`voxymap-cache/`), so reopening is instant
+- Releases its textures when the map is closed
+
+**Almost everything is configurable** — in game under "Mods → Voxy Map → Config", or in `config/voxymap-client.toml`.
+
+## Requirements
+
+| Dependency | Version | Necessity | Notes |
+| --- | --- | --- | --- |
+| Minecraft | 1.21.1 | Required | The game itself |
+| NeoForge | 21.1.224+ | Required | Mod loader; Roxy requires 21.1.224+, this project targets 21.1.217 |
+| [Voxy](https://modrinth.com/mod/voxy) | 0.2+ | Required | Source of the map data: this mod reads its LOD storage |
+| [Roxy](https://modrinth.com/mod/roxy) | 0.4+ | Required (not needed when a third-party Voxy port is used) | Bridges the Fabric Voxy onto NeoForge; Voxy does not run without it |
+| Sodium | 0.6.13+ | Required | Rendering dependency of Voxy (declared by Roxy) |
+| [Voxy SeedGen](https://modrinth.com/mod/voxy-seedgen) | 0.3+ | Recommended (optional) | Pre-generates distant terrain from the seed; without it the map only covers areas you actually explored |
+
+> This is a client-side mod. It relies on Voxy through the Roxy bridge; other third-party Voxy ports are untested.
+
+Tested with: Minecraft 1.21.1 / NeoForge 21.1.265, Voxy 0.2.16-beta (via Roxy 0.4.1), Voxy SeedGen 0.3.1.
+
+## Installation
+
+1. Install Minecraft 1.21.1 and NeoForge 21.1.224+
+2. Install the prerequisites: Voxy, Roxy, Sodium (plus SeedGen, recommended)
+3. Download `voxy-map-x.y.z.jar` from [Releases](https://github.com/Tsutsutsuu/voxy-map/releases) and drop it into the instance's `mods` folder
+4. Launch the game and press **N**
+
+The first open reads Voxy's storage and renders (about a second depending on the explored area); after that it uses the disk cache.
+
+## Controls
+
+| Action | Default key |
+| --- | --- |
+| Open / close map | `N` |
+| Re-centre on the player | `Space` |
+| Zoom | Mouse wheel |
+| Pan | Hold the left mouse button and drag |
+| Map menu | Right mouse button (copy coordinates / teleport / export PNG) |
+| Close map | `Esc` |
+
+Both key bindings can be changed in **Options → Controls → Key Binds → Voxy Map**.
+
+"Teleport" in the right-click menu requires OP permission (can be disabled in the config); "Export PNG" saves the current map to `voxymap-exports/` in the instance folder.
+
+## Configuration
+
+Every option has a bilingual comment and can be edited in the in-game config screen, or directly in the instance's `config/voxymap-client.toml`. Common options:
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `pixelBlocks` | 2 | Blocks per pixel (1 = sharpest and slowest, 4 = coarser and faster) |
+| `maxLodLevel` | 4 | Highest Voxy LOD level to merge (0–4) |
+| `defaultStyle` | `current` | Default palette |
+| `defaultZoom` | 0.5 | Initial zoom when opening the map |
+| `autoRefresh` / `refreshDistanceChunks` | `true` / 128 | Refresh once the player moved this many chunks |
+| `initialRefreshDelayMinutes` | 3 | Refresh this many minutes after joining a world (gives SeedGen time) |
+| `drawContours` / `contourDensity` | `true` / 12 | Contours on/off and their density |
+| `drawHillshade` / `drawWaterDepth` | `true` / `true` | Hillshade / water-depth shading |
+| `waterBlur` / `waterBlurRadius` | `true` / 8 | Ocean blur |
+| `fillHoles` / `denoise` | `true` / `false` | Hole filling / denoise |
+| `showBiomes` / `biomeLabelMinArea` | `false` / 600 | Biome overlay / minimum label area (pixels) |
+| `releaseTexturesOnClose` | `true` | Release textures when the map is closed |
+
+## FAQ
+
+**The map is empty or only partially filled?**
+Make sure Voxy and Roxy are installed. Without SeedGen the map only covers the data Voxy has already stored, so unexplored edges stay empty — that is expected.
+
+**The data changed but the map is still old?**
+The disk cache does not invalidate automatically. Click "**Refresh**" in the bottom-right corner to rebuild it.
+
+**Biomes differ from what F3 shows?**
+With `pixelBlocks = 2` one pixel represents 2×2 blocks, so borders may take the neighbouring column. Lower `pixelBlocks` and refresh for a sharper map.
+
+**Memory / VRAM usage seems high?**
+Texture size grows with the explored area. Closing the map releases textures by default (`releaseTexturesOnClose`).
+
+## Known limitations
+
+- The cache does not invalidate when Voxy's data changes (refresh the map manually)
+- Caches are not removed when a world is deleted (clean them up manually; the files are small)
+- Biomes are resolved by registry path, so mods with identically named biomes may show the wrong one (unlikely)
+- The biome overlay uses a full-resolution texture and takes noticeable memory/VRAM while enabled
+
+## Building from source
+
+Requires JDK 21:
+
+```bash
+cd mod
+./gradlew build
+```
+
+On Windows use `.\gradlew.bat build`. Output: `mod/build/libs/voxy-map-0.1.0.jar`.
+
+> Behind a restrictive network Gradle needs a proxy; see `systemProp.https.proxyHost` / `proxyPort` in `mod/gradle.properties`.
+
+<details>
+<summary>Repository layout and offline POC tools (developers)</summary>
+
+```
+voxy-map/
+├── mod/                  Gradle project (sources + build scripts)
+│   ├── src/main/java/com/voxymap/   mod sources
+│   ├── src/main/resources/          resources (lang, textures, icon)
+│   ├── build.gradle / gradle.properties / settings.gradle
+│   ├── gradle/ gradlew gradlew.bat  build wrapper
+│   └── libs/            rocksdbjni compile-only dependency (not bundled)
+├── poc/                  offline tools (single-file Java, POC and data diagnostics)
+└── img/                 README screenshots (raw/ holds local originals, not committed)
+```
+
+The tools in `poc/` read an instance's Voxy storage offline to render/diagnose the map. They need rocksdbjni 10.2.1 and zstd-jni 1.5.6-3:
+
+```powershell
+java -Xmx8G -cp "<rocksdbjni>;<zstd-jni>;out" VoxyMapPoC10 "<storage dir>" out.png 2 63 4 current
+```
+
+</details>
+
+## License
+
+MIT — see [LICENSE](LICENSE).
+
+Icon and screenshots © Tsutsutsu; map data comes from Voxy and its SeedGen add-on.
+
+---
+
+# 简体中文
+
+[English](#voxy-map) | **[简体中文](#简体中文)**
 
 **把整个世界画成一张地图：直接读取 Voxy 的 LOD 数据，不加载区块、不跑图，秒级生成全屏地形图。**
 
-一个 Minecraft 世界地图模组。目前支持 **Minecraft 1.21.1 NeoForge**，纯客户端；其他版本/加载器支持计划中。
+一个 Minecraft 世界地图模组（mod id `voxymap`）。目前支持 **Minecraft 1.21.1 NeoForge**，纯客户端；其他版本/加载器支持计划中。
 
 配合 **Voxy SeedGen** 使用效果最佳 —— 它按世界种子预生成远景数据，地图才完整：
 
 - Voxy SeedGen：<https://modrinth.com/mod/voxy-seedgen>
 
 ---
-
 
 ## 截图
 
@@ -100,7 +285,6 @@
 两个按键都可改：**选项 → 控制 → 按键绑定 → Voxy Map**。
 
 右键菜单里的「传送」需要 OP 权限（可在配置里关闭），「导出 PNG」把当前地图保存到实例的 `voxymap-exports/` 目录。
-
 
 ## 配置
 
