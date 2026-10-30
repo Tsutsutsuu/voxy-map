@@ -4,9 +4,9 @@
 
 **[English](#voxy-map)** | [简体中文](#简体中文)
 
-**The whole world on one map: Voxy Map reads Voxy's level-of-detail data directly — no chunk loading, no flying around — and renders a full-screen terrain map in about a second.**
+***What you see is what you get*** — the map reaches exactly as far as the world renders: it reads Voxy's level-of-detail data directly, loads no chunks, flies nowhere, and renders a full-screen terrain map in about a second.
 
-A Minecraft world map mod (mod id `voxymap`). Currently supports **Minecraft 1.21.1 NeoForge**, client-side only; other versions and loaders are planned.
+A Minecraft world map mod (mod id `voxymap`). Currently supports **Minecraft 1.21.1 NeoForge**, client-side only; other versions, loaders and dimensions are planned.
 
 Best used together with **Voxy SeedGen** — it pre-generates distant terrain from the world seed so the map actually covers the world:
 
@@ -18,46 +18,53 @@ Best used together with **Voxy SeedGen** — it pre-generates distant terrain fr
 
 ### Six palettes
 
-Tectonic mod with the "i use voxy btw" preset; Voxy SeedGen distance 382 chunks, yellow box = actual render distance (natural / gradient / GMT / nautical / gradient-turbo / gradient-soft):
+**Tectonic mod** with the "i use voxy btw" preset; Voxy SeedGen distance 382 chunks, yellow box = actual render distance (natural / gradient / GMT / nautical / gradient-turbo / gradient-soft):
 
 ![Six palettes compared (Tectonic terrain)](img/1.jpg)
 
-Vanilla terrain, same set of palettes, with biome boundaries and biome labels:
+**Vanilla terrain**, same set of palettes, with biome boundaries and biome labels:
 
 ![Six palettes compared (vanilla terrain)](img/2.jpg)
 
 ### Fullscreen map
 
-Tectonic mod with the "i use voxy btw" preset; Voxy SeedGen distance 382 chunks, yellow box = actual render distance:
+**Tectonic mod** with the "i use voxy btw" preset; Voxy SeedGen distance 382 chunks, yellow box = actual render distance:
 
-![Fullscreen map (Tectonic terrain)](img/3.jpg)
-
-Vanilla terrain, Voxy SeedGen distance 382 chunks, yellow box = actual render distance:
-
-![Fullscreen map (vanilla terrain)](img/4.jpg)
+![Fullscreen map, far view (Tectonic terrain)](img/en_3.png)
 
 Close-up: contour lines, hillshade, water-depth shading, biome boundaries and labels:
 
-![Terrain detail](img/5.jpg)
+![Fullscreen map, close-up (Tectonic terrain)](img/en_4.png)
+
+**Vanilla terrain**, Voxy SeedGen distance 382 chunks, yellow box = actual render distance:
+
+![Fullscreen map, far view (vanilla terrain)](img/en_1.png)
+
+Close-up: contour lines, hillshade, water-depth shading, biome boundaries and labels:
+
+![Fullscreen map, close-up (vanilla terrain)](img/en_2.png)
 
 ## Features
 
 **Map and interaction**
 
 - **N** opens/closes the fullscreen map, **Space** re-centres on the player, scroll to zoom, drag to pan
+- Top-right: a **map scale slider** (1:1 – 1:8, rebuilds on release) and the "Map style" dropdown
 - Render-distance box, cursor coordinates and biome name, right-click menu (copy coordinates / teleport / export PNG)
-- UI buttons: "Config" (top-left), palette dropdown (top-right), "Render distance" / "Biomes" toggles (bottom-left), "Refresh" (bottom-right)
+- "Config" (top-left), "Render distance" / "Biomes" toggles (bottom-left), "Refresh" (bottom-right)
+- **Every world remembers** its own map scale, palette and overlay toggles
 
 **Rendering**
 
 - Six palettes: natural, gradient, GMT, nautical, gradient-turbo, gradient-soft
 - Contour lines, hillshade, water-depth shading, ocean blur, hole filling, optional denoise, adaptive colour ramp
-- Biome boundary overlay and biome labels (small regions filtered by area)
+- Biome boundaries (dashed checkerboard) and biome labels (filtered by area; hidden when a button, menu or text plate would cover them)
 
 **Data and performance**
 
 - Decodes Voxy's LOD storage and merges every level — **no chunk loading**
-- Automatic refresh when the player moves far; one disk cache per world (`voxymap-cache/`), so reopening is instant
+- **Pauses world rendering** while the map is open (`skipWorldRender`), so the frame budget goes to the map
+- Automatic refresh when the player moves far; one disk cache per world (`voxymap-cache/`), reopening is instant, at most 5 caches are kept
 - Releases its textures when the map is closed
 
 **Almost everything is configurable** — in game under "Mods → Voxy Map → Config", or in `config/voxymap-client.toml`.
@@ -103,51 +110,68 @@ The first open reads Voxy's storage and renders (about a second depending on the
 | Zoom | Mouse wheel |
 | Pan | Hold the left mouse button and drag |
 | Map menu | Right mouse button (copy coordinates / teleport / export PNG) |
+| Debug panel | `Q` (`debugEnabled`, on by default) |
 | Close map | `Esc` |
 
 Both key bindings can be changed in **Options → Controls → Key Binds → Voxy Map**.
+
+The "Map scale" slider in the top-right only changes the readout while dragging; the map rebuilds at the new scale **when the mouse is released**, and the slider stays locked while the build runs.
 
 "Teleport" in the right-click menu requires OP permission (can be disabled in the config); "Export PNG" saves the current map to `voxymap-exports/` in the instance folder.
 
 ## Configuration
 
-Every option has a bilingual comment and can be edited in the in-game config screen, or directly in the instance's `config/voxymap-client.toml`. Common options:
+Every option has a bilingual comment, grouped into `refresh` / `data` / `rendering` / `ui`; edit them in the in-game config screen or directly in `config/voxymap-client.toml`. Common options:
 
-| Option | Default | Description |
-| --- | --- | --- |
-| `pixelBlocks` | 2 | Blocks per pixel (1 = sharpest and slowest, 4 = coarser and faster) |
-| `maxLodLevel` | 4 | Highest Voxy LOD level to merge (0–4) |
-| `defaultStyle` | `current` | Default palette |
-| `defaultZoom` | 0.5 | Initial zoom when opening the map |
-| `autoRefresh` / `refreshDistanceChunks` | `true` / 128 | Refresh once the player moved this many chunks |
-| `initialRefreshDelayMinutes` | 3 | Refresh this many minutes after joining a world (gives SeedGen time) |
-| `drawContours` / `contourDensity` | `true` / 12 | Contours on/off and their density |
-| `drawHillshade` / `drawWaterDepth` | `true` / `true` | Hillshade / water-depth shading |
-| `waterBlur` / `waterBlurRadius` | `true` / 8 | Ocean blur |
-| `fillHoles` / `denoise` | `true` / `false` | Hole filling / denoise |
-| `showBiomes` / `biomeLabelMinArea` | `false` / 600 | Biome overlay / minimum label area (pixels) |
-| `releaseTexturesOnClose` | `true` | Release textures when the map is closed |
+| Option | Group | Default | Description |
+| --- | --- | --- | --- |
+| `mapScale` | data | 2 | Map scale 1–8 (1:1 sharpest and slowest, 1:8 coarsest and fastest) |
+| `maxLodLevel` | data | 4 | Highest Voxy LOD level to merge (0–4) |
+| `cacheKeepCount` | data | 5 | How many world caches to keep (1–100) |
+| `autoSeaLevel` / `seaLevelOverride` | data | `true` / 63 | Read the sea level from the world / manual sea level |
+| `defaultStyle` | rendering | `current` | Default palette for new worlds |
+| `defaultZoom` | rendering | 0.5 | Initial zoom when opening the map |
+| `autoRefresh` / `refreshDistanceChunks` | refresh | `true` / 128 | Refresh once the player moved this many chunks |
+| `initialRefreshDelayMinutes` | refresh | 3 | Refresh this many minutes after joining (gives SeedGen time) |
+| `drawContours` / `contourDensity` | rendering | `true` / 12 | Contours on/off and their density |
+| `drawHillshade` / `drawWaterDepth` | rendering | `true` / `true` | Hillshade / water-depth shading |
+| `waterBlur` / `waterBlurRadius` | rendering | `true` / 8 | Ocean blur |
+| `fillHoles` / `denoise` | rendering | `true` / `false` | Hole filling / denoise |
+| `showBiomes` / `biomeLabelMinArea` | rendering | `false` / 600 | Biome overlay / minimum label area (pixels) |
+| `biomeLabelBackground` | rendering | `true` | Biome label background (75% transparent) |
+| `skipWorldRender` | rendering | `true` | Skip world rendering while the map is open (disable on conflicts) |
+| `releaseTexturesOnClose` | rendering | `true` | Release textures when the map is closed |
+| `debugEnabled` | ui | `true` | Debug panel on `Q` in the map screen |
+
+> The config holds the values for **new worlds**. Each world's palette, overlay toggles and map scale are stored separately in `voxymap-cache/<hash>.state` and restored when that world is opened.
 
 ## FAQ
 
 **The map is empty or only partially filled?**
 Make sure Voxy and Roxy are installed. Without SeedGen the map only covers the data Voxy has already stored, so unexplored edges stay empty — that is expected.
 
+**Opening the map in the Nether / End only shows a single line?**
+Only the overworld is drawn for now: the Nether and the End neither build nor refresh, the screen just shows "Only overworld LOD maps are supported for now".
+
 **The data changed but the map is still old?**
 The disk cache does not invalidate automatically. Click "**Refresh**" in the bottom-right corner to rebuild it.
 
 **Biomes differ from what F3 shows?**
-With `pixelBlocks = 2` one pixel represents 2×2 blocks, so borders may take the neighbouring column. Lower `pixelBlocks` and refresh for a sharper map.
+With `mapScale = 2` one pixel represents 2×2 blocks, so borders may take the neighbouring column. Set the scale to 1:1 and refresh for a sharper map.
 
 **Memory / VRAM usage seems high?**
 Texture size grows with the explored area. Closing the map releases textures by default (`releaseTexturesOnClose`).
 
+**My style / scale / overlays were not kept after switching worlds?**
+Those settings are per world: the same save remembers them, a new world starts from the config defaults.
+
+**Frame rate feels low?**
+Make sure `skipWorldRender = true` (the default) — it skips the world render pass while the map is open. Turning off the biome overlay or using a coarser map scale also helps.
+
 ## Known limitations
 
-- The cache does not invalidate when Voxy's data changes (refresh the map manually)
-- Caches are not removed when a world is deleted (clean them up manually; the files are small)
+- Only the overworld is supported (nothing is drawn in the Nether or the End)
 - Biomes are resolved by registry path, so mods with identically named biomes may show the wrong one (unlikely)
-- The biome overlay uses a full-resolution texture and takes noticeable memory/VRAM while enabled
 
 ## Building from source
 
@@ -168,8 +192,8 @@ On Windows use `.\gradlew.bat build`. Output: `mod/build/libs/voxy-map-0.1.0.jar
 ```
 voxy-map/
 ├── mod/                  Gradle project (sources + build scripts)
-│   ├── src/main/java/com/voxymap/   mod sources
-│   ├── src/main/resources/          resources (lang, textures, icon)
+│   ├── src/main/java/com/voxymap/   mod sources (incl. mixin/)
+│   ├── src/main/resources/          resources (lang, textures, icon, voxymap.mixins.json)
 │   ├── build.gradle / gradle.properties / settings.gradle
 │   ├── gradle/ gradlew gradlew.bat  build wrapper
 │   └── libs/            rocksdbjni compile-only dependency (not bundled)
@@ -197,9 +221,9 @@ Icon and screenshots © Tsutsutsu; map data comes from Voxy and its SeedGen add-
 
 [English](#voxy-map) | **[简体中文](#简体中文)**
 
-**把整个世界画成一张地图：直接读取 Voxy 的 LOD 数据，不加载区块、不跑图，秒级生成全屏地形图。**
+*****所见即所得*** —— 能看多远，地图就画多远：直接读取 Voxy 的 LOD 数据，不加载区块、不跑图，秒级生成全屏地形图。**
 
-一个 Minecraft 世界地图模组（mod id `voxymap`）。目前支持 **Minecraft 1.21.1 NeoForge**，纯客户端；其他版本/加载器支持计划中。
+一个 Minecraft 世界地图模组（mod id `voxymap`）。目前支持 **Minecraft 1.21.1 NeoForge**，纯客户端；其他版本/加载器与维度支持计划中。
 
 配合 **Voxy SeedGen** 使用效果最佳 —— 它按世界种子预生成远景数据，地图才完整：
 
@@ -211,46 +235,54 @@ Icon and screenshots © Tsutsutsu; map data comes from Voxy and its SeedGen add-
 
 ### 6 种配色
 
-使用 Tectonic Mod 的 "i use voxy btw" 预设地形，Voxy SeedGen 距离 382 区块，黄色框为真实渲染距离（自然地形 / 渐变 / GMT / 航海 / 彩虹渐变 / 柔和渐变）：
+使用 **Tectonic Mod** 的 "i use voxy btw" 预设地形，Voxy SeedGen 距离 382 区块，黄色框为真实渲染距离（自然地形 / 渐变 / GMT / 航海 / 彩虹渐变 / 柔和渐变）：
 
 ![6 种配色对比（Tectonic 地形）](img/1.jpg)
 
-原版地形，同一组配色，带群系边界与群系名标签：
+**原版地形**，同一组配色，带群系边界与群系名标签：
 
 ![6 种配色对比（原版地形）](img/2.jpg)
 
 ### 全屏地图
 
-使用 Tectonic Mod 的 "i use voxy btw" 预设地形，Voxy SeedGen 距离 382 区块，黄色框为真实渲染距离：
+使用 **Tectonic Mod** 的 "i use voxy btw" 预设地形，Voxy SeedGen 距离 382 区块，黄色框为真实渲染距离：
 
-![全屏地图远景（Tectonic 地形）](img/3.jpg)
-
-原版地形，Voxy SeedGen 距离 382 区块，黄色框为真实渲染距离：
-
-![全屏地图远景（原版地形）](img/4.jpg)
+![全屏地图远景（Tectonic 地形）](img/zh_3.png)
 
 近景细节：等高线、山体阴影、水深着色、群系边界与标签：
 
-![地形细节](img/5.jpg)
+![全屏地图近景（Tectonic 地形）](img/zh_4.png)
+
+**原版地形**，Voxy SeedGen 距离 382 区块，黄色框为真实渲染距离：
+
+![全屏地图远景（原版地形）](img/zh_1.png)
+
+近景细节：等高线、山体阴影、水深着色、群系边界与标签：
+
+![全屏地图近景（原版地形）](img/zh_2.png)
+
 
 ## 功能概览
 
 **地图与交互**
 
 - 按 **N** 打开/关闭全屏地图，**空格**对准玩家，滚轮缩放，拖拽平移
+- 右上角：**地图比例滑块**（1:1 – 1:8，松开鼠标才重建）与「地图样式」下拉
 - 视距框、鼠标坐标与群系显示，右键菜单（复制坐标 / 传送 / 导出 PNG）
-- 界面按钮：左上「配置」、右上「地图样式」下拉、左下「视距」「群系」开关、右下「刷新」
+- 左上「配置」，左下「视距」「群系」开关，右下「刷新」
+- **每个世界独立记忆**地图比例、配色与叠加层开关
 
 **渲染**
 
 - 6 种配色：自然地形、渐变、GMT、航海、彩虹渐变、柔和渐变
 - 等高线、山体阴影、水深着色、海洋模糊、补洞、可选去噪、自适应色带
-- 群系边界叠加 + 群系名标签（按区域面积过滤小群系）
+- 群系边界（棋盘格虚线）+ 群系名标签（按面积过滤；被按钮、菜单或文字框压住时自动隐藏）
 
 **数据与性能**
 
 - 直接解码 Voxy 的 LOD 存储并合并所有层级，**不加载区块**
-- 玩家移动较远时自动刷新；每个存档一份磁盘缓存（`voxymap-cache/`），重开秒进
+- 打开地图时**暂停世界渲染**（`skipWorldRender`），把帧率留给地图
+- 玩家移动较远时自动刷新；每个存档一份磁盘缓存（`voxymap-cache/`），重开秒进，最多保留 5 份
 - 关闭地图自动释放纹理
 
 **几乎都能配置** —— 游戏内「模组 → Voxy Map → 配置」，或 `config/voxymap-client.toml`。
@@ -296,51 +328,68 @@ Icon and screenshots © Tsutsutsu; map data comes from Voxy and its SeedGen add-
 | 缩放 | 鼠标滚轮 |
 | 平移 | 按住鼠标左键拖拽 |
 | 地图菜单 | 鼠标右键（复制坐标 / 传送 / 导出 PNG） |
+| 调试面板 | `Q`（配置 `debugEnabled`，默认开启） |
 | 关闭地图 | `Esc` |
 
 两个按键都可改：**选项 → 控制 → 按键绑定 → Voxy Map**。
+
+右上角「地图比例」滑块：拖动只改变显示，**松开鼠标**才按新比例重建，重建期间滑块锁定。
 
 右键菜单里的「传送」需要 OP 权限（可在配置里关闭），「导出 PNG」把当前地图保存到实例的 `voxymap-exports/` 目录。
 
 ## 配置
 
-所有选项都带中英双语注释，可在游戏内配置界面修改，或直接编辑实例的 `config/voxymap-client.toml`。常用项：
+所有选项都带中英双语注释，分 `refresh` / `data` / `rendering` / `ui` 四组，可在游戏内配置界面修改，或直接编辑实例的 `config/voxymap-client.toml`。常用项：
 
-| 配置项 | 默认 | 说明 |
-| --- | --- | --- |
-| `pixelBlocks` | 2 | 每像素方块数（1 最精细也最慢，4 更粗更快） |
-| `maxLodLevel` | 4 | 合并的最高 Voxy LOD 层级（0–4） |
-| `defaultStyle` | `current` | 默认配色 |
-| `defaultZoom` | 0.5 | 打开地图时的缩放 |
-| `autoRefresh` / `refreshDistanceChunks` | `true` / 128 | 玩家移动超过 N 区块后自动刷新 |
-| `initialRefreshDelayMinutes` | 3 | 进世界多少分钟后刷新一次（留时间给 SeedGen） |
-| `drawContours` / `contourDensity` | `true` / 12 | 等高线开关与密度 |
-| `drawHillshade` / `drawWaterDepth` | `true` / `true` | 山体阴影 / 水深着色 |
-| `waterBlur` / `waterBlurRadius` | `true` / 8 | 海洋模糊 |
-| `fillHoles` / `denoise` | `true` / `false` | 补洞 / 去噪 |
-| `showBiomes` / `biomeLabelMinArea` | `false` / 600 | 群系叠加开关 / 标签最小面积（像素） |
-| `releaseTexturesOnClose` | `true` | 关闭地图时释放纹理 |
+| 配置项 | 分组 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `mapScale` | data | 2 | 地图比例 1–8（1:1 最精细也最慢，1:8 最粗最快） |
+| `maxLodLevel` | data | 4 | 合并的最高 Voxy LOD 层级（0–4） |
+| `cacheKeepCount` | data | 5 | 保留的存档缓存数量（1–100） |
+| `autoSeaLevel` / `seaLevelOverride` | data | `true` / 63 | 从世界读取海平面 / 手动海平面 |
+| `defaultStyle` | rendering | `current` | 新世界的默认配色 |
+| `defaultZoom` | rendering | 0.5 | 打开地图时的缩放 |
+| `autoRefresh` / `refreshDistanceChunks` | refresh | `true` / 128 | 玩家移动超过 N 区块后自动刷新 |
+| `initialRefreshDelayMinutes` | refresh | 3 | 进世界多少分钟后刷新一次（留时间给 SeedGen） |
+| `drawContours` / `contourDensity` | rendering | `true` / 12 | 等高线开关与密度 |
+| `drawHillshade` / `drawWaterDepth` | rendering | `true` / `true` | 山体阴影 / 水深着色 |
+| `waterBlur` / `waterBlurRadius` | rendering | `true` / 8 | 海洋模糊 |
+| `fillHoles` / `denoise` | rendering | `true` / `false` | 补洞 / 去噪 |
+| `showBiomes` / `biomeLabelMinArea` | rendering | `false` / 600 | 群系叠加开关 / 标签最小面积（像素） |
+| `biomeLabelBackground` | rendering | `true` | 群系标签背景（透明度 75%） |
+| `skipWorldRender` | rendering | `true` | 打开地图时跳过世界渲染（与其他模组冲突时可关） |
+| `releaseTexturesOnClose` | rendering | `true` | 关闭地图时释放纹理 |
+| `debugEnabled` | ui | `true` | 地图内按 Q 打开调试面板 |
+
+> 配置里的默认值是"新世界的默认值"；每个世界的样式、叠加层开关与地图比例另外保存在 `voxymap-cache/<hash>.state`，进存档时自动恢复。
 
 ## 常见问题
 
 **地图打不开 / 只显示一部分？**
 先确认 Voxy 与 Roxy 已装好。没有 SeedGen 时，地图只覆盖 Voxy 已存下的数据，边缘未探索的区域是空的，属于正常现象。
 
+**在下界 / 末地打开地图只看到一行提示？**
+目前只绘制主世界：下界/末地不建图、不刷新，打开地图会显示「目前只支持绘制主世界 LOD 地图」。
+
 **数据更新了但地图还是旧的？**
 磁盘缓存不会自动失效，点右下角「**刷新**」强制重建即可。
 
 **群系和 F3 显示的不一致？**
-`pixelBlocks = 2` 时一个像素代表 2×2 方块，边界处可能取到相邻列。把 `pixelBlocks` 调小并刷新会更精细。
+地图比例 `mapScale = 2` 时一个像素代表 2×2 方块，边界处可能取到相邻列。把比例调到 1:1 并刷新会更精细。
 
 **内存/显存占用偏高？**
 纹理尺寸随探索范围增长；关闭地图默认会释放纹理（`releaseTexturesOnClose`），也可以打开群系叠加前先确认显存充足。
 
+**样式 / 比例 / 叠加层换存档后没保留？**
+这些设置按世界保存：同一个存档内会记住，新世界使用配置里的默认值。
+
+**帧率偏低？**
+确认 `skipWorldRender = true`（默认开启），它会在打开地图时跳过世界渲染；另外关闭群系叠加、调粗地图比例都能减轻负担。
+
 ## 已知限制
 
-- 缓存不随 Voxy 数据变化自动失效（需手动刷新地图）
-- 缓存不随存档删除自动移除（需手动清理，但文件很小）
+- 目前只支持主世界（下界/末地不绘制）
 - 群系按注册名 path 反查，多个模组存在同名群系时可能显示错误（概率低）
-- 群系边界叠加使用全分辨率纹理，开启时会占用较多内存/显存
 
 ## 从源码构建
 
@@ -361,8 +410,8 @@ Windows 用 `.\gradlew.bat build`。产物：`mod/build/libs/voxy-map-0.1.0.jar`
 ```
 voxy-map/
 ├── mod/                  Gradle 工程（源码 + 构建脚本）
-│   ├── src/main/java/com/voxymap/   模组源码
-│   ├── src/main/resources/          资源（lang、纹理、图标）
+│   ├── src/main/java/com/voxymap/   模组源码（含 mixin/）
+│   ├── src/main/resources/          资源（lang、纹理、图标、voxymap.mixins.json）
 │   ├── build.gradle / gradle.properties / settings.gradle
 │   ├── gradle/ gradlew gradlew.bat  构建包装器
 │   └── libs/            rocksdbjni 编译依赖（compileOnly，运行时不打包）
