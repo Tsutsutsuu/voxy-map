@@ -12,7 +12,7 @@ public final class VoxyMapConfig {
     public static final ModConfigSpec.IntValue REFRESH_DISTANCE_CHUNKS;
     public static final ModConfigSpec.IntValue INITIAL_REFRESH_DELAY_MINUTES;
     public static final ModConfigSpec.ConfigValue<String> DEFAULT_STYLE;
-    public static final ModConfigSpec.IntValue PIXEL_BLOCKS;
+    public static final ModConfigSpec.IntValue MAP_SCALE;
     public static final ModConfigSpec.IntValue MAX_LOD_LEVEL;
     public static final ModConfigSpec.BooleanValue AUTO_SEA_LEVEL;
     public static final ModConfigSpec.IntValue SEA_LEVEL_OVERRIDE;
@@ -28,6 +28,9 @@ public final class VoxyMapConfig {
     public static final ModConfigSpec.BooleanValue DRAW_WATER_DEPTH;
     public static final ModConfigSpec.BooleanValue SHOW_COORDINATES;
     public static final ModConfigSpec.BooleanValue TELEPORT_ENABLED;
+    public static final ModConfigSpec.BooleanValue DEBUG_ENABLED;
+    public static final ModConfigSpec.BooleanValue SKIP_WORLD_RENDER;
+    public static final ModConfigSpec.IntValue CACHE_KEEP_COUNT;
     public static final ModConfigSpec.IntValue MIN_CONTOUR_AREA;
     public static final ModConfigSpec.IntValue CONTOUR_DENSITY;
     public static final ModConfigSpec.BooleanValue SHOW_BIOMES;
@@ -58,14 +61,18 @@ public final class VoxyMapConfig {
         b.pop();
 
         b.comment("地图数据 / Map data").push("data");
-        PIXEL_BLOCKS = b
-                .comment("地图分辨率：每像素方块数（1 最精细也最慢，4 较粗但更快） / Map resolution: blocks per pixel (1 = sharpest and slowest, 4 = coarse and fast)")
-                .translation("voxymap.config.pixelBlocks")
-                .defineInRange("pixelBlocks", 2, 1, 8);
+        MAP_SCALE = b
+                .comment("地图比例：1 到 1/8（值 1-8 = 每像素方块数；1 最精细也最慢，8 最粗但最快） / Map scale: 1 to 1/8 (value 1-8 = blocks per pixel; 1 = sharpest and slowest, 8 = coarsest and fastest)")
+                .translation("voxymap.config.mapScale")
+                .defineInRange("mapScale", 2, 1, 8);
         MAX_LOD_LEVEL = b
                 .comment("合并的最高 Voxy LOD 层级（0-4），更低的值会跳过远处的粗数据 / Highest Voxy LOD level to merge (0-4). Lower values skip far coarse data")
                 .translation("voxymap.config.maxLodLevel")
                 .defineInRange("maxLodLevel", 4, 0, 4);
+        CACHE_KEEP_COUNT = b
+                .comment("最多保留几个存档缓存（按最近写入排序，多余的自动删除；1 表示只保留当前存档） / How many world caches to keep (oldest are deleted automatically; 1 keeps only the current world)")
+                .translation("voxymap.config.cacheKeepCount")
+                .defineInRange("cacheKeepCount", 5, 1, 100);
         b.pop();
 
         AUTO_SEA_LEVEL = b
@@ -130,6 +137,10 @@ public final class VoxyMapConfig {
                 .comment("打开地图时的初始缩放 / Initial zoom when opening the map")
                 .translation("voxymap.config.defaultZoom")
                 .defineInRange("defaultZoom", 0.5, 0.04, 8.0);
+        SKIP_WORLD_RENDER = b
+                .comment("打开地图时跳过世界渲染以提升帧率（若与其他模组冲突可关闭） / Skip rendering the world while the map is open (better FPS; disable if it conflicts with other mods)")
+                .translation("voxymap.config.skipWorldRender")
+                .define("skipWorldRender", true);
         ADAPTIVE_COLOR_RAMP = b
                 .comment("将陆地色带拉伸到世界的实际高度范围 / Stretch the land colour ramp to the world's actual height range")
                 .translation("voxymap.config.adaptiveColorRamp")
@@ -173,6 +184,10 @@ public final class VoxyMapConfig {
                 .comment("在右键菜单中提供传送选项 / Offer the teleport entry in the right-click menu")
                 .translation("voxymap.config.teleportEnabled")
                 .define("teleportEnabled", true);
+        DEBUG_ENABLED = b
+                .comment("调试：在地图界面按 Q 显示/隐藏调试信息 / Debug: press Q in the map screen to toggle the debug panel")
+                .translation("voxymap.config.debugEnabled")
+                .define("debugEnabled", false);
         b.pop();
 
         SPEC = b.build();

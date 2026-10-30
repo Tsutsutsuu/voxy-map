@@ -11,6 +11,8 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.file.Files;
@@ -22,6 +24,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.List;
+import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -86,8 +89,13 @@ public final class MapData {
     private volatile Snapshot snap;
     private volatile NativeImage biomeImage;
     private volatile ResourceLocation biomeTextureId;
-    private volatile List<int[]> biomeLabels = List.of();
+    private volatile int[] biomeLabelsFlat = new int[0];
     private volatile String style = MapStyles.NAMES[0];
+    /** Per-world overlay toggles, persisted in the world's cache sidecar file (see loadUiState). */
+    private volatile boolean biomeOverlay;
+    private volatile boolean renderDistanceOverlay;
+    /** Per-world map scale: 1..8 blocks per pixel (1:1 to 1:8). */
+    private volatile int mapScale = 2;
     private volatile ResourceLocation textureId;
     private volatile ResourceLocation textureIdSmall;
     private volatile int[] lastRgb;
@@ -96,8 +104,15 @@ public final class MapData {
     private volatile boolean styleChanging;
     private volatile int progress = -1;
     private volatile String error = "";
+    private volatile Path lastStorage;
+    /** World the current snapshot was built from, used to reuse it when rejoining that world. */
+    private volatile Path snapStorage;
+    /** Palette the current {@code lastRgb} was rendered with. */
+    private volatile String lastRenderedStyle;
     private boolean styleInitialized;
     private boolean initialRefreshDone;
+    /** Bumped whenever the client leaves/joins a world, so stale build results can be dropped. */
+    private volatile int worldEpoch;
 
     private long sessionStartMs;
     private double lastUpdateX = Double.NaN, lastUpdateZ = Double.NaN;
@@ -139,8 +154,9 @@ public final class MapData {
         return biomeTextureId;
     }
 
-    public List<int[]> getBiomeLabels() {
-        return biomeLabels;
+    /** Biome label positions as flat triples: {mapX, mapZ, biomeId} per label. */
+    public int[] getBiomeLabelsFlat() {
+        return biomeLabelsFlat;
     }
 
     public String getBiomeName(int biomeId) {
@@ -261,9 +277,143 @@ public final class MapData {
         return VoxyMapConfig.SEA_LEVEL_OVERRIDE.get();
     }
 
+    // ------------------------------------------------------- per-world UI state
+
+    public boolean isBiomeOverlay() {
+        return biomeOverlay;
+    }
+
+    public boolean isRenderDistanceOverlay() {
+        return renderDistanceOverlay;
+    }
+
+    public void setBiomeOverlay(boolean value) {
+        biomeOverlay = value;
+        saveUiState();
+    }
+
+    public void setRenderDistanceOverlay(boolean value) {
+        renderDistanceOverlay = value;
+        saveUiState();
+    }
+
+    /** Blocks per pixel for the current world: 1 (1:1, sharpest) .. 8 (1:8, coarsest). */
+    public int getMapScale() {
+        return mapScale;
+    }
+
+    public void setMapScale(int value) {
+        mapScale = Math.max(1, Math.min(8, value));
+        saveUiState();
+    }
+
+    private int effectivePixelBlocks() {
+        return Math.max(1, Math.min(8, mapScale));
+    }
+
+    /** Sidecar file next to the world cache: {@code <storage-hash>.state}. */
+    private static Path uiStateFile(Path storage) {
+        return cacheDir().resolve(storage.getParent().getFileName() + ".state");
+    }
+
+    /**
+     * Different worlds want different palettes and overlays, so the UI state is stored next to that
+     * world's cache and restored when the world is opened. Falls back to the configured defaults
+     * when the world has no state file yet.
+     */
+    private void loadUiState() {
+        Path storage = lastStorage;
+        if (storage != null) {
+            Path file = uiStateFile(storage);
+            if (Files.isRegularFile(file)) {
+                try (InputStream in = Files.newInputStream(file)) {
+                    Properties props = new Properties();
+                    props.load(in);
+                    String savedStyle = props.getProperty("style");
+                    if (savedStyle != null) {
+                        for (String name : MapStyles.NAMES) {
+                            if (name.equals(savedStyle)) {
+                                style = name;
+                                break;
+                            }
+                        }
+                    }
+                    String biomes = props.getProperty("biomes");
+                    if (biomes != null) biomeOverlay = Boolean.parseBoolean(biomes);
+                    String distance = props.getProperty("renderDistance");
+                    if (distance != null) renderDistanceOverlay = Boolean.parseBoolean(distance);
+                    String scale = props.getProperty("mapScale");
+                    if (scale != null) {
+                        try {
+                            mapScale = Math.max(1, Math.min(8, Integer.parseInt(scale.trim())));
+                        } catch (NumberFormatException ignored) {
+                        }
+                    }
+                    return;
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+        applyConfiguredDefaults();
+    }
+
+    private void applyConfiguredDefaults() {
+        String defaultStyle = VoxyMapConfig.DEFAULT_STYLE.get();
+        for (String name : MapStyles.NAMES) {
+            if (name.equals(defaultStyle)) {
+                style = name;
+                break;
+            }
+        }
+        biomeOverlay = VoxyMapConfig.SHOW_BIOMES.get();
+        renderDistanceOverlay = VoxyMapConfig.SHOW_RENDER_DISTANCE.get();
+        mapScale = VoxyMapConfig.MAP_SCALE.get();
+    }
+
+    private void saveUiState() {
+        Path storage = lastStorage;
+        if (storage == null) return;
+        try {
+            Path file = uiStateFile(storage);
+            Files.createDirectories(file.getParent());
+            Properties props = new Properties();
+            props.setProperty("style", style);
+            props.setProperty("biomes", Boolean.toString(biomeOverlay));
+            props.setProperty("renderDistance", Boolean.toString(renderDistanceOverlay));
+            props.setProperty("mapScale", Integer.toString(mapScale));
+            try (OutputStream out = Files.newOutputStream(file)) {
+                props.store(out, "voxymap per-world ui state");
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** Diagnostic lines for the in-game debug panel (Q when debugEnabled). */
+    public List<String> debugLines() {
+        List<String> out = new ArrayList<>();
+        Snapshot s = snap;
+        out.add("voxymap 0.1.0  cache v" + CACHE_VERSION);
+        out.add("storage: " + (lastStorage == null ? "-" : lastStorage));
+        out.add("map: " + (s == null ? "none" : s.width + "x" + s.height)
+                + "  px=" + (s == null ? "-" : String.valueOf(s.pixelBlocks))
+                + "  origin=" + (s == null ? "-" : s.minWX + "," + s.minWZ));
+        out.add("state: ready=" + isReady() + " loading=" + loading + " prog=" + progress + " styleChanging=" + styleChanging);
+        out.add("style: " + style + "  error: " + (error.isEmpty() ? "-" : error));
+        out.add("epoch=" + worldEpoch + " initDone=" + initialRefreshDone
+                + " pending=" + isInitialRefreshPending() + " newWorld=" + isNewWorldNow());
+        long secs = sessionStartMs == 0 ? 0 : (System.currentTimeMillis() - sessionStartMs) / 1000L;
+        out.add("session: " + secs + "s  delay=" + VoxyMapConfig.INITIAL_REFRESH_DELAY_MINUTES.get() + "min");
+        out.add("tex: map=" + (textureId != null) + " small=" + (textureIdSmall != null) + " biome=" + (biomeTextureId != null));
+        out.add("labels: " + (biomeLabelsFlat.length / 3) + "  biomes: " + (s == null ? 0 : s.biomeNames.size()));
+        Runtime rt = Runtime.getRuntime();
+        out.add("mem: " + (rt.totalMemory() - rt.freeMemory()) / 1048576L + " / " + rt.maxMemory() / 1048576L + " MB");
+        return out;
+    }
+
     public void setStyle(String s) {
         if (!isReady() || loading || styleChanging) return;
         style = s;
+        saveUiState();
         Snapshot target = snap;
         int sea = seaLevel();
         styleChanging = true;
@@ -272,6 +422,7 @@ public final class MapData {
                 int[] rgb = renderColor(target, s, sea);
                 Minecraft.getInstance().execute(() -> {
                     uploadTexture(target, rgb);
+                    lastRenderedStyle = s;
                     styleChanging = false;
                 });
             } catch (Throwable t) {
@@ -298,11 +449,41 @@ public final class MapData {
         }
     }
 
+    /** Called when the client leaves a world or joins another one. */
     public void resetForNewWorld() {
         sessionStartMs = 0;
         lastUpdateX = Double.NaN;
         lastUpdateZ = Double.NaN;
         initialRefreshDone = false;
+        worldEpoch++;
+        // Keep the built grid and the rendered colours: rejoining the same world can re-upload the
+        // cached texture instead of rebuilding and re-rendering (see updateAsync). A different world
+        // is detected by comparing the storage path (needsWorldReload) and drops the old grid first.
+        releaseTextures();
+        error = "";
+        progress = -1;
+        biomeKeyCache.clear();
+        applyConfiguredDefaults();
+    }
+
+    /** True when the kept snapshot does not belong to the world that is loaded now. */
+    public boolean needsWorldReload() {
+        if (snap == null) return false;
+        Path storage = findStorage();
+        return storage == null || !storage.equals(snapStorage);
+    }
+
+    /** Drops the kept snapshot and its textures before a different world is built. */
+    public void dropSnapshotForWorldChange() {
+        if (snap == null && lastRgb == null) return;
+        snap = null;
+        snapStorage = null;
+        lastRgb = null;
+        lastRenderedStyle = null;
+        lastW = 0;
+        lastH = 0;
+        biomeLabelsFlat = new int[0];
+        releaseTextures();
     }
 
     // ------------------------------------------------------------- update
@@ -322,37 +503,70 @@ public final class MapData {
         error = "";
         Minecraft mc = Minecraft.getInstance();
         final int sea = seaLevel();
+        final int epoch = worldEpoch;
         loader.submit(() -> {
+            boolean handedToMainThread = false;
             try {
+                // the world changed after this request was queued: drop it instead of uploading the
+                // previous world's map into the new one
+                if (epoch != worldEpoch) return;
                 Path storage = findStorage();
+                if (storage != null) {
+                    lastStorage = storage;
+                    loadUiState();
+                }
                 if (storage == null) {
                     error = "no Voxy storage found for this world";
-                    loading = false;
-                    progress = -1;
-                    requested.set(false);
                     return;
                 }
-                Snapshot built = forceReload ? null : loadCache(storage);
+                // rejoining the world whose grid is still in memory: re-upload the rendered texture
+                // when the palette has not changed, otherwise only re-render, never rebuild
+                boolean sameWorld = snap != null && storage.equals(snapStorage);
+                if (sameWorld && !forceReload) {
+                    final Snapshot kept = snap;
+                    final int[] keptRgb = lastRgb;
+                    if (keptRgb != null && style.equals(lastRenderedStyle)) {
+                        handedToMainThread = true;
+                        mc.execute(() -> {
+                            try {
+                                if (textureId == null) uploadTexture(kept, keptRgb);
+                                progress = 100;
+                            } finally {
+                                loading = false;
+                                requested.set(false);
+                            }
+                        });
+                        return;
+                    }
+                } else if (!sameWorld) {
+                    dropSnapshotForWorldChange();
+                }
+                Snapshot built = forceReload ? null : (sameWorld ? snap : loadCache(storage));
+                // a cache from a different map scale cannot be reused: rebuild at the new scale
+                if (built != null && built.pixelBlocks != effectivePixelBlocks()) built = null;
                 if (built == null) {
                     built = buildPixels(storage);
                     if (built == null) {
                         error = "no sections found in Voxy storage";
-                        loading = false;
-                        progress = -1;
-                        requested.set(false);
                         return;
                     }
+                    if (epoch != worldEpoch) return;
                     saveCache(storage, built);
                 }
+                if (epoch != worldEpoch) return;
                 snap = built;
+                snapStorage = storage;
                 final Snapshot target = built;
+                final String renderStyle = style;
                 progress = 82;
-                int[] rgb = renderColor(target, style, sea);
+                int[] rgb = renderColor(target, renderStyle, sea);
                 progress = 95;
+                handedToMainThread = true;
                 mc.execute(() -> {
                     try {
                         progress = 95;
                         uploadTexture(target, rgb);
+                        lastRenderedStyle = renderStyle;
                         progress = 100;
                     } finally {
                         loading = false;
@@ -366,9 +580,12 @@ public final class MapData {
             } catch (Throwable t) {
                 t.printStackTrace();
                 error = t.getClass().getSimpleName() + ": " + t.getMessage();
-                loading = false;
-                progress = -1;
-                requested.set(false);
+            } finally {
+                if (!handedToMainThread) {
+                    loading = false;
+                    progress = -1;
+                    requested.set(false);
+                }
             }
         });
     }
@@ -439,7 +656,8 @@ public final class MapData {
     public void tick() {
         Minecraft mc = Minecraft.getInstance();
         if (mc.player == null) {
-            resetForNewWorld();
+            // only reset once per world exit instead of every tick while sitting in a menu
+            if (sessionStartMs != 0 || snap != null || initialRefreshDone) resetForNewWorld();
             return;
         }
         if (!VoxyMapConfig.AUTO_REFRESH.get()) return;
@@ -450,9 +668,15 @@ public final class MapData {
                 && Math.hypot(mc.player.getX() - lastUpdateX, mc.player.getZ() - lastUpdateZ) > refreshDist;
         // Initial refresh runs once per world, N minutes after joining, so SeedGen has time to fill more data.
         int delayMin = VoxyMapConfig.INITIAL_REFRESH_DELAY_MINUTES.get();
-        boolean timeUp = !initialRefreshDone && delayMin > 0 && now - sessionStartMs > delayMin * 60_000L;
-        boolean oldWorld = !initialRefreshDone && delayMin > 0 && isOldWorld(delayMin);
-        if ((moved || timeUp || oldWorld) && !loading) {
+        boolean initialPending = !initialRefreshDone && delayMin > 0;
+        boolean timeUp = initialPending && now - sessionStartMs > delayMin * 60_000L;
+        boolean oldWorld = initialPending && isOldWorld(delayMin);
+        // While a fresh world is still inside its initial delay, walking around must not start a
+        // build either: only the delay expiring (or the dialog's "refresh now" button) may. This
+        // keeps the "wait a few minutes so SeedGen can fill the storage" promise, and stops the
+        // map from being built and cached from a nearly empty storage.
+        boolean movedAllowed = moved && !initialPending;
+        if ((movedAllowed || timeUp || oldWorld) && !loading) {
             if (timeUp || oldWorld) initialRefreshDone = true;
             updateAsync(false);
         }
@@ -495,8 +719,70 @@ public final class MapData {
             Path tmp = out.resolveSibling(out.getFileName() + ".tmp");
             Files.write(tmp, bos.toByteArray());
             Files.move(tmp, out, StandardCopyOption.REPLACE_EXISTING);
+            pruneCache();
         } catch (Throwable t) {
             t.printStackTrace();
+        }
+    }
+
+    /**
+     * Keeps only the newest {@code cacheKeepCount} world caches and drops leftover {@code .tmp}
+     * files. A cache is never invalidated automatically (Voxy rewrites its storage constantly), so
+     * without this the directory would grow with every world that was ever opened, including
+     * worlds that have long been deleted.
+     */
+    private static void pruneCache() {
+        int keep = Math.max(1, VoxyMapConfig.CACHE_KEEP_COUNT.get());
+        try {
+            Path dir = cacheDir();
+            if (!Files.isDirectory(dir)) return;
+            List<Path> caches = new ArrayList<>();
+            List<Path> leftovers = new ArrayList<>();
+            List<Path> states = new ArrayList<>();
+            try (var stream = Files.list(dir)) {
+                for (Path p : (Iterable<Path>) stream::iterator) {
+                    String name = p.getFileName().toString();
+                    if (name.endsWith(".vxm")) {
+                        caches.add(p);
+                    } else if (name.endsWith(".state")) {
+                        states.add(p);
+                    } else if (name.endsWith(".tmp")) {
+                        leftovers.add(p);
+                    }
+                }
+            }
+            for (Path p : leftovers) {
+                try {
+                    Files.deleteIfExists(p);
+                } catch (Exception ignored) {
+                }
+            }
+            if (caches.size() <= keep) return;
+            caches.sort((a, b) -> {
+                try {
+                    return Files.getLastModifiedTime(b).compareTo(Files.getLastModifiedTime(a));
+                } catch (Exception e) {
+                    return 0;
+                }
+            });
+            for (int i = keep; i < caches.size(); i++) {
+                try {
+                    Files.deleteIfExists(caches.get(i));
+                } catch (Exception ignored) {
+                }
+            }
+            // sidecars only make sense next to their cache
+            for (Path state : states) {
+                String name = state.getFileName().toString();
+                String cacheName = name.substring(0, name.length() - ".state".length()) + ".vxm";
+                if (!Files.isRegularFile(state.resolveSibling(cacheName))) {
+                    try {
+                        Files.deleteIfExists(state);
+                    } catch (Exception ignored) {
+                    }
+                }
+            }
+        } catch (Throwable ignored) {
         }
     }
 
@@ -559,7 +845,7 @@ public final class MapData {
     }
 
     private Snapshot buildPixels(Path storage) throws Exception {
-        int pixelBlocks = Math.max(1, Math.min(8, VoxyMapConfig.PIXEL_BLOCKS.get()));
+        int pixelBlocks = effectivePixelBlocks();
         int maxLodLevel = Math.max(0, Math.min(4, VoxyMapConfig.MAX_LOD_LEVEL.get()));
         if (!RocksBridge.available()) {
             throw new IllegalStateException("rocksdb unavailable: " + RocksBridge.error());
@@ -994,19 +1280,29 @@ public final class MapData {
         for (int i = 0; i < w * h; i++) {
             bimg.setPixelRGBA(i % w, i / w, 0);
         }
+        // 1) border mask: pixels whose 4-neighbour belongs to another biome
+        boolean[] edge = new boolean[w * h];
         for (int z = 0; z < h; z++) {
             for (int x = 0; x < w; x++) {
                 int i2 = z * w + x;
                 if (pixels[i2] == LONG_EMPTY) continue;
-                boolean edge = (x < w - 1 && pixels[i2 + 1] != LONG_EMPTY && biomeArr[i2] != biomeArr[i2 + 1])
+                edge[i2] = (x < w - 1 && pixels[i2 + 1] != LONG_EMPTY && biomeArr[i2] != biomeArr[i2 + 1])
                         || (z < h - 1 && pixels[i2 + w] != LONG_EMPTY && biomeArr[i2] != biomeArr[i2 + w]);
-                if (edge && (x + z) % 6 < 4) {
+            }
+        }
+        // 2) 1px checkerboard mask on the border: half of the border pixels stay, so the dashes read
+        // as a regular dotted line no matter which way the border runs.
+        for (int z = 0; z < h; z++) {
+            for (int x = 0; x < w; x++) {
+                int i2 = z * w + x;
+                if (edge[i2] && ((x + z) & 1) == 0) {
                     bimg.setPixelRGBA(x, z, 0xC0FFFF00);
                 }
             }
         }
         biomeImage = bimg;
-        List<int[]> labels = new ArrayList<>();
+        int[] labels = new int[3 * 128];
+        int labelCount = 0;
         {
             boolean[] visited = new boolean[w * h];
             int[] bq = scratch;
@@ -1028,10 +1324,18 @@ public final class MapData {
                     if (z > 0) { int j = ii - w; if (!visited[j] && pixels[j] != LONG_EMPTY && biomeArr[j] == b0) { visited[j] = true; bq[qt++] = j; } }
                     if (z < h - 1) { int j = ii + w; if (!visited[j] && pixels[j] != LONG_EMPTY && biomeArr[j] == b0) { visited[j] = true; bq[qt++] = j; } }
                 }
-                if (qt >= minArea) labels.add(new int[]{(int) (sumX / qt), (int) (sumZ / qt), b0});
+                if (qt >= minArea) {
+                    if ((labelCount + 1) * 3 > labels.length) {
+                        labels = Arrays.copyOf(labels, Math.max(labels.length * 2, (labelCount + 1) * 3));
+                    }
+                    labels[labelCount * 3] = (int) (sumX / qt);
+                    labels[labelCount * 3 + 1] = (int) (sumZ / qt);
+                    labels[labelCount * 3 + 2] = b0;
+                    labelCount++;
+                }
             }
         }
-        biomeLabels = labels;
+        biomeLabelsFlat = Arrays.copyOf(labels, labelCount * 3);
     }
 
     private int[] renderColor(Snapshot s, String style, int sea) {
@@ -1063,6 +1367,8 @@ public final class MapData {
                         : ((tw && fl != NO_SOLID && fl < t) ? fl : t);
             }
         }
+
+        progress = 83;
 
         // fill interior data holes: connected empty regions that do not touch the map border
         // (and are small enough) get values spread inwards from the surrounding terrain
@@ -1138,6 +1444,8 @@ public final class MapData {
             }
         }
 
+        progress = 85;
+
         // denoise isolated land-height outliers produced by LOD merging
         if (VoxyMapConfig.DENOISE.get()) {
             int[] den = topArr.clone();
@@ -1164,8 +1472,11 @@ public final class MapData {
             topArr = den;
         }
 
+        progress = 87;
         int[] smoothFloor = smooth(floorArr, w, h, scratch);
         int[] smoothTop = smooth(topArr, w, h, scratch);
+
+        progress = 89;
 
         // water depth: real where known; missing columns fall back to a deep percentile,
         // coastal water stays shallow (the map rim is left empty)
@@ -1229,6 +1540,8 @@ public final class MapData {
                 depthKnown[i] = true;
             }
         }
+
+        progress = 91;
 
         // 3-pass separable box blur (sliding window) of the water depth only
         if (VoxyMapConfig.WATER_BLUR.get() && knownN > 0) {
@@ -1294,6 +1607,8 @@ public final class MapData {
             }
             depthMap = cur;
         }
+
+        progress = 92;
 
         // adaptive colour ramp: stretch the land ramp to this world's actual height range
         boolean adaptive = VoxyMapConfig.ADAPTIVE_COLOR_RAMP.get();
@@ -1377,6 +1692,7 @@ public final class MapData {
             }
         }
 
+        progress = 93;
         int[] out = new int[w * h];
         final float lx = -0.55f, ly = 0.70f, lz = -0.55f;
         final float ll = (float) Math.sqrt(lx * lx + ly * ly + lz * lz);
@@ -1386,6 +1702,7 @@ public final class MapData {
         boolean drawDepth = VoxyMapConfig.DRAW_WATER_DEPTH.get();
         float step = 2f * pixelBlocks;
         for (int z = 0; z < h; z++) {
+            if ((z & 255) == 0) progress = 93 + (int) ((long) z * 2L / h);
             for (int x = 0; x < w; x++) {
                 int idx = z * w + x;
                 int top = topArr[idx];
@@ -1442,6 +1759,7 @@ public final class MapData {
             }
         }
         generateBiomeOverlay(s, scratch);
+        progress = 95;
 
         return out;
     }
