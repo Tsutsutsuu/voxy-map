@@ -1,5 +1,7 @@
 # Voxy Map（voxymap）
 
+![icon](img/icon.png)
+
 ## Mod简介
 
 一个Minecraft世界地图Mod
