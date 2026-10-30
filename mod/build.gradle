@@ -52,3 +52,16 @@ processResources {
         expand version: project.version
     }
 }
+
+// Metadata for the jar itself (mod lists, launchers and release tooling read these)
+jar {
+    manifest {
+        attributes(
+                'Implementation-Title': 'Voxy Map',
+                'Implementation-Version': project.version,
+                'Minecraft-Version': project.minecraft_version,
+                'NeoForge-Version': project.neoforge_version,
+                'Mod-Id': 'voxymap'
+        )
+    }
+}

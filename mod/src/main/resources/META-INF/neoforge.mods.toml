@@ -1,13 +1,37 @@
 modLoader = "javafml"
 loaderVersion = "[4,)"
 license = "MIT"
+issueTrackerURL = "https://github.com/Tsutsutsuu/voxy-map/issues"
 
 [[mods]]
 modId = "voxymap"
 version = "${version}"
 displayName = "Voxy Map"
-description = '''A fullscreen LOD map rendered directly from the Voxy / SeedGen world storage.'''
-authors = "voxymap"
+authors = "Tsutsutsu"
+credits = "Map data comes from Voxy; rendering is inspired by SeedGen's storage layout."
+displayURL = "https://github.com/Tsutsutsuu/voxy-map"
+logoFile = "icon.png"
+logoBlur = false
+description = '''
+A fullscreen world map drawn straight from Voxy's level-of-detail storage.
+
+Voxy Map reads the RocksDB storage Voxy keeps for each world and merges every LOD
+level into one terrain grid, so the whole explored world opens as a clean map in
+about a second - no chunk loading, no in-game visiting.
+
+- Six colour palettes: natural, gradient, GMT, nautical, gradient-turbo, gradient-soft
+- Contour lines, hillshade, water depth shading, ocean blur, optional hole filling
+- Biome boundary overlay and biome labels
+- Zoom, pan, render-distance box, coordinates and a right-click menu
+  (copy coordinates / teleport / export PNG)
+- Automatic refresh on long distance, disk cache per world, multiplayer aware
+- Releases its textures when the map is closed to free VRAM
+- Almost everything is configurable in config/voxymap-client.toml
+
+Controls: N opens the map, scroll to zoom, drag to pan, Space re-centres on the player.
+
+Works best together with Voxy SeedGen, which fills Voxy's storage from the world seed.
+'''
 
 [[dependencies.voxymap]]
 modId = "neoforge"
@@ -23,9 +47,18 @@ versionRange = "[1.21.1,1.22)"
 ordering = "NONE"
 side = "CLIENT"
 
+# Voxy (through the Roxy bridge on NeoForge) is what this mod reads; without it the map
+# has no data and simply reports that no storage was found, so the dependency stays optional.
 [[dependencies.voxymap]]
 modId = "voxy"
 type = "optional"
 versionRange = "[0.2.0,)"
-ordering = "NONE"
+ordering = "AFTER"
+side = "CLIENT"
+
+[[dependencies.voxymap]]
+modId = "roxy"
+type = "optional"
+versionRange = "[0.4.0,)"
+ordering = "AFTER"
 side = "CLIENT"

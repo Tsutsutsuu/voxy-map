@@ -16,6 +16,7 @@ desktop.ini
 !mod/src/main/resources/**/*.png
 # README screenshots: compressed JPGs are tracked, raw source PNGs stay local
 img/raw/
+!img/icon.png
 *.tmp
 
 doc/
