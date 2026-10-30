@@ -11,7 +11,7 @@ Thumbs.db
 desktop.ini
 # logs
 *.log
-# local tool outputs
+# local tool outputs (keep mod resource textures)
 *.png
+!mod/src/main/resources/**/*.png
 *.tmp
-
