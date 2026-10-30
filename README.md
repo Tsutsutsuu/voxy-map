@@ -1,5 +1,7 @@
 # Voxy Map（voxymap）
 
+![Voxy Map 全屏地图总览](img/3.jpg)
+
 ## Mod简介
 
 一个Minecraft世界地图Mod
@@ -38,6 +40,28 @@ Voxy SeedGen Mod : https://modrinth.com/mod/voxy-seedgen
 
 配置文件：实例 `config/voxymap-client.toml`。
 
+## 截图
+
+### 6 种配色
+
+同一片地形，六种配色一览（自然地形 / 渐变 / GMT / 航海 / 彩虹渐变 / 柔和渐变）：
+
+![6 种配色对比](img/1.jpg)
+
+海洋群系场景，带群系边界与群系名标签：
+
+![6 种配色对比（含群系标签）](img/2.jpg)
+
+### 全屏地图
+
+远处视角：完整渲染的探索范围与视距框：
+
+![全屏地图远景](img/4.jpg)
+
+近景细节：等高线、山体阴影、水深着色、群系边界与标签：
+
+![地形细节](img/5.jpg)
+
 ## 目录结构
 
 ```
@@ -48,7 +72,8 @@ voxy-map/
 │   ├── build.gradle / gradle.properties / settings.gradle
 │   ├── gradle/ gradlew gradlew.bat  构建包装器
 │   └── libs/            rocksdbjni 编译依赖（compileOnly，运行时不打包）
-└── poc/                 离线验证工具（Java 单文件，POC 与数据诊断）
+├── poc/                 离线验证工具（Java 单文件，POC 与数据诊断）
+└── img/                 README 截图（raw/ 为本地原图，不入库）
 ```
 
 ## 构建
@@ -88,4 +113,3 @@ java -Xmx8G -cp "<rocksdbjni>;<zstd-jni>;out" VoxyMapPoC10 "<storage目录>" out
 
 - 缓存不随 Voxy 数据变化自动失效（需手动刷新地图）
 - 缓存不随存档删除自动移除（需手动清理，但是缓存文件很小）
-

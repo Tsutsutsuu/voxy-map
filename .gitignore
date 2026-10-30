@@ -14,6 +14,8 @@ desktop.ini
 # local tool outputs (keep mod resource textures)
 *.png
 !mod/src/main/resources/**/*.png
+# README screenshots: compressed JPGs are tracked, raw source PNGs stay local
+img/raw/
 *.tmp
 
 doc/
