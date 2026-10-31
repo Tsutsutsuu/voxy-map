@@ -41,6 +41,7 @@ public final class VoxyMapConfig {
     public static final ModConfigSpec.BooleanValue BIOME_LABEL_BACKGROUND;
     public static final ModConfigSpec.DoubleValue DEFAULT_ZOOM;
     public static final ModConfigSpec.BooleanValue SHOW_HINT;
+    public static final ModConfigSpec.BooleanValue REMEMBER_ZOOM;
 
     static {
         ModConfigSpec.Builder b = new ModConfigSpec.Builder();
@@ -133,9 +134,13 @@ public final class VoxyMapConfig {
                 .translation("voxymap.config.drawWaterDepth")
                 .define("drawWaterDepth", true);
         DEFAULT_ZOOM = b
-                .comment("打开地图时的初始缩放 / Initial zoom when opening the map")
+                .comment("默认地图缩放：新世界或关闭「保留地图缩放」时使用的初始缩放 / Default map zoom for new worlds or when zoom memory is off")
                 .translation("voxymap.config.defaultZoom")
                 .defineInRange("defaultZoom", 0.5, 0.04, 8.0);
+        REMEMBER_ZOOM = b
+                .comment("关闭地图后记住当前缩放，重新打开时恢复 / Remember the zoom level between map sessions")
+                .translation("voxymap.config.rememberZoom")
+                .define("rememberZoom", true);
         SKIP_WORLD_RENDER = b
                 .comment("打开地图时跳过世界渲染以提升帧率（若与其他模组冲突可关闭） / Skip rendering the world while the map is open (better FPS; disable if it conflicts with other mods)")
                 .translation("voxymap.config.skipWorldRender")

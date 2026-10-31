@@ -3,6 +3,7 @@ package com.voxymap;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.math.Axis;
 import net.minecraft.client.Minecraft;
+import com.mojang.blaze3d.systems.RenderSystem;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
@@ -38,6 +39,12 @@ public class MapScreen extends Screen {
     private boolean menuOpen;
     private boolean linearFilter = true;
     private boolean styleMenuOpen;
+    private float configPressT;
+    private float openT = 1f;
+    private boolean closing;
+    private float closeT;
+    private long lastAnimNs;
+    private float frameDt = 0.016f;
     private boolean lodWarning;
     private boolean debugPanel;
     /** Map-scale slider: dragging only previews, the rebuild starts on mouse release. */
@@ -125,15 +132,17 @@ public class MapScreen extends Screen {
 
     // ---- theme: one accent colour, three interaction states ----
 
-    private static final int COL_PANEL = 0xF014171C;
-    private static final int COL_PANEL_HOVER = 0xFF1E232A;
-    private static final int COL_PANEL_OFF = 0xE0101216;
-    private static final int COL_BORDER = 0xFF3A424C;
+    /** normal buttons/panels: 75% */
+    private static final int COL_PANEL = 0xC014171C;
+    /** disabled: same 75%, darker colour */
+    private static final int COL_PANEL_OFF = 0xC0101216;
+    /** modal dialog: 90% */
+    private static final int COL_PANEL_DIALOG = 0xE614171C;
+    private static final int COL_BORDER = 0xFF323A44;
     private static final int COL_BORDER_OFF = 0xFF272C33;
     private static final int COL_ACCENT = 0xFF4F9BC4;
     /** Selected / enabled tint: the same deep translucent blue as the dropdown selection. */
-    private static final int COL_SELECTED = 0xE02A3A50;
-    private static final int COL_SELECTED_HOVER = 0xF03A4F6E;
+    private static final int COL_SELECTED = 0xC02A3A50;
     /** Row hover behind the cursor inside menus. */
     private static final int COL_ROW_HOVER = 0x504F9BC4;
     private static final int COL_TEXT = 0xFFE8EAED;
@@ -155,40 +164,43 @@ public class MapScreen extends Screen {
         return (a << 24) | (color & 0x00FFFFFF);
     }
 
-    private static float approach(float cur, float target) {
-        if (Math.abs(cur - target) < 0.01f) return target;
-        return cur + (target - cur) * 0.14f;
+    /** Time-based easing: independent of the frame rate (180 fps vs 60 fps behaves the same). */
+    private float approach(float cur, float target) {
+        return cur + (target - cur) * Math.min(1f, frameDt * 14f);
     }
 
     private float hoverAmount(String key, boolean hovered) {
         float cur = hoverStates.getOrDefault(key, 0f);
         float target = hovered ? 1f : 0f;
         if (Math.abs(cur - target) < 0.01f) cur = target;
-        else cur += (target - cur) * 0.14f;
+        else cur += (target - cur) * Math.min(1f, frameDt * 16f);
         hoverStates.put(key, cur);
         return cur;
     }
 
     /** Flat button, height 20, text vertically centred, tinted by the hover progress. */
     private void drawButton(GuiGraphics g, int x, int y, int w, Component label, float hover, boolean enabled) {
-        int bg = enabled ? lerpColor(COL_PANEL, COL_PANEL_HOVER, hover) : COL_PANEL_OFF;
-        g.fill(x, y, x + w, y + 20, bg);
+        g.fill(x, y, x + w, y + 20, enabled ? COL_PANEL : COL_PANEL_OFF);
+        // hover is a translucent overlay, exactly like the dropdown rows
+        if (enabled && hover > 0.01f) {
+            g.fill(x, y, x + w, y + 20, withAlpha(COL_ROW_HOVER, hover));
+        }
         g.fill(x, y, x + w, y + 1, enabled ? lerpColor(COL_BORDER, COL_ACCENT, hover * 0.5f) : COL_BORDER_OFF);
         int color = enabled ? lerpColor(COL_TEXT, 0xFFFFFFFF, hover) : COL_TEXT_OFF;
-        g.drawString(font, label, x + 6, y + 6, color, false);
+        g.drawString(font, label, x + 6, y + 6, color);
     }
 
     /** Toggle button: deep blue tint while enabled (same as a selected dropdown row). */
     private void drawToggle(GuiGraphics g, String key, int x, int y, int w, Component label, boolean on, boolean hovered) {
         float hov = hoverAmount(key, hovered);
-        int bg = on
-                ? lerpColor(COL_SELECTED, COL_SELECTED_HOVER, hov)
-                : lerpColor(COL_PANEL, COL_PANEL_HOVER, hov);
-        g.fill(x, y, x + w, y + 20, bg);
+        g.fill(x, y, x + w, y + 20, on ? COL_SELECTED : COL_PANEL);
+        if (hov > 0.01f) {
+            g.fill(x, y, x + w, y + 20, withAlpha(COL_ROW_HOVER, hov));
+        }
         g.fill(x, y, x + w, y + 1, on ? lerpColor(COL_ACCENT, 0xFFFFFFFF, hov * 0.4f)
                 : lerpColor(COL_BORDER, COL_ACCENT, hov * 0.5f));
         g.drawString(font, label, x + 6, y + 6,
-                on ? 0xFFFFFFFF : lerpColor(COL_TEXT, 0xFFFFFFFF, hov), false);
+                on ? 0xFFFFFFFF : lerpColor(COL_TEXT, 0xFFFFFFFF, hov));
     }
 
     public MapScreen() {
@@ -197,8 +209,12 @@ public class MapScreen extends Screen {
 
     @Override
     protected void init() {
-        // always open centered on the player at the configured zoom
-        zoom = VoxyMapConfig.DEFAULT_ZOOM.get();
+        openT = 0f;
+        closing = false;
+        closeT = 0f;
+        // restore the last zoom for this world (or the configured default)
+        zoom = VoxyMapConfig.REMEMBER_ZOOM.get() ? MapData.INSTANCE.getZoom() : VoxyMapConfig.DEFAULT_ZOOM.get();
+        if (zoom <= 0) zoom = VoxyMapConfig.DEFAULT_ZOOM.get();
         var p0 = Minecraft.getInstance().player;
         MapData data = MapData.INSTANCE;
         sliderValue = data.getMapScale();
@@ -225,7 +241,7 @@ public class MapScreen extends Screen {
         } else {
             // rejoining the same world: the cached colour grid is re-uploaded instead of rebuilt
             data.ensureMainTextures();
-            if (!data.isReady() && !data.isLoading()) {
+            if (data.getMapWidth() <= 0 && !data.isLoading()) {
                 data.updateAsync();
             }
         }
@@ -275,17 +291,38 @@ public class MapScreen extends Screen {
 
     @Override
     public void render(GuiGraphics g, int mouseX, int mouseY, float partialTick) {
+        long nowNs = System.nanoTime();
+        frameDt = lastAnimNs == 0 ? 0.016f : (nowNs - lastAnimNs) / 1_000_000_000f;
+        lastAnimNs = nowNs;
         g.fill(0, 0, width, height, 0xFF0A0A0A);
         MapData data = MapData.INSTANCE;
         if (!data.isOverworld()) {
             // nether / end: no map is built or drawn, only the notice
             drawStatusLine(g, Component.translatable("voxymap.ui.overworldOnly"), 24, COL_WARN);
-            g.flush();
             return;
         }
+        // open/close animation (time based): scale + fade-in of the whole map screen
+        if (!closing) {
+            openT = Math.min(1f, openT + frameDt / 0.18f);
+        } else {
+            closeT = Math.min(1f, closeT + frameDt / 0.15f);
+            if (closeT >= 1f) {
+                finishClose();
+                return;
+            }
+        }
+        float animScale = closing
+                ? 1f - 0.05f * (1f - (1f - closeT) * (1f - closeT))
+                : 0.95f + 0.05f * (1f - (1f - openT) * (1f - openT));
+        g.pose().pushPose();
+        g.pose().translate(width / 2f, height / 2f, 0f);
+        g.pose().scale(animScale, animScale, 1f);
+        g.pose().translate(-width / 2f, -height / 2f, 0f);
         double uiScale = Minecraft.getInstance().getWindow().getGuiScale();
         // dropdown open/close animation
+        frameDt = Math.min(0.1f, Math.max(0.001f, frameDt));
         styleMenuT = approach(styleMenuT, styleMenuOpen ? 1f : 0f);
+        configPressT = Math.max(0f, configPressT - frameDt * 4f);
         contextMenuT = approach(contextMenuT, menuOpen ? 1f : 0f);
 
         // draw order is the stacking order, bottom to top:
@@ -299,9 +336,7 @@ public class MapScreen extends Screen {
         if (!lodWarning && debugPanel) {
             // the debug panel is a modal layer of its own: skip the text/button layers for the same
             // batch-ordering reason as the dialog
-            g.flush();
             drawDebugPanel(g, data, mouseX, mouseY);
-            g.flush();
         } else if (!lodWarning) {
             // labels only when the map is at or above point-to-point, otherwise they cost more than they show
             if (data.isBiomeOverlay() && zoom * uiScale >= 1.0) {
@@ -310,33 +345,29 @@ public class MapScreen extends Screen {
             }
             drawStatusText(g, data);
             drawReadouts(g, mouseX, mouseY);
-            g.flush();
             drawButtons(g, data, mouseX, mouseY);
             if (contextMenuT > 0.02f) {
                 drawContextMenu(g, mouseX, mouseY);
             }
-            g.flush();
         }
         // the modal dialog always wins, whatever the map state is
         if (lodWarning) {
             drawLodWarning(g, mouseX, mouseY);
-            g.flush();
         }
+        g.pose().popPose();
     }
 
     /** Layer 1: the map texture (nearest neighbour when zoomed in, the pre-filtered copy far out). */
     private void drawMap(GuiGraphics g, MapData data, double uiScale) {
-        boolean useSmall = zoom * uiScale < 0.5;
+        boolean mainReady = data.getTexture() != null;
+        // zoomed far out (or while the big texture is rebuilt) use the pre-filtered 1/4 copy
+        boolean useSmall = !mainReady || zoom * uiScale < 0.5;
         ResourceLocation tex = useSmall ? data.getTextureSmall() : data.getTexture();
-        if (tex == null || !data.isReady()) return;
+        if (tex == null) tex = data.getTexture();
+        if (tex == null) return;
+        if (data.getMapWidth() <= 0 || data.getMapHeight() <= 0) return;
         // real screen-space ratio: 1 texture pixel per physical pixel or larger uses
         // nearest neighbour; smaller uses linear (pre-filtered copy when far out)
-        boolean wantLinear = useSmall || zoom * uiScale < 1.0;
-        if (wantLinear != linearFilter) {
-            var t = Minecraft.getInstance().getTextureManager().getTexture(tex);
-            if (t != null) t.setFilter(wantLinear, false);
-            linearFilter = wantLinear;
-        }
         double x0 = width / 2.0 - centerPx() * zoom;
         double y0 = height / 2.0 - centerPz() * zoom;
         double w = data.getMapWidth() * zoom;
@@ -350,18 +381,20 @@ public class MapScreen extends Screen {
 
     /** Layer 2: things drawn on top of the map - biome boundaries, player marker, render-distance box. */
     private void drawMapOverlays(GuiGraphics g, MapData data) {
-        if (data.isBiomeOverlay() && data.isReady()) {
+        if (data.isBiomeOverlay() && data.getMapWidth() > 0) {
             data.ensureBiomeTexture();
             if (data.getBiomeTexture() != null) {
+                // 1.21.1 no longer enables blending for GuiGraphics.blit; the biome overlay is translucent
+                RenderSystem.enableBlend();
+                RenderSystem.defaultBlendFunc();
                 double x0 = width / 2.0 - centerPx() * zoom;
                 double y0 = height / 2.0 - centerPz() * zoom;
                 double w = data.getMapWidth() * zoom;
                 double h = data.getMapHeight() * zoom;
-                var bt = Minecraft.getInstance().getTextureManager().getTexture(data.getBiomeTexture());
-                if (bt != null) bt.setFilter(false, false);
                 g.blit(data.getBiomeTexture(), (int) Math.round(x0), (int) Math.round(y0),
                         Math.max(1, (int) Math.round(w)), Math.max(1, (int) Math.round(h)),
                         0, 0, data.getMapWidth(), data.getMapHeight(), data.getMapWidth(), data.getMapHeight());
+                RenderSystem.disableBlend();
             }
         }
         drawPlayerArrow(g);
@@ -373,23 +406,20 @@ public class MapScreen extends Screen {
     private void drawPlayerArrow(GuiGraphics g) {
         var player = Minecraft.getInstance().player;
         MapData data = MapData.INSTANCE;
-        if (player == null || !data.isReady()) return;
+        if (player == null || data.getMapWidth() <= 0) return;
         double px = (player.getX() - data.getMinWX()) / data.getPixelBlocks();
         double pz = (player.getZ() - data.getMinWZ()) / data.getPixelBlocks();
         float cx = (float) (width / 2.0 + (px - centerPx()) * zoom);
         float cy = (float) (height / 2.0 + (pz - centerPz()) * zoom);
         ResourceLocation arrow = arrowTex();
-        var arrowTexture = Minecraft.getInstance().getTextureManager().getTexture(arrow);
-        if (arrowTexture != null) arrowTexture.setFilter(false, false);
         // image centre sits on the player position, image top points north
         float angle = player.getYRot() + 180.0f;
         RenderSystem.enableBlend();
         RenderSystem.defaultBlendFunc();
-        g.setColor(1f, 1f, 1f, 1f);
         var pose = g.pose();
         pose.pushPose();
-        pose.translate(cx, cy, 0);
-        pose.mulPose(Axis.ZP.rotationDegrees(angle));
+        pose.translate(cx, cy, 0f);
+        pose.mulPose(com.mojang.math.Axis.ZP.rotationDegrees(angle));
         g.blit(arrow, -16, -16, 32, 32, 0, 0, 32, 32, 32, 32);
         pose.popPose();
         RenderSystem.disableBlend();
@@ -423,11 +453,11 @@ public class MapScreen extends Screen {
         int y = 34;
         int pw = panelW + pad * 2;
         int ph = shown.size() * lineH + pad * 2;
-        g.fill(x, y, x + pw, y + ph, 0xE014171C);
+        g.fill(x, y, x + pw, y + ph, COL_PANEL);
         g.fill(x, y, x + pw, y + 1, COL_BORDER);
         int ty = y + pad;
         for (String l : shown) {
-            g.drawString(font, l, x + pad, ty, COL_TEXT_DIM, false);
+            g.drawString(font, l, x + pad, ty, COL_TEXT_DIM);
             ty += lineH;
         }
     }
@@ -444,13 +474,12 @@ public class MapScreen extends Screen {
 
     /** Layer 4: loading / empty / style-change messages, below the buttons and the dialog. */
     private void drawStatusText(GuiGraphics g, MapData data) {
-        if (!data.isReady()) {
-            // no map on screen yet: the centred message is the only status, the top line would be
-            // the same information twice
+        if (data.getMapWidth() <= 0) {
+            // first build: use the same top line and warning colour as a refresh, so both states match
             Component msg = data.isLoading()
                     ? Component.translatable("voxymap.ui.updating", data.getProgress())
                     : (data.getError().isEmpty() ? Component.translatable("voxymap.ui.no_data") : Component.literal(data.getError()));
-            drawStatusLine(g, msg, height / 2 - 10, COL_TEXT);
+            drawStatusLine(g, msg, 24, data.isLoading() ? COL_WARN : COL_TEXT);
         } else if (data.isLoading()) {
             // an old map is on screen while the refresh runs in the background
             drawStatusLine(g, Component.translatable("voxymap.ui.updating", data.getProgress()), 24, COL_WARN);
@@ -464,7 +493,7 @@ public class MapScreen extends Screen {
     private void drawStatusLine(GuiGraphics g, Component text, int y, int color) {
         int w = font.width(text);
         int x = width / 2 - w / 2;
-        g.fill(x - 5, y - 2, x + w + 5, y + font.lineHeight + 2, 0x59000000);
+        g.fill(x - 5, y - 2, x + w + 5, y + font.lineHeight + 2, 0x6614171C);
         g.drawCenteredString(font, text, width / 2, y, color);
     }
 
@@ -535,13 +564,13 @@ public class MapScreen extends Screen {
             int tw = font.width(coords);
             int tx = width / 2 - tw / 2;
             // a faint plate keeps the text readable over bright terrain
-            g.fill(tx - 5, height - 20, tx + tw + 5, height - 6, 0x59000000);
+            g.fill(tx - 5, height - 20, tx + tw + 5, height - 6, 0x6614171C);
             g.drawString(font, coords, tx, height - 16, COL_TEXT, true);
         }
         if (VoxyMapConfig.SHOW_HINT.get()) {
             Component hint = hintComponent();
             int hintW = font.width(hint);
-            g.fill(width / 2 - hintW / 2 - 5, 6, width / 2 + hintW / 2 + 5, 20, 0x59000000);
+            g.fill(width / 2 - hintW / 2 - 5, 6, width / 2 + hintW / 2 + 5, 20, 0x6614171C);
             g.drawCenteredString(font, hint, width / 2, 8, COL_TEXT);
         }
     }
@@ -557,11 +586,13 @@ public class MapScreen extends Screen {
         int rowTop = SCALE_ROW_Y;
         boolean sliderHover = mouseX >= panelLeft && mouseX <= panelRight && mouseY >= rowTop && mouseY <= rowTop + 20;
         float sliderHov = scaleEnabled ? hoverAmount("scale", sliderHover || sliderDragging) : 0f;
-        g.fill(panelLeft, rowTop, panelRight, rowTop + 20,
-                scaleEnabled ? lerpColor(COL_PANEL, COL_PANEL_HOVER, sliderHov) : COL_PANEL_OFF);
+        g.fill(panelLeft, rowTop, panelRight, rowTop + 20, scaleEnabled ? COL_PANEL : COL_PANEL_OFF);
+        if (scaleEnabled && sliderHov > 0.01f) {
+            g.fill(panelLeft, rowTop, panelRight, rowTop + 20, withAlpha(COL_ROW_HOVER, sliderHov));
+        }
         g.fill(panelLeft, rowTop, panelRight, rowTop + 1,
                 scaleEnabled ? lerpColor(COL_BORDER, COL_ACCENT, sliderHov * 0.5f) : COL_BORDER_OFF);
-        g.drawString(font, scaleLabel, panelLeft + 6, rowTop + 6, scaleEnabled ? COL_TEXT : COL_TEXT_OFF, false);
+        g.drawString(font, scaleLabel, panelLeft + 6, rowTop + 6, scaleEnabled ? COL_TEXT : COL_TEXT_OFF);
         int sliderX = scaleSliderX();
         int sliderRight = sliderX + SCALE_SLIDER_W;
         int trackY = rowTop + 8;
@@ -572,7 +603,7 @@ public class MapScreen extends Screen {
         g.fill(sliderX, trackY, knobLeft + knobW / 2, trackY + 4, scaleEnabled ? COL_ACCENT : 0xFF3F4850);
         g.fill(knobLeft, trackY - 3, knobLeft + knobW, trackY + 7,
                 scaleEnabled ? lerpColor(COL_TEXT, 0xFFFFFFFF, sliderHov) : COL_TEXT_OFF);
-        g.drawString(font, scaleValue, sliderRight + 8, rowTop + 6, scaleEnabled ? COL_TEXT : COL_TEXT_OFF, false);
+        g.drawString(font, scaleValue, sliderRight + 8, rowTop + 6, scaleEnabled ? COL_TEXT : COL_TEXT_OFF);
 
         // style selector button (top-right) with an animated dropdown
         Component styleLabel = Component.translatable("voxymap.ui.styleButton", styleName(data.getStyle()));
@@ -582,7 +613,7 @@ public class MapScreen extends Screen {
         float styleHov = hoverAmount("style", mouseX >= selX && mouseX <= selX + selW && mouseY >= selY && mouseY <= selY + 20);
         drawButton(g, selX, selY, selW, styleLabel, styleHov, true);
         g.drawString(font, Component.literal("v"), selX + selW - 14, selY + 6,
-                lerpColor(COL_TEXT_DIM, COL_TEXT, styleHov), false);
+                lerpColor(COL_TEXT_DIM, COL_TEXT, styleHov));
         if (styleMenuT > 0.02f) {
             int rowH = 20;
             int menuW = 0;
@@ -591,9 +622,11 @@ public class MapScreen extends Screen {
             }
             int menuX = width - 8 - menuW;
             int menuY = selY + 24;
-            // solid panel (same opacity as every other control); only the rows fade in
-            g.fill(menuX, menuY, menuX + menuW, menuY + 6 * rowH + 4, COL_PANEL);
-            g.fill(menuX, menuY, menuX + menuW, menuY + 1, COL_BORDER);
+            // the panel fades in together with its rows so the open does not pop
+            g.fill(menuX, menuY, menuX + menuW, menuY + 6 * rowH + 4,
+                    withAlpha(COL_PANEL, Math.min(1f, styleMenuT * 1.35f)));
+            g.fill(menuX, menuY, menuX + menuW, menuY + 1,
+                    withAlpha(COL_BORDER, Math.min(1f, styleMenuT * 1.35f)));
             for (int k = 0; k < MapStyles.NAMES.length; k++) {
                 float rowT = rowAlpha(styleMenuT, k);
                 if (rowT <= 0.02f) continue;
@@ -602,13 +635,14 @@ public class MapScreen extends Screen {
                 int ry = menuY + 2 + k * rowH;
                 boolean rowHover = rowT > 0.6f && mouseX >= menuX && mouseX <= menuX + menuW
                         && mouseY >= ry && mouseY <= ry + rowH;
+                float rowHov = hoverAmount("style:" + st, rowHover);
                 if (selected) {
                     g.fill(menuX, ry, menuX + menuW, ry + rowH, withAlpha(COL_SELECTED, rowT));
-                } else if (rowHover) {
-                    g.fill(menuX, ry, menuX + menuW, ry + rowH, withAlpha(COL_ROW_HOVER, rowT));
+                } else if (rowHov > 0.01f) {
+                    g.fill(menuX, ry, menuX + menuW, ry + rowH, withAlpha(COL_ROW_HOVER, rowT * rowHov));
                 }
-                int rowColor = selected ? COL_ACCENT : (rowHover ? 0xFFFFFFFF : COL_TEXT);
-                g.drawString(font, styleName(st), menuX + 6, ry + 6, withAlpha(rowColor, rowT), false);
+                int rowColor = selected ? COL_ACCENT : lerpColor(COL_TEXT, 0xFFFFFFFF, rowHov);
+                g.drawString(font, styleName(st), menuX + 6, ry + 6, withAlpha(rowColor, rowT));
             }
         }
 
@@ -644,12 +678,15 @@ public class MapScreen extends Screen {
         drawButton(g, 8, 8, cw, cfg,
                 hoverAmount("config", mouseX >= 8 && mouseX <= 8 + cw && mouseY >= 8 && mouseY <= 28),
                 true);
+        if (configPressT > 0.01f) {
+            g.fill(8, 8, 8 + cw, 28, withAlpha(COL_ACCENT, configPressT * 0.45f));
+        }
     }
 
     private void drawRenderDistanceBox(GuiGraphics g) {
         var player = Minecraft.getInstance().player;
         MapData data = MapData.INSTANCE;
-        if (player == null || !data.isReady()) return;
+        if (player == null || data.getMapWidth() <= 0) return;
         double dist = Minecraft.getInstance().options.renderDistance().get() * 16.0;
         double px = player.getX();
         double pz = player.getZ();
@@ -704,13 +741,13 @@ public class MapScreen extends Screen {
     private void drawLodWarning(GuiGraphics g, int mouseX, int mouseY) {
         DialogBox box = dialogBox();
         g.fill(0, 0, width, height, 0x99000000);
-        g.fill(box.x(), box.y(), box.x() + box.w(), box.y() + box.h(), 0xF014171C);
+        g.fill(box.x(), box.y(), box.x() + box.w(), box.y() + box.h(), COL_PANEL_DIALOG);
         g.fill(box.x(), box.y(), box.x() + box.w(), box.y() + 1, COL_BORDER);
         g.drawCenteredString(font, Component.translatable("voxymap.ui.lodWarning.title"),
                 width / 2, box.y() + 10, COL_WARN);
         int ty = box.y() + 10 + font.lineHeight + 8;
         for (FormattedCharSequence line : box.lines()) {
-            g.drawString(font, line, width / 2 - font.width(line) / 2, ty, COL_TEXT, false);
+            g.drawString(font, line, width / 2 - font.width(line) / 2, ty, COL_TEXT);
             ty += font.lineHeight;
         }
         drawDialogButton(g, box.firstBtnX(), box.btnY(), box.btnW(), box.btnH(),
@@ -723,7 +760,10 @@ public class MapScreen extends Screen {
     private void drawDialogButton(GuiGraphics g, int x, int y, int w, int h, Component label, int accent, int mouseX, int mouseY) {
         boolean hovered = mouseX >= x && mouseX <= x + w && mouseY >= y && mouseY <= y + h;
         float hov = hoverAmount("dialog:" + label.getString(), hovered);
-        g.fill(x, y, x + w, y + h, lerpColor(COL_PANEL, COL_PANEL_HOVER, hov));
+        g.fill(x, y, x + w, y + h, COL_PANEL);
+        if (hov > 0.01f) {
+            g.fill(x, y, x + w, y + h, withAlpha(COL_ROW_HOVER, hov));
+        }
         g.fill(x, y, x + w, y + 1, lerpColor(accent, 0xFFFFFFFF, hov * 0.3f));
         g.drawCenteredString(font, label, x + w / 2, y + (h - font.lineHeight) / 2 + 1,
                 lerpColor(COL_TEXT, 0xFFFFFFFF, hov));
@@ -780,7 +820,7 @@ public class MapScreen extends Screen {
             labelBlockers.add(new int[]{width / 2 - w / 2 - 6, height - 22, width / 2 + w / 2 + 6, height - 4});
         }
         // status line plates (same place as drawStatusLine uses)
-        if (MapData.INSTANCE.isLoading() && MapData.INSTANCE.isReady()) {
+        if (MapData.INSTANCE.isLoading() && MapData.INSTANCE.getMapWidth() > 0) {
             int w = font.width(Component.translatable("voxymap.ui.updating", MapData.INSTANCE.getProgress()));
             labelBlockers.add(new int[]{width / 2 - w / 2 - 6, 22, width / 2 + w / 2 + 6, 40});
         }
@@ -799,7 +839,7 @@ public class MapScreen extends Screen {
 
     private void drawBiomeLabels(GuiGraphics g) {
         MapData data = MapData.INSTANCE;
-        if (!data.isReady()) return;
+        if (data.getMapWidth() <= 0) return;
         // two discrete label sizes only on very large GUI scales (4x+); otherwise default size
         double guiScale = Minecraft.getInstance().getWindow().getGuiScale();
         float labelScale = (guiScale >= 4.0 && zoom < 1.0) ? 0.5f : 1.0f;
@@ -825,9 +865,9 @@ public class MapScreen extends Screen {
             if (VoxyMapConfig.BIOME_LABEL_BACKGROUND.get()) {
                 int bx0 = -info.width / 2 - 2;
                 int by0 = -font.lineHeight / 2 - 1;
-                g.fill(bx0, by0, bx0 + info.width + 4, by0 + font.lineHeight + 2, 0x40000000);
+                g.fill(bx0, by0, bx0 + info.width + 4, by0 + font.lineHeight + 2, 0x5514171C);
             }
-            g.drawString(font, info.text, -(int) (info.width / 2f), -font.lineHeight / 2, 0xFFFFFF, true);
+            g.drawString(font, info.text, -(int) (info.width / 2f), -font.lineHeight / 2, 0xFFFFFFFF, true);
             g.pose().popPose();
         }
     }
@@ -903,9 +943,9 @@ public class MapScreen extends Screen {
         int x = Math.min(menuX, width - w - 4);
         int y = Math.min(menuY, height - h - 4);
         float t = contextMenuT;
-        // solid panel, rows fade in one after another
-        g.fill(x, y, x + w, y + h, COL_PANEL);
-        g.fill(x, y, x + w, y + 1, COL_BORDER);
+        // panel fades in with its rows
+        g.fill(x, y, x + w, y + h, withAlpha(COL_PANEL, Math.min(1f, t * 1.35f)));
+        g.fill(x, y, x + w, y + 1, withAlpha(COL_BORDER, Math.min(1f, t * 1.35f)));
         drawMenuRow(g, x, y + 2, w, rowH, copy, mouseX, mouseY, rowAlpha(t, 0));
         if (teleport) {
             drawMenuRow(g, x, y + 2 + rowH, w, rowH, tp, mouseX, mouseY, rowAlpha(t, 1));
@@ -921,10 +961,11 @@ public class MapScreen extends Screen {
 
     private void drawMenuRow(GuiGraphics g, int x, int y, int w, int rowH, Component label, int mouseX, int mouseY, float alpha) {
         boolean hovered = alpha > 0.5f && mouseX >= x && mouseX <= x + w && mouseY >= y && mouseY <= y + rowH;
-        if (hovered) {
-            g.fill(x, y, x + w, y + rowH, withAlpha(COL_ROW_HOVER, alpha));
+        float hov = hoverAmount("ctx:" + label.getString(), hovered);
+        if (hov > 0.01f) {
+            g.fill(x, y, x + w, y + rowH, withAlpha(COL_ROW_HOVER, alpha * hov));
         }
-        g.drawString(font, label, x + 8, y + 6, withAlpha(hovered ? 0xFFFFFFFF : COL_TEXT, alpha), false);
+        g.drawString(font, label, x + 8, y + 6, withAlpha(lerpColor(COL_TEXT, 0xFFFFFFFF, hov), alpha));
     }
 
     private void exportMap() {
@@ -938,17 +979,15 @@ public class MapScreen extends Screen {
             boolean ok = data.exportPng(out);
             mc.execute(() -> {
                 if (mc.player != null) {
-                    mc.player.displayClientMessage(Component.translatable(
-                            ok ? "voxymap.ui.exported" : "voxymap.ui.export_failed", out.toString()), false);
+                    mc.player.sendSystemMessage(Component.translatable(
+                            ok ? "voxymap.ui.exported" : "voxymap.ui.export_failed", out.toString()));
                 }
             });
         });
     }
 
     private void openConfig() {
-        var container = net.neoforged.fml.ModList.get().getModContainerById("voxymap");
-        container.ifPresent(mod -> Minecraft.getInstance().setScreen(
-                new net.neoforged.neoforge.client.gui.ConfigurationScreen(mod, this)));
+        Minecraft.getInstance().setScreen(new MapConfigScreen(this));
     }
 
     private boolean inMenu(int mx, int my, int row) {
@@ -967,6 +1006,16 @@ public class MapScreen extends Screen {
 
     @Override
     public void onClose() {
+        // animate first; finishClose() does the real close once the animation ended
+        if (closing) return;
+        closing = true;
+        closeT = 0f;
+    }
+
+    private void finishClose() {
+        if (VoxyMapConfig.REMEMBER_ZOOM.get()) {
+            MapData.INSTANCE.setZoom(zoom);
+        }
         if (VoxyMapConfig.RELEASE_TEXTURES_ON_CLOSE.get()) {
             try {
                 MapData.INSTANCE.releaseTextures();
@@ -1001,6 +1050,7 @@ public class MapScreen extends Screen {
 
     @Override
     public boolean mouseClicked(double mx, double my, int button) {
+        if (closing) return true;
         MapData data = MapData.INSTANCE;
         if (!data.isOverworld()) return true;
         if (lodWarning && button == 0) {
@@ -1074,8 +1124,8 @@ public class MapScreen extends Screen {
                 }
             }
             if (button == 0 && !(mx >= selX2 && mx <= selX2 + selW2 && my >= selY2 && my <= selY2 + 20)) {
+                // just close the dropdown and fall through, so the same click can start dragging
                 styleMenuOpen = false;
-                return true;
             }
         }
         if (button == 0 && mx >= selX2 && mx <= selX2 + selW2 && my >= selY2 && my <= selY2 + 20) {
@@ -1110,6 +1160,7 @@ public class MapScreen extends Screen {
         Component cfg = Component.translatable("voxymap.ui.config");
         int cw = font.width(cfg) + 12;
         if (button == 0 && mx >= 8 && mx <= 8 + cw && my >= 8 && my <= 28) {
+            configPressT = 1f;
             openConfig();
             return true;
         }

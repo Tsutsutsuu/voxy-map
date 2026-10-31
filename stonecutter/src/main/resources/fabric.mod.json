@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "id": "voxymap",
+  "version": "${version}",
+  "name": "Voxy Map",
+  "description": "Fullscreen world map drawn directly from Voxy's LOD storage.",
+  "authors": [
+    "Tsutsutsuu"
+  ],
+  "contact": {
+    "homepage": "https://github.com/Tsutsutsuu/voxy-map",
+    "sources": "https://github.com/Tsutsutsuu/voxy-map",
+    "issues": "https://github.com/Tsutsutsuu/voxy-map/issues"
+  },
+  "license": "MIT",
+  "icon": "icon.png",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "com.voxymap.fabric.VoxyMapFabric"
+    ],
+    "modmenu": [
+      "com.voxymap.fabric.VoxyMapModMenu"
+    ]
+  },
+  "depends": {
+    "fabricloader": ">=0.19.5",
+    "fabric-api": "*",
+    "minecraft": "${mc_compat}",
+    "java": ">=25"
+  },
+  "suggests": {
+    "voxy": "*",
+    "sodium": "*"
+  },
+  "mixins": [
+    "voxymap.mixins.json"
+  ]
+}

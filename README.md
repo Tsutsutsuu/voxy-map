@@ -4,11 +4,11 @@
 
 **[English](#voxy-map)** | [简体中文](#简体中文)
 
-***What you see is what you get*** — the map reaches exactly as far as the world renders: it reads Voxy's level-of-detail data directly, loads no chunks, flies nowhere, and turns the explored world into a full-screen terrain map (a first build takes around 10–20 seconds depending on the explored area; reopening uses the cache and is instant).
+***What you see is what you get*** — the map draws exactly as far as you can see: it reads Voxy's level-of-detail data directly, loads no chunks, generates nothing, and turns the visible world into a full-screen terrain map.
 
-A Minecraft world map mod (mod id `voxymap`). Currently supports **Minecraft 1.21.1 NeoForge**, client-side only; other versions, loaders and dimensions are planned.
+A Minecraft world map mod (mod id `voxymap`), client-side only. Currently supports: **Fabric 26.2, Fabric 26.1.2, NeoForge 1.21.1.**
 
-Best used together with **Voxy SeedGen** — it pre-generates distant terrain from the world seed so the map actually covers the world:
+Best used together with **Voxy SeedGen** — it pre-generates distant terrain from the world seed, so the map can be drawn even where chunks were never really loaded:
 
 - Voxy SeedGen: <https://modrinth.com/mod/voxy-seedgen>
 
@@ -52,26 +52,36 @@ Close-up: contour lines, hillshade, water-depth shading, biome boundaries and la
 - Top-right: a **map scale slider** (1:1 – 1:8, rebuilds on release) and the "Map style" dropdown
 - Render-distance box, cursor coordinates and biome name, right-click menu (copy coordinates / teleport / export PNG)
 - "Config" (top-left), "Render distance" / "Biomes" toggles (bottom-left), "Refresh" (bottom-right)
-- **Every world remembers** its own map scale, palette and overlay toggles
+- **Every world remembers** its own map scale, palette, overlay toggles and zoom
+- Opening/closing the map has a smooth scale animation (time driven, so high frame rates do not speed it up)
 
 **Rendering**
 
 - Six palettes: natural, gradient, GMT, nautical, gradient-turbo, gradient-soft
-- Contour lines, hillshade, water-depth shading, ocean blur, hole filling, optional denoise, adaptive colour ramp
-- Biome boundaries (dashed checkerboard) and biome labels (filtered by area; hidden when a button, menu or text plate would cover them)
+- Contour lines, hillshade, water-depth shading, ocean blur, hole filling, optional denoise, adaptive colour ramp, land ramp stretching
+- Biome boundaries (a 75% / 25% opacity checkerboard) and biome labels (placed at the **centre of the largest inscribed circle** of each region, filtered by area, hidden when a button, menu or text plate would cover them)
+- Unified dark translucent UI: buttons 75%, floating menus 88%, dialogs 90%, info plates 40%, with smooth accent-tint hover animations
+
+**Config screen**
+
+- Fully self-drawn in-game config screen: four grouped tabs, a description for every row, section dividers
+- Toggles, dropdowns and sliders (drag, or click the value and type a number)
+- **Draft mode**: Cancel discards, Apply saves without closing, Done saves and closes, Reset restores the defaults
+- Open/close fade, options fading in one after another on tab switches, animated hover
+- The NeoForge build uses the same self-drawn screen and writes TOML; Fabric writes JSON
 
 **Data and performance**
 
 - Decodes Voxy's LOD storage and merges every level — **no chunk loading**
 - **Pauses world rendering** while the map is open (`skipWorldRender`), so the frame budget goes to the map
-- Automatic refresh when the player moves far; one disk cache per world (`voxymap-cache/`), reopening is instant, at most 5 caches are kept
-- Releases its textures when the map is closed
-
-**Almost everything is configurable** — in game under "Mods → Voxy Map → Config", or in `config/voxymap-client.toml`.
+- Automatic refresh when the player moves far; one cache directory per world `voxymap-cache/<hash>/` (`map.vxm` grid + `color.vxc` rendered colours + `state.properties` UI state)
+- After a restart the first open reuses `color.vxc` and **skips re-rendering**, usually 1–2 s
+- Shows the 1/4-resolution copy first while the big texture is built in the background; closing releases only the big texture and keeps the small one, so reopening is instant
+- The biome mask and labels are also built in the background — enabling the overlay no longer stutters
 
 ## Compatibility
 
-**Languages** — the interface ships in **English** and **简体中文** and follows the game language. Every label is a translation key, so a resource pack can override or add languages; the config screen comments stay bilingual (NeoForge does not translate comments). Biome names come from the game's own language entries, including modded biomes.
+**Languages** — the interface ships in **English, 简体中文, 繁體中文, 日本語, Русский, Deutsch, Français, Español, Português (BR)** (9 languages) and follows the game language. Every label is a translation key, so a resource pack can override or add languages. Biome names come from the game's own language entries, including modded biomes.
 
 **Terrain mods** — the sea level is read from the world (`autoSeaLevel`) and the colour ramp stretches to the world's actual height range (`adaptiveColorRamp`, `landMaxRamp`), so custom terrain generators keep a correct coastline and colour spread instead of being flattened by fixed vanilla heights. The terrain in the screenshots is generated by the Tectonic mod.
 
@@ -79,27 +89,43 @@ Close-up: contour lines, hillshade, water-depth shading, biome boundaries and la
 
 ## Requirements
 
+**Fabric (26.2 / 26.1.2)**
+
+| Dependency | Version | Necessity | Notes |
+| --- | --- | --- | --- |
+| Minecraft | 26.2 or 26.1.2 | Required | Must match the downloaded jar |
+| Fabric Loader | 0.19.5+ | Required | Mod loader |
+| Fabric API | Matching version (26.2: 0.161.0+26.2; 26.1.2: 0.155.3+26.1.2) | Required | Key bindings, lifecycle events, etc. |
+| [Voxy](https://modrinth.com/mod/voxy) | Matching Fabric version | Required | Source of the map data: this mod reads its LOD storage |
+| [Mod Menu](https://modrinth.com/mod/modmenu) | Matching version | Optional | Not needed to play; adds a "Config" entry to the mod list |
+| [Voxy SeedGen](https://modrinth.com/mod/voxy-seedgen) | 0.3+ | Recommended (optional) | Pre-generates distant terrain from the seed; without it the map only covers areas you actually explored |
+
+**NeoForge (1.21.1)**
+
 | Dependency | Version | Necessity | Notes |
 | --- | --- | --- | --- |
 | Minecraft | 1.21.1 | Required | The game itself |
-| NeoForge | 21.1.224+ | Required | Mod loader; Roxy requires 21.1.224+, this project targets 21.1.217 |
-| [Voxy](https://modrinth.com/mod/voxy) | 0.2+ | Required | Source of the map data: this mod reads its LOD storage |
-| [Roxy](https://modrinth.com/mod/roxy) | 0.4+ | Required (not needed when a third-party Voxy port is used) | Bridges the Fabric Voxy onto NeoForge; Voxy does not run without it |
+| NeoForge | 21.1.224+ | Required | Mod loader |
+| [Voxy](https://modrinth.com/mod/voxy) | 0.2+ | Required | Source of the map data |
+| [Roxy](https://modrinth.com/mod/roxy) | 0.4+ | Required (not needed when a third-party Voxy port is used) | Bridges the Fabric Voxy onto NeoForge |
 | Sodium | 0.6.13+ | Required | Rendering dependency of Voxy (declared by Roxy) |
-| [Voxy SeedGen](https://modrinth.com/mod/voxy-seedgen) | 0.3+ | Recommended (optional) | Pre-generates distant terrain from the seed; without it the map only covers areas you actually explored |
+| [Voxy SeedGen](https://modrinth.com/mod/voxy-seedgen) | 0.3+ | Recommended (optional) | Distant terrain pre-generation |
 
-> This is a client-side mod. It relies on Voxy through the Roxy bridge; other third-party Voxy ports are untested.
+> This is a client-side mod; it does not need to be installed on the server.
 
-Tested with: Minecraft 1.21.1 / NeoForge 21.1.265, Voxy 0.2.16-beta (via Roxy 0.4.1), Voxy SeedGen 0.3.1.
+Tested with: Fabric 26.2 / Loader 0.19.5 / Voxy 0.2.19-beta, Fabric 26.1.2 / Loader 0.20.1 / Voxy 0.2.18-beta, NeoForge 21.1.265 / Voxy 0.2.16-beta (via Roxy 0.4.1); all three also ran Voxy SeedGen 0.3.1.
 
 ## Installation
 
-1. Install Minecraft 1.21.1 and NeoForge 21.1.224+
-2. Install the prerequisites: Voxy, Roxy, Sodium (plus SeedGen, recommended)
-3. Download `voxy-map-x.y.z.jar` from [Releases](https://github.com/Tsutsutsuu/voxy-map/releases) and drop it into the instance's `mods` folder
+1. Install Minecraft and the loader for your platform (Fabric 26.2 / 26.1.2, or NeoForge 1.21.1)
+2. Install the prerequisites from the tables above (Fabric: Fabric API + Voxy; NeoForge: Voxy, Roxy, Sodium)
+3. Download the matching jar from [Releases](https://github.com/Tsutsutsuu/voxy-map/releases) and drop it into the instance's `mods` folder:
+   - `voxy-map-x.y.z+26.2+fabric.jar` (Fabric 26.2)
+   - `voxy-map-x.y.z+26.1.2+fabric.jar` (Fabric 26.1.2)
+   - `voxy-map-x.y.z+1.21.1+neoforge.jar` (NeoForge 1.21.1)
 4. Launch the game and press **N**
 
-The first open reads Voxy's storage and renders — around 10–20 seconds depending on the explored area; after that it reuses the disk cache and opens instantly.
+The first open reads Voxy's storage and renders — around 10–20 s depending on the explored area (the result is written to `color.vxc`). After a restart it only reads the cache, usually **1–2 s**; opening and closing the map inside the same game session is instant.
 
 ## Controls
 
@@ -119,36 +145,43 @@ The "Map scale" slider in the top-right only changes the readout while dragging;
 
 "Teleport" in the right-click menu requires OP permission (can be disabled in the config); "Export PNG" saves the current map to `voxymap-exports/` in the instance folder.
 
+**Config screen**: `Esc`, `Cancel` and `Done` return to the map (they never close it); `Reset` restores the defaults without saving; only `Apply` / `Done` write the config.
+
 ## Configuration
 
-Every option has a bilingual comment, grouped into `refresh` / `data` / `rendering` / `ui`; edit them in the in-game config screen or directly in `config/voxymap-client.toml`. Common options:
+Every option can be changed in the self-drawn in-game config screen (Fabric: "Config" in Mod Menu or the top-left button on the map; NeoForge: "Config" in the mod list or the map button), or by editing the file directly:
+
+- Fabric: `config/voxymap-client.json`
+- NeoForge: `config/voxymap-client.toml`
+
+Options are grouped into `refresh` / `data` / `rendering` / `ui`. Common ones:
 
 | Option | Group | Default | Description |
 | --- | --- | --- | --- |
+| `autoRefresh` / `refreshDistanceChunks` | refresh | `true` / 128 | Refresh once the player moved this many chunks |
+| `initialRefreshDelayMinutes` | refresh | 3 | Refresh this many minutes after joining (gives SeedGen time) |
 | `mapScale` | data | 2 | Map scale 1–8 (1:1 sharpest and slowest, 1:8 coarsest and fastest) |
 | `maxLodLevel` | data | 4 | Highest Voxy LOD level to merge (0–4) |
 | `cacheKeepCount` | data | 5 | How many world caches to keep (1–100) |
 | `autoSeaLevel` / `seaLevelOverride` | data | `true` / 63 | Read the sea level from the world / manual sea level |
 | `defaultStyle` | rendering | `current` | Default palette for new worlds |
-| `defaultZoom` | rendering | 0.5 | Initial zoom when opening the map |
-| `autoRefresh` / `refreshDistanceChunks` | refresh | `true` / 128 | Refresh once the player moved this many chunks |
-| `initialRefreshDelayMinutes` | refresh | 3 | Refresh this many minutes after joining (gives SeedGen time) |
-| `drawContours` / `contourDensity` | rendering | `true` / 12 | Contours on/off and their density |
+| `defaultZoom` / `rememberZoom` | rendering | 0.5 / `true` | Default map zoom / remember the zoom when the map is closed |
+| `drawContours` / `contourDensity` / `minContourArea` | rendering | `true` / 12 / 40 | Contours on/off, density and minimum fragment area |
 | `drawHillshade` / `drawWaterDepth` | rendering | `true` / `true` | Hillshade / water-depth shading |
-| `waterBlur` / `waterBlurRadius` | rendering | `true` / 8 | Ocean blur |
-| `fillHoles` / `denoise` | rendering | `true` / `false` | Hole filling / denoise |
-| `showBiomes` / `biomeLabelMinArea` | rendering | `false` / 600 | Biome overlay / minimum label area (pixels) |
-| `biomeLabelBackground` | rendering | `true` | Biome label background (75% transparent) |
-| `skipWorldRender` | rendering | `true` | Skip world rendering while the map is open (disable on conflicts) |
-| `releaseTexturesOnClose` | rendering | `true` | Release textures when the map is closed |
-| `debugEnabled` | ui | `true` | Debug panel on `Q` in the map screen |
+| `adaptiveColorRamp` / `landMaxRamp` | rendering | `true` / `false` | Adaptive ramp / stretch the land ramp to the map's highest point |
+| `waterBlur` / `waterBlurRadius` / `waterBlurPasses` | rendering | `true` / 8 / 3 | Ocean blur |
+| `denoise` / `fillHoles` | rendering | `false` / `true` | Denoise / hole filling |
+| `showBiomes` / `biomeLabelMinArea` / `biomeLabelBackground` | rendering | `false` / 600 / `true` | Biome overlay, label minimum area, label background |
+| `arrowStyle` / `showRenderDistance` | rendering | `clean` / `true` | Arrow style / render-distance box |
+| `releaseTexturesOnClose` / `skipWorldRender` | rendering | `true` / `true` | Release the big texture on close / skip world rendering while the map is open |
+| `showCoordinates` / `showHint` / `teleportEnabled` / `debugEnabled` | ui | `true` / `true` / `true` / `true` | Coordinates, controls hint, teleport menu, debug panel |
 
-> The config holds the values for **new worlds**. Each world's palette, overlay toggles and map scale are stored separately in `voxymap-cache/<hash>.state` and restored when that world is opened.
+> The config only sets the defaults for **new worlds**. Each world's palette, overlay toggles, map scale and zoom are stored separately in `voxymap-cache/<hash>/state.properties` and restored when that world is opened.
 
 ## FAQ
 
 **The map is empty or only partially filled?**
-Make sure Voxy and Roxy are installed. Without SeedGen the map only covers the data Voxy has already stored, so unexplored edges stay empty — that is expected.
+Make sure the prerequisites are installed (Fabric needs Voxy; NeoForge needs Voxy + Roxy). Without SeedGen the map only covers the data Voxy has already stored, so unexplored edges stay black — that is "no data", not a rendering error.
 
 **Opening the map in the Nether / End only shows a single line?**
 Only the overworld is drawn for now: the Nether and the End neither build nor refresh, the screen just shows "Only overworld LOD maps are supported for now".
@@ -156,17 +189,17 @@ Only the overworld is drawn for now: the Nether and the End neither build nor re
 **The data changed but the map is still old?**
 The disk cache does not invalidate automatically. Click "**Refresh**" in the bottom-right corner to rebuild it.
 
-**Biomes differ from what F3 shows?**
-With `mapScale = 2` one pixel represents 2×2 blocks, so borders may take the neighbouring column. Set the scale to 1:1 and refresh for a sharper map.
+**Why does the first open after a restart take a few seconds?**
+It rebuilds the textures from `map.vxm` (the grid) and `color.vxc` (the rendered colours). If you changed the palette, the scale or a rendering option, the cache is invalidated and it re-renders once (about 5–8 s); after that, restarts are fast again.
 
-**Memory / VRAM usage seems high?**
-Texture size grows with the explored area. Closing the map releases textures by default (`releaseTexturesOnClose`).
+**Does closing the map still hold VRAM?**
+With `releaseTexturesOnClose` (default on) closing the map releases the big texture but keeps the 1/4-resolution copy (~5 MB), so reopening shows the picture immediately while the big texture is rebuilt in the background. To clear everything, turn the option off, open and close the map once, or just restart the game.
 
-**My style / scale / overlays were not kept after switching worlds?**
-Those settings are per world: the same save remembers them, a new world starts from the config defaults.
+**My style / scale / overlays / zoom were not kept after switching worlds?**
+Those settings are per world: the same save remembers them, a new world starts from the config defaults (`defaultStyle`, `defaultZoom`, ...).
 
 **Frame rate feels low?**
-Make sure `skipWorldRender = true` (the default) — it skips the world render pass while the map is open. Turning off the biome overlay or using a coarser map scale also helps.
+Make sure `skipWorldRender = true` (the default); turning off the biome overlay or using a coarser map scale also helps.
 
 ## Known limitations
 
@@ -175,30 +208,45 @@ Make sure `skipWorldRender = true` (the default) — it skips the world render p
 
 ## Building from source
 
-Requires JDK 21:
+The Fabric builds (26.2 / 26.1.2) use a single Stonecutter project and need **JDK 25**:
+
+```bash
+cd stonecutter
+./gradlew build
+```
+
+On Windows use `.\gradlew.bat build`. Output:
+
+```
+stonecutter/versions/26.2-fabric/build/libs/voxy-map-0.1.0+26.2+fabric.jar
+stonecutter/versions/26.1-fabric/build/libs/voxy-map-0.1.0+26.1.2+fabric.jar
+```
+
+The NeoForge build needs **JDK 21**:
 
 ```bash
 cd mod
 ./gradlew build
 ```
 
-On Windows use `.\gradlew.bat build`. Output: `mod/build/libs/voxy-map-0.1.0+1.21.1.jar`.
-
-> Behind a restrictive network Gradle needs a proxy; see `systemProp.https.proxyHost` / `proxyPort` in `mod/gradle.properties`.
+Output: `mod/build/libs/voxy-map-0.1.0+1.21.1+neoforge.jar`.
 
 <details>
 <summary>Repository layout and offline POC tools (developers)</summary>
 
 ```
 voxy-map/
-├── mod/                  Gradle project (sources + build scripts)
+├── stonecutter/          Fabric multi-version project (Stonecutter)
+│   ├── src/main/java/com/voxymap/   shared sources (26.2 primary, 26.1 adapted by replacements)
+│   ├── src/main/resources/          resources (lang x9, textures, icon, voxymap.mixins.json)
+│   ├── settings.gradle.kts / stonecutter.gradle.kts / stonecutter.properties.toml
+│   └── versions/<node>/build/libs/  per-version output
+├── mod/                  NeoForge 1.21.1 project
 │   ├── src/main/java/com/voxymap/   mod sources (incl. mixin/)
 │   ├── src/main/resources/          resources (lang, textures, icon, voxymap.mixins.json)
-│   ├── build.gradle / gradle.properties / settings.gradle
-│   ├── gradle/ gradlew gradlew.bat  build wrapper
-│   └── libs/            rocksdbjni compile-only dependency (not bundled)
+│   └── build.gradle / gradle.properties / settings.gradle
 ├── poc/                  offline tools (single-file Java, POC and data diagnostics)
-└── img/                 README screenshots (raw/ holds local originals, not committed)
+└── img/                  README screenshots (raw/ holds local originals, not committed)
 ```
 
 The tools in `poc/` read an instance's Voxy storage offline to render/diagnose the map. They need rocksdbjni 10.2.1 and zstd-jni 1.5.6-3:
@@ -213,19 +261,20 @@ java -Xmx8G -cp "<rocksdbjni>;<zstd-jni>;out" VoxyMapPoC10 "<storage dir>" out.p
 
 MIT — see [LICENSE](LICENSE).
 
-Icon and screenshots © Tsutsutsu; map data comes from Voxy and its SeedGen add-on.
+Icon and screenshots © Tsutsutsuu; map data comes from Voxy and its SeedGen add-on.
 
 ---
 
 # 简体中文
 
+
 [English](#voxy-map) | **[简体中文](#简体中文)**
 
-*****所见即所得*** —— 能看多远，地图就画多远：直接读取 Voxy 的 LOD 数据，不加载区块、不跑图，把探索过的世界变成一张全屏地形图（首次生成视范围约 10–20 秒，之后走缓存秒开）。**
+*****所见即所得*** —— 能看多远，地图就画多远：直接读取 Voxy 的 LOD 数据，不加载区块、不跑图，能看到的世界变成一张全屏地形图。**
 
-一个 Minecraft 世界地图模组（mod id `voxymap`）。目前支持 **Minecraft 1.21.1 NeoForge**，纯客户端；其他版本/加载器与维度支持计划中。
+一个 Minecraft 世界地图模组（mod id `voxymap`），纯客户端。当前支持：**Fabric 26.2、Fabric 26.1.2、NeoForge 1.21.1。**
 
-配合 **Voxy SeedGen** 使用效果最佳 —— 它按世界种子预生成远景数据，地图才完整：
+配合 **Voxy SeedGen** 使用效果最佳 —— 它按世界种子预生成远景数据，就算没有真正加载过区块，也能绘制地图：
 
 - Voxy SeedGen：<https://modrinth.com/mod/voxy-seedgen>
 
@@ -261,7 +310,6 @@ Icon and screenshots © Tsutsutsu; map data comes from Voxy and its SeedGen add-
 
 ![全屏地图近景（原版地形）](img/zh_2.png)
 
-
 ## 功能概览
 
 **地图与交互**
@@ -270,26 +318,36 @@ Icon and screenshots © Tsutsutsu; map data comes from Voxy and its SeedGen add-
 - 右上角：**地图比例滑块**（1:1 – 1:8，松开鼠标才重建）与「地图样式」下拉
 - 视距框、鼠标坐标与群系显示，右键菜单（复制坐标 / 传送 / 导出 PNG）
 - 左上「配置」，左下「视距」「群系」开关，右下「刷新」
-- **每个世界独立记忆**地图比例、配色与叠加层开关
+- **每个世界独立记忆**地图比例、配色、叠加层开关与缩放
+- 打开/关闭地图有平滑缩放动画（时间驱动，高帧率下也不会变快）
 
 **渲染**
 
 - 6 种配色：自然地形、渐变、GMT、航海、彩虹渐变、柔和渐变
-- 等高线、山体阴影、水深着色、海洋模糊、补洞、可选去噪、自适应色带
-- 群系边界（棋盘格虚线）+ 群系名标签（按面积过滤；被按钮、菜单或文字框压住时自动隐藏）
+- 等高线、山体阴影、水深着色、海洋模糊、补洞、可选去噪、自适应色带、陆地色带拉伸
+- 群系边界（75% / 25% 不透明度交替的棋盘格虚线）+ 群系名标签（位置取区域**最大内切圆中心**，按面积过滤，被按钮/菜单/文字框压住时自动隐藏）
+- 界面统一深色半透明风格：按钮 75%、浮层菜单 88%、对话框 90%、信息条 40%，悬停统一为平滑的强调色叠加动画
+
+**配置界面**
+
+- 游戏内自绘配置界面：四个分组标签页、每项带说明文字、分割线
+- 开关、下拉、滑块（可拖动或点击输入数值）三种控件
+- **草稿模式**：取消 = 丢弃、应用 = 保存不关闭、完成 = 保存并关闭、重置 = 恢复默认
+- 打开/关闭淡入淡出、标签页切换时选项**依次淡入**、悬停动画
+- NeoForge 侧同样使用自绘界面，配置写入 TOML；Fabric 写入 JSON
 
 **数据与性能**
 
 - 直接解码 Voxy 的 LOD 存储并合并所有层级，**不加载区块**
 - 打开地图时**暂停世界渲染**（`skipWorldRender`），把帧率留给地图
-- 玩家移动较远时自动刷新；每个存档一份磁盘缓存（`voxymap-cache/`），重开秒进，最多保留 5 份
-- 关闭地图自动释放纹理
-
-**几乎都能配置** —— 游戏内「模组 → Voxy Map → 配置」，或 `config/voxymap-client.toml`。
+- 玩家移动较远时自动刷新；每个存档独立缓存目录 `voxymap-cache/<hash>/`（`map.vxm` 网格 + `color.vxc` 渲染结果 + `state.properties` 界面状态）
+- 重启后首次打开会读取 `color.vxc` **跳过重新渲染**，通常 1–2 秒出图
+- 打开时先显示 1/4 分辨率小图，大图在后台构建；关闭只释放大图、保留小图，重开瞬间可见
+- 群系掩码与标签也在后台生成，打开叠加层不再卡顿
 
 ## 兼容性
 
-**语言** —— 界面提供 **English** 与 **简体中文**，跟随游戏语言切换。所有文本都是翻译键，资源包可以覆盖或新增语言；配置界面的注释固定中英双语（NeoForge 不翻译注释）。群系名使用游戏自带的语言条目，模组群系同样适用。
+**语言** —— 界面提供 **English、简体中文、繁體中文、日本語、Русский、Deutsch、Français、Español、Português (BR)** 共 9 种，跟随游戏语言自动切换。所有文本都是翻译键，资源包可以覆盖或新增语言。群系名使用游戏自带的语言条目，模组群系同样适用。
 
 **地形模组** —— 海平面从世界读取（`autoSeaLevel`），色带按世界实际高度范围拉伸（`adaptiveColorRamp`、`landMaxRamp`），所以自定义地形也能有正确的海岸线和配色层次，不会被原版固定高度压扁。截图里使用的就是 Tectonic 模组生成的地形。
 
@@ -297,27 +355,43 @@ Icon and screenshots © Tsutsutsu; map data comes from Voxy and its SeedGen add-
 
 ## 前置要求
 
+**Fabric（26.2 / 26.1.2）**
+
+| 依赖 | 版本 | 必需性 | 说明 |
+| --- | --- | --- | --- |
+| Minecraft | 26.2 或 26.1.2 | 必需 | 与下载的 jar 版本一致 |
+| Fabric Loader | 0.19.5+ | 必需 | 加载器 |
+| Fabric API | 对应版本（26.2：0.161.0+26.2；26.1.2：0.155.3+26.1.2） | 必需 | 提供按键、生命周期等 API |
+| [Voxy](https://modrinth.com/mod/voxy) | 对应 Fabric 版本 | 必需 | 提供地图数据：本模组直接读取它的 LOD 存储 |
+| [Mod Menu](https://modrinth.com/mod/modmenu) | 对应版本 | 可选 | 不装也能玩，装了会在模组列表里多一个「配置」入口 |
+| [Voxy SeedGen](https://modrinth.com/mod/voxy-seedgen) | 0.3+ | 推荐（可选） | 按世界种子预生成远景；不装时地图只覆盖你实际探索过的区域 |
+
+**NeoForge（1.21.1）**
+
 | 依赖 | 版本 | 必需性 | 说明 |
 | --- | --- | --- | --- |
 | Minecraft | 1.21.1 | 必需 | 游戏本体 |
-| NeoForge | 21.1.224+ | 必需 | 模组加载器；Roxy 要求 21.1.224+，本项目编译目标为 21.1.217 |
-| [Voxy](https://modrinth.com/mod/voxy) | 0.2+ | 必需 | 提供地图数据：本模组直接读取它的 LOD 存储 |
-| [Roxy](https://modrinth.com/mod/roxy) | 0.4+ | 必需/使用第三方移植Voxy时不必须 | 把 Fabric 版 Voxy 加载到 NeoForge 的桥接层，没有它 Voxy 无法运行 |
-| Sodium | 0.6.13+ | 必需 | Voxy 的渲染依赖（由 Roxy 的依赖声明要求） |
-| [Voxy SeedGen](https://modrinth.com/mod/voxy-seedgen) | 0.3+ | 推荐（可选） | 按世界种子预生成远景；不装时地图只覆盖你实际探索过的区域 |
+| NeoForge | 21.1.224+ | 必需 | 模组加载器 |
+| [Voxy](https://modrinth.com/mod/voxy) | 0.2+ | 必需 | 提供地图数据 |
+| [Roxy](https://modrinth.com/mod/roxy) | 0.4+ | 必需（使用第三方 Voxy 移植时不必须） | 把 Fabric 版 Voxy 接到 NeoForge 的桥接层 |
+| Sodium | 0.6.13+ | 必需 | Voxy 的渲染依赖（由 Roxy 声明） |
+| [Voxy SeedGen](https://modrinth.com/mod/voxy-seedgen) | 0.3+ | 推荐（可选） | 远景预生成 |
 
-> 本模组为纯客户端模组。依赖的是使用 Roxy 翻译层的 Voxy，其他第三方 Voxy 移植版本未测试。
+> 本模组为纯客户端模组，不需要安装在服务端。
 
-已验证环境：Minecraft 1.21.1 / NeoForge 21.1.265、Voxy 0.2.16-beta（经 Roxy 0.4.1 桥接）、Voxy SeedGen 0.3.1。
+已验证环境：Fabric 26.2 / Loader 0.19.5 / Voxy 0.2.19-beta、Fabric 26.1.2 / Loader 0.20.1 / Voxy 0.2.18-beta、NeoForge 21.1.265 / Voxy 0.2.16-beta（经 Roxy 0.4.1）；三个环境都装了 Voxy SeedGen 0.3.1。
 
 ## 安装
 
-1. 安装 Minecraft 1.21.1 与 NeoForge 21.1.224+
-2. 安装前置：Voxy、Roxy、Sodium（推荐再加 SeedGen）
-3. 从 [Releases](https://github.com/Tsutsutsuu/voxy-map/releases) 下载 `voxy-map-x.y.z.jar`，放进实例的 `mods` 目录
+1. 按平台安装 Minecraft 与加载器（Fabric 26.2 / 26.1.2，或 NeoForge 1.21.1）
+2. 安装上表里的前置模组（Fabric 必装 Fabric API 与 Voxy；NeoForge 必装 Voxy、Roxy、Sodium）
+3. 从 [Releases](https://github.com/Tsutsutsuu/voxy-map/releases) 下载对应 jar，放进实例的 `mods` 目录：
+   - `voxy-map-x.y.z+26.2+fabric.jar`（Fabric 26.2）
+   - `voxy-map-x.y.z+26.1.2+fabric.jar`（Fabric 26.1.2）
+   - `voxy-map-x.y.z+1.21.1+neoforge.jar`（NeoForge 1.21.1）
 4. 启动游戏，按 **N** 打开地图
 
-首次打开需要读取 Voxy 存储并渲染，视探索范围约 **10–20 秒**；之后复用磁盘缓存，秒开。
+首次打开需要读取 Voxy 存储并渲染，视探索范围约 **10–20 秒**（渲染结果会写入 `color.vxc`）；之后再启动游戏重开只需读取缓存，通常 **1–2 秒**。同一个游戏进程内反复开关地图则是瞬时的。
 
 ## 使用
 
@@ -337,36 +411,43 @@ Icon and screenshots © Tsutsutsu; map data comes from Voxy and its SeedGen add-
 
 右键菜单里的「传送」需要 OP 权限（可在配置里关闭），「导出 PNG」把当前地图保存到实例的 `voxymap-exports/` 目录。
 
+**配置界面**里：`Esc`、`取消`、`完成` 都会回到地图（不会退出地图）；`重置` 恢复默认值但不保存；只有 `应用` / `完成` 才会写入配置。
+
 ## 配置
 
-所有选项都带中英双语注释，分 `refresh` / `data` / `rendering` / `ui` 四组，可在游戏内配置界面修改，或直接编辑实例的 `config/voxymap-client.toml`。常用项：
+所有选项都能在游戏内自绘配置界面里修改（Fabric 在 Mod Menu 的「配置」或地图左上角「配置」；NeoForge 在模组列表的「配置」或地图左上角），也可以直接编辑配置文件：
+
+- Fabric：`config/voxymap-client.json`
+- NeoForge：`config/voxymap-client.toml`
+
+配置分四组：`refresh` / `data` / `rendering` / `ui`。常用项：
 
 | 配置项 | 分组 | 默认 | 说明 |
 | --- | --- | --- | --- |
+| `autoRefresh` / `refreshDistanceChunks` | refresh | `true` / 128 | 玩家移动超过 N 区块后自动刷新 |
+| `initialRefreshDelayMinutes` | refresh | 3 | 进世界多少分钟后刷新一次（留时间给 SeedGen） |
 | `mapScale` | data | 2 | 地图比例 1–8（1:1 最精细也最慢，1:8 最粗最快） |
 | `maxLodLevel` | data | 4 | 合并的最高 Voxy LOD 层级（0–4） |
 | `cacheKeepCount` | data | 5 | 保留的存档缓存数量（1–100） |
 | `autoSeaLevel` / `seaLevelOverride` | data | `true` / 63 | 从世界读取海平面 / 手动海平面 |
 | `defaultStyle` | rendering | `current` | 新世界的默认配色 |
-| `defaultZoom` | rendering | 0.5 | 打开地图时的缩放 |
-| `autoRefresh` / `refreshDistanceChunks` | refresh | `true` / 128 | 玩家移动超过 N 区块后自动刷新 |
-| `initialRefreshDelayMinutes` | refresh | 3 | 进世界多少分钟后刷新一次（留时间给 SeedGen） |
-| `drawContours` / `contourDensity` | rendering | `true` / 12 | 等高线开关与密度 |
+| `defaultZoom` / `rememberZoom` | rendering | 0.5 / `true` | 默认地图缩放 / 是否在关闭时记住当前缩放 |
+| `drawContours` / `contourDensity` / `minContourArea` | rendering | `true` / 12 / 40 | 等高线开关、密度与最小碎片面积 |
 | `drawHillshade` / `drawWaterDepth` | rendering | `true` / `true` | 山体阴影 / 水深着色 |
-| `waterBlur` / `waterBlurRadius` | rendering | `true` / 8 | 海洋模糊 |
-| `fillHoles` / `denoise` | rendering | `true` / `false` | 补洞 / 去噪 |
-| `showBiomes` / `biomeLabelMinArea` | rendering | `false` / 600 | 群系叠加开关 / 标签最小面积（像素） |
-| `biomeLabelBackground` | rendering | `true` | 群系标签背景（透明度 75%） |
-| `skipWorldRender` | rendering | `true` | 打开地图时跳过世界渲染（与其他模组冲突时可关） |
-| `releaseTexturesOnClose` | rendering | `true` | 关闭地图时释放纹理 |
-| `debugEnabled` | ui | `true` | 地图内按 Q 打开调试面板 |
+| `adaptiveColorRamp` / `landMaxRamp` | rendering | `true` / `false` | 色带自适应 / 陆地色带按地图最高点拉伸 |
+| `waterBlur` / `waterBlurRadius` / `waterBlurPasses` | rendering | `true` / 8 / 3 | 海洋模糊 |
+| `denoise` / `fillHoles` | rendering | `false` / `true` | 去噪 / 补洞 |
+| `showBiomes` / `biomeLabelMinArea` / `biomeLabelBackground` | rendering | `false` / 600 / `true` | 群系叠加、标签最小面积、标签背景 |
+| `arrowStyle` / `showRenderDistance` | rendering | `clean` / `true` | 箭头样式 / 视距框 |
+| `releaseTexturesOnClose` / `skipWorldRender` | rendering | `true` / `true` | 关闭释放大图纹理 / 打开地图时跳过世界渲染 |
+| `showCoordinates` / `showHint` / `teleportEnabled` / `debugEnabled` | ui | `true` / `true` / `true` / `true` | 坐标、操作提示、传送菜单、调试面板 |
 
-> 配置里的默认值是"新世界的默认值"；每个世界的样式、叠加层开关与地图比例另外保存在 `voxymap-cache/<hash>.state`，进存档时自动恢复。
+> 配置里的默认值只对**新世界**生效；每个世界的样式、叠加层开关、地图比例与缩放另外保存在 `voxymap-cache/<hash>/state.properties`，进存档时自动恢复。
 
 ## 常见问题
 
 **地图打不开 / 只显示一部分？**
-先确认 Voxy 与 Roxy 已装好。没有 SeedGen 时，地图只覆盖 Voxy 已存下的数据，边缘未探索的区域是空的，属于正常现象。
+先确认前置模组已装好（Fabric 需要 Voxy；NeoForge 需要 Voxy + Roxy）。没有 SeedGen 时，地图只覆盖 Voxy 已存下的数据，边缘未探索的区域是黑色的——这是「没有数据」，不是渲染错误。
 
 **在下界 / 末地打开地图只看到一行提示？**
 目前只绘制主世界：下界/末地不建图、不刷新，打开地图会显示「目前只支持绘制主世界 LOD 地图」。
@@ -374,17 +455,17 @@ Icon and screenshots © Tsutsutsu; map data comes from Voxy and its SeedGen add-
 **数据更新了但地图还是旧的？**
 磁盘缓存不会自动失效，点右下角「**刷新**」强制重建即可。
 
-**群系和 F3 显示的不一致？**
-地图比例 `mapScale = 2` 时一个像素代表 2×2 方块，边界处可能取到相邻列。把比例调到 1:1 并刷新会更精细。
+**重启游戏后第一次开图要等几秒？**
+首次会从 `map.vxm`（网格）和 `color.vxc`（渲染结果）重建纹理；如果改了配色、比例或渲染选项，缓存失效，会重新渲染一次（约 5–8 秒），之后再次启动就快了。
 
-**内存/显存占用偏高？**
-纹理尺寸随探索范围增长；关闭地图默认会释放纹理（`releaseTexturesOnClose`），也可以打开群系叠加前先确认显存充足。
+**关闭地图后显存还会占用？**
+`releaseTexturesOnClose`（默认开启）在关闭地图时只释放大图纹理、保留 1/4 小图（约 5 MB），这样重开时能立刻显示画面、大图在后台重建。想要彻底清空可以把这一项关掉后再开一次地图，或直接重启游戏。
 
-**样式 / 比例 / 叠加层换存档后没保留？**
-这些设置按世界保存：同一个存档内会记住，新世界使用配置里的默认值。
+**样式 / 比例 / 叠加层 / 缩放换存档后没保留？**
+这些设置按世界保存：同一个存档内会记住，新世界使用配置里的默认值（`defaultStyle`、`defaultZoom` 等）。
 
 **帧率偏低？**
-确认 `skipWorldRender = true`（默认开启），它会在打开地图时跳过世界渲染；另外关闭群系叠加、调粗地图比例都能减轻负担。
+确认 `skipWorldRender = true`（默认开启）；另外关闭群系叠加、调粗地图比例都能减轻负担。
 
 ## 已知限制
 
@@ -393,30 +474,45 @@ Icon and screenshots © Tsutsutsu; map data comes from Voxy and its SeedGen add-
 
 ## 从源码构建
 
-需要 JDK 21：
+Fabric 版本（26.2 / 26.1.2）用 Stonecutter 单工程多版本，需要 **JDK 25**：
+
+```bash
+cd stonecutter
+./gradlew build
+```
+
+Windows 用 `.\gradlew.bat build`。产物：
+
+```
+stonecutter/versions/26.2-fabric/build/libs/voxy-map-0.1.0+26.2+fabric.jar
+stonecutter/versions/26.1-fabric/build/libs/voxy-map-0.1.0+26.1.2+fabric.jar
+```
+
+NeoForge 版本需要 **JDK 21**：
 
 ```bash
 cd mod
 ./gradlew build
 ```
 
-Windows 用 `.\gradlew.bat build`。产物：`mod/build/libs/voxy-map-0.1.0+1.21.1.jar`。
-
-> 国内网络下 Gradle 需要代理，可参考 `mod/gradle.properties` 里的 `systemProp.https.proxyHost` / `proxyPort` 配置。
+产物：`mod/build/libs/voxy-map-0.1.0+1.21.1+neoforge.jar`。
 
 <details>
 <summary>仓库结构与离线 POC 工具（开发者）</summary>
 
 ```
 voxy-map/
-├── mod/                  Gradle 工程（源码 + 构建脚本）
+├── stonecutter/          Fabric 多版本工程（Stonecutter）
+│   ├── src/main/java/com/voxymap/   共享源码（26.2 为主，26.1 由 replacements 适配）
+│   ├── src/main/resources/          资源（lang ×9、纹理、图标、voxymap.mixins.json）
+│   ├── settings.gradle.kts / stonecutter.gradle.kts / stonecutter.properties.toml
+│   └── versions/<node>/build/libs/  每版本产物
+├── mod/                  NeoForge 1.21.1 工程
 │   ├── src/main/java/com/voxymap/   模组源码（含 mixin/）
 │   ├── src/main/resources/          资源（lang、纹理、图标、voxymap.mixins.json）
-│   ├── build.gradle / gradle.properties / settings.gradle
-│   ├── gradle/ gradlew gradlew.bat  构建包装器
-│   └── libs/            rocksdbjni 编译依赖（compileOnly，运行时不打包）
-├── poc/                 离线验证工具（Java 单文件，POC 与数据诊断）
-└── img/                 README 截图（raw/ 为本地原图，不入库）
+│   └── build.gradle / gradle.properties / settings.gradle
+├── poc/                  离线验证工具（Java 单文件，POC 与数据诊断）
+└── img/                  README 截图（raw/ 为本地原图，不入库）
 ```
 
 `poc/` 里的工具可以直接读取实例的 Voxy storage 离线渲染/诊断地图，编译运行需要 rocksdbjni 10.2.1 与 zstd-jni 1.5.6-3：
@@ -431,4 +527,4 @@ java -Xmx8G -cp "<rocksdbjni>;<zstd-jni>;out" VoxyMapPoC10 "<storage目录>" out
 
 本项目采用 **MIT** 许可证，详见 [LICENSE](LICENSE)。
 
-图标与截图 © Tsutsutsu；地图数据来自 Voxy 与其 SeedGen 插件。
+图标与截图 © Tsutsutsuu；地图数据来自 Voxy 与其 SeedGen 插件。

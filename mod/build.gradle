@@ -55,6 +55,8 @@ processResources {
 
 // Metadata for the jar itself (mod lists, launchers and release tooling read these)
 jar {
+    // voxy-map-0.1.0+1.21.1+neoforge.jar — the loader is part of the file name
+    archiveFileName = "${project.archives_base_name}-${project.version}+neoforge.jar"
     manifest {
         attributes(
                 'Implementation-Title': 'Voxy Map',

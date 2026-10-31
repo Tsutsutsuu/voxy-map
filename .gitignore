@@ -14,6 +14,7 @@ desktop.ini
 # local tool outputs (keep mod resource textures)
 *.png
 !mod/src/main/resources/**/*.png
+!stonecutter/src/main/resources/**/*.png
 # README screenshots (jpg + localized png); raw source files stay local
 !img/*.png
 img/raw/

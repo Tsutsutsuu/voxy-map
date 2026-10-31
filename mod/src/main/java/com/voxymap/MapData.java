@@ -97,9 +97,13 @@ public final class MapData {
     private volatile boolean renderDistanceOverlay;
     /** Per-world map scale: 1..8 blocks per pixel (1:1 to 1:8). */
     private volatile int mapScale = 2;
+    /** Per-world zoom level, restored on reopen when rememberZoom is on. */
+    private volatile double zoom = 0.5;
     private volatile ResourceLocation textureId;
     private volatile ResourceLocation textureIdSmall;
     private volatile int[] lastRgb;
+    private final AtomicBoolean buildingTextures = new AtomicBoolean();
+    private final AtomicBoolean buildingBiome = new AtomicBoolean();
     private volatile int lastW, lastH;
     private volatile boolean loading;
     private volatile boolean styleChanging;
@@ -304,6 +308,15 @@ public final class MapData {
     }
 
     /** Blocks per pixel for the current world: 1 (1:1, sharpest) .. 8 (1:8, coarsest). */
+    public double getZoom() {
+        return zoom;
+    }
+
+    public void setZoom(double value) {
+        zoom = Math.max(0.04, Math.min(8.0, value));
+        saveUiState();
+    }
+
     public int getMapScale() {
         return mapScale;
     }
@@ -319,7 +332,7 @@ public final class MapData {
 
     /** Sidecar file next to the world cache: {@code <storage-hash>.state}. */
     private static Path uiStateFile(Path storage) {
-        return cacheDir().resolve(storage.getParent().getFileName() + ".state");
+        return worldCacheDir(storage).resolve("state.properties");
     }
 
     /**
@@ -355,6 +368,15 @@ public final class MapData {
                         } catch (NumberFormatException ignored) {
                         }
                     }
+                    String savedZoom = props.getProperty("zoom");
+                    if (savedZoom != null) {
+                        try {
+                            zoom = Math.max(0.04, Math.min(8.0, Double.parseDouble(savedZoom.trim())));
+                        } catch (NumberFormatException ignored) {
+                        }
+                    } else {
+                        zoom = VoxyMapConfig.DEFAULT_ZOOM.get();
+                    }
                     return;
                 } catch (Throwable ignored) {
                 }
@@ -374,6 +396,7 @@ public final class MapData {
         biomeOverlay = VoxyMapConfig.SHOW_BIOMES.get();
         renderDistanceOverlay = VoxyMapConfig.SHOW_RENDER_DISTANCE.get();
         mapScale = VoxyMapConfig.MAP_SCALE.get();
+        zoom = VoxyMapConfig.DEFAULT_ZOOM.get();
     }
 
     private void saveUiState() {
@@ -485,7 +508,7 @@ public final class MapData {
         lastW = 0;
         lastH = 0;
         biomeLabelsFlat = new int[0];
-        releaseTextures();
+        releaseAllTextures();
     }
 
     // ------------------------------------------------------------- update
@@ -569,7 +592,13 @@ public final class MapData {
                 final Snapshot target = built;
                 final String renderStyle = style;
                 progress = 82;
-                int[] rgb = renderColor(target, renderStyle, sea);
+                // the rendered colour cache turns a ~5 s re-render after a restart into a file read
+                int[] cachedRgb = forceReload ? null : loadColorCache(storage, target, renderStyle, sea);
+                if (cachedRgb == null) {
+                    cachedRgb = renderColor(target, renderStyle, sea);
+                    saveColorCache(storage, target, renderStyle, sea, cachedRgb);
+                }
+                final int[] rgb = cachedRgb;
                 progress = 95;
                 handedToMainThread = true;
                 mc.execute(() -> {
@@ -706,13 +735,85 @@ public final class MapData {
         return Minecraft.getInstance().gameDirectory.toPath().resolve("voxymap-cache");
     }
 
+    /** One directory per world storage: map.vxm + color.vxc + state.properties. */
+    private static Path worldCacheDir(Path storage) {
+        return cacheDir().resolve(storage.getParent().getFileName().toString());
+    }
+
     private static Path cacheFile(Path storage) {
-        return cacheDir().resolve(storage.getParent().getFileName() + ".vxm");
+        return worldCacheDir(storage).resolve("map.vxm");
+    }
+
+    /** Rendered colour cache: skips renderColor on the next launch. */
+    private static Path colorCacheFile(Path storage) {
+        return worldCacheDir(storage).resolve("color.vxc");
+    }
+
+    private static final int COLOR_CACHE_MAGIC = 0x56584331;
+    private static final int COLOR_CACHE_VERSION = 1;
+
+    /** everything that changes the produced pixels; changing any of these invalidates the .vxc */
+    private static String colorCacheKey(String style, int sea) {
+        return style + "|" + sea + "|" + VoxyMapConfig.MAP_SCALE.get() + "|"
+                + VoxyMapConfig.DRAW_CONTOURS.get() + "|" + VoxyMapConfig.MIN_CONTOUR_AREA.get() + "|"
+                + VoxyMapConfig.CONTOUR_DENSITY.get() + "|" + VoxyMapConfig.DRAW_HILLSHADE.get() + "|"
+                + VoxyMapConfig.DRAW_WATER_DEPTH.get() + "|" + VoxyMapConfig.ADAPTIVE_COLOR_RAMP.get() + "|"
+                + VoxyMapConfig.MIN_MAX_RAMP.get() + "|" + VoxyMapConfig.WATER_BLUR.get() + "|"
+                + VoxyMapConfig.WATER_BLUR_RADIUS.get() + "|" + VoxyMapConfig.WATER_BLUR_PASSES.get() + "|"
+                + VoxyMapConfig.DENOISE.get() + "|" + VoxyMapConfig.FILL_HOLES.get();
+    }
+
+    private static int[] loadColorCache(Path storage, Snapshot s, String style, int sea) {
+        try {
+            Path file = colorCacheFile(storage);
+            if (!Files.isRegularFile(file)) return null;
+            byte[] data = Files.readAllBytes(file);
+            DataInputStream in = new DataInputStream(new ByteArrayInputStream(data));
+            if (in.readInt() != COLOR_CACHE_MAGIC || in.readInt() != COLOR_CACHE_VERSION) return null;
+            int w = in.readInt();
+            int h = in.readInt();
+            int pb = in.readInt();
+            String key = in.readUTF();
+            int clen = in.readInt();
+            if (w != s.width || h != s.height || pb != s.pixelBlocks
+                    || !key.equals(colorCacheKey(style, sea))) return null;
+            byte[] comp = new byte[clen];
+            in.readFully(comp);
+            byte[] raw = Zstd.decompress(comp, w * h * 4);
+            if (raw == null || raw.length != w * h * 4) return null;
+            int[] rgb = new int[w * h];
+            ByteBuffer.wrap(raw).order(ByteOrder.LITTLE_ENDIAN).asIntBuffer().get(rgb);
+            return rgb;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    private static void saveColorCache(Path storage, Snapshot s, String style, int sea, int[] rgb) {
+        try {
+            Files.createDirectories(worldCacheDir(storage));
+            ByteBuffer bb = ByteBuffer.allocate(rgb.length * 4).order(ByteOrder.LITTLE_ENDIAN);
+            bb.asIntBuffer().put(rgb);
+            byte[] comp = Zstd.compress(bb.array(), 3);
+            ByteArrayOutputStream bos = new ByteArrayOutputStream();
+            DataOutputStream out = new DataOutputStream(bos);
+            out.writeInt(COLOR_CACHE_MAGIC);
+            out.writeInt(COLOR_CACHE_VERSION);
+            out.writeInt(s.width);
+            out.writeInt(s.height);
+            out.writeInt(s.pixelBlocks);
+            out.writeUTF(colorCacheKey(style, sea));
+            out.writeInt(comp.length);
+            out.write(comp);
+            out.flush();
+            Files.write(colorCacheFile(storage), bos.toByteArray());
+        } catch (Throwable ignored) {
+        }
     }
 
     private static void saveCache(Path storage, Snapshot s) {
         try {
-            Files.createDirectories(cacheDir());
+            Files.createDirectories(worldCacheDir(storage));
             ByteArrayOutputStream bos = new ByteArrayOutputStream();
             DataOutputStream dos = new DataOutputStream(bos);
             dos.writeInt(0x56584D31);
@@ -754,53 +855,55 @@ public final class MapData {
         try {
             Path dir = cacheDir();
             if (!Files.isDirectory(dir)) return;
-            List<Path> caches = new ArrayList<>();
-            List<Path> leftovers = new ArrayList<>();
-            List<Path> states = new ArrayList<>();
+            // the old flat layout kept map.vxm/.vxc/.state in the cache root: drop those strays
             try (var stream = Files.list(dir)) {
                 for (Path p : (Iterable<Path>) stream::iterator) {
+                    if (!Files.isRegularFile(p)) continue;
                     String name = p.getFileName().toString();
-                    if (name.endsWith(".vxm")) {
-                        caches.add(p);
-                    } else if (name.endsWith(".state")) {
-                        states.add(p);
-                    } else if (name.endsWith(".tmp")) {
-                        leftovers.add(p);
+                    if (name.endsWith(".vxm") || name.endsWith(".vxc") || name.endsWith(".state")
+                            || name.endsWith(".tmp")) {
+                        try {
+                            Files.deleteIfExists(p);
+                        } catch (Exception ignored) {
+                        }
                     }
                 }
             }
-            for (Path p : leftovers) {
-                try {
-                    Files.deleteIfExists(p);
-                } catch (Exception ignored) {
+            List<Path> worlds = new ArrayList<>();
+            try (var stream = Files.list(dir)) {
+                for (Path p : (Iterable<Path>) stream::iterator) {
+                    if (Files.isDirectory(p)) worlds.add(p);
                 }
             }
-            if (caches.size() <= keep) return;
-            caches.sort((a, b) -> {
-                try {
-                    return Files.getLastModifiedTime(b).compareTo(Files.getLastModifiedTime(a));
-                } catch (Exception e) {
-                    return 0;
-                }
-            });
-            for (int i = keep; i < caches.size(); i++) {
-                try {
-                    Files.deleteIfExists(caches.get(i));
-                } catch (Exception ignored) {
-                }
-            }
-            // sidecars only make sense next to their cache
-            for (Path state : states) {
-                String name = state.getFileName().toString();
-                String cacheName = name.substring(0, name.length() - ".state".length()) + ".vxm";
-                if (!Files.isRegularFile(state.resolveSibling(cacheName))) {
-                    try {
-                        Files.deleteIfExists(state);
-                    } catch (Exception ignored) {
-                    }
-                }
+            if (worlds.size() <= keep) return;
+            worlds.sort((a, b) -> Long.compare(lastCacheWrite(b), lastCacheWrite(a)));
+            for (int i = keep; i < worlds.size(); i++) {
+                deleteTree(worlds.get(i));
             }
         } catch (Throwable ignored) {
+        }
+    }
+
+    private static long lastCacheWrite(Path worldDir) {
+        try {
+            Path f = worldDir.resolve("map.vxm");
+            return Files.isRegularFile(f) ? Files.getLastModifiedTime(f).toMillis() : 0L;
+        } catch (Exception e) {
+            return 0L;
+        }
+    }
+
+    private static void deleteTree(Path dir) {
+        try (var stream = Files.walk(dir)) {
+            List<Path> all = new ArrayList<>();
+            for (Path p : (Iterable<Path>) stream::iterator) all.add(p);
+            for (int i = all.size() - 1; i >= 0; i--) {
+                try {
+                    Files.deleteIfExists(all.get(i));
+                } catch (Exception ignored) {
+                }
+            }
+        } catch (Exception ignored) {
         }
     }
 
@@ -1195,68 +1298,132 @@ public final class MapData {
     /** Release all map textures (frees ~560 MB of VRAM when the map is closed). */
     public void releaseTextures() {
         Minecraft mc = Minecraft.getInstance();
-        ResourceLocation[] ids = {textureId, textureIdSmall, biomeTextureId};
-        for (ResourceLocation id : ids) {
-            if (id == null) continue;
-            var texture = mc.getTextureManager().getTexture(id);
-            if (texture != null) texture.close();
-            mc.getTextureManager().release(id);
-        }
+        // the 1/4 texture is kept on purpose: ~5 MB of VRAM, and reopening shows it instantly
+        releaseOne(mc, textureId);
         textureId = null;
-        textureIdSmall = null;
+        releaseOne(mc, biomeTextureId);
         biomeTextureId = null;
         biomeImage = null;
     }
 
-    /** Re-upload the main textures from the last rendered grid (fast, used when reopening). */
+    /** Releases every texture including the small one (used when the world changes). */
+    public void releaseAllTextures() {
+        releaseTextures();
+        releaseOne(Minecraft.getInstance(), textureIdSmall);
+        textureIdSmall = null;
+    }
+
+    private static void releaseOne(Minecraft mc, ResourceLocation id) {
+        if (id == null) return;
+        var texture = mc.getTextureManager().getTexture(id);
+        if (texture != null) texture.close();
+        mc.getTextureManager().release(id);
+    }
+
+    /** Re-upload the main textures from the last rendered grid (background, used when reopening). */
     public void ensureMainTextures() {
+        if (textureId != null) return;
         Snapshot s = snap;
         int[] rgb = lastRgb;
         if (s == null || rgb == null) return;
-        if (textureId == null) uploadTexture(s, rgb);
+        buildTexturesAsync(s, rgb);
     }
 
-    /** Build and upload the 1-bit biome boundary mask (only when the overlay is on). */
+    /** Build the 1-bit biome boundary mask + labels on the loader thread (overlay only). */
     public void ensureBiomeTexture() {
+        if (biomeTextureId != null) return;
         Snapshot s = snap;
-        if (s == null || biomeTextureId != null) return;
-        if (biomeImage == null) generateBiomeOverlay(s, new int[s.width * s.height]);
-        NativeImage bimg = biomeImage;
-        if (bimg == null) return;
-        DynamicTexture btex = new DynamicTexture(bimg);
-        btex.setFilter(false, false);
-        ResourceLocation bid = ResourceLocation.fromNamespaceAndPath("voxymap", "map_biomes");
-        Minecraft.getInstance().getTextureManager().register(bid, btex);
-        biomeTextureId = bid;
+        if (s == null) return;
+        if (!buildingBiome.compareAndSet(false, true)) return;
+        final int biomainEpoch = worldEpoch;
+        loader.submit(() -> {
+            try {
+                NativeImage bimg = buildBiomeImage(s);
+                int[] labels = biomeLabelsFlat.length > 0 ? biomeLabelsFlat : buildBiomeLabels(s);
+                Minecraft.getInstance().execute(() -> {
+                    try {
+                        if (biomainEpoch != worldEpoch) {
+                            bimg.close();
+                            return;
+                        }
+                        biomeImage = bimg;
+                        biomeLabelsFlat = labels;
+                        DynamicTexture btex = new DynamicTexture(bimg);
+                        btex.setFilter(false, false);
+                        ResourceLocation bid = ResourceLocation.fromNamespaceAndPath("voxymap", "map_biomes");
+                        Minecraft.getInstance().getTextureManager().register(bid, btex);
+                        biomeTextureId = bid;
+                    } finally {
+                        buildingBiome.set(false);
+                    }
+                });
+            } catch (Throwable t) {
+                buildingBiome.set(false);
+                t.printStackTrace();
+            }
+        });
     }
 
     private void uploadTexture(Snapshot s, int[] rgb) {
         lastRgb = rgb;
         lastW = s.width;
         lastH = s.height;
-        NativeImage img = new NativeImage(s.width, s.height, false);
+        Minecraft mc = Minecraft.getInstance();
+        // a rebuilt grid invalidates the biome overlay: drop it so ensureBiomeTexture regenerates it
+        releaseOne(mc, biomeTextureId);
+        biomeTextureId = null;
+        biomeImage = null;
+        buildTexturesAsync(s, rgb);
+    }
+
+    /** Builds the NativeImages on the loader thread; only the GPU upload runs on the main thread. */
+    private void buildTexturesAsync(Snapshot s, int[] rgb) {
+        if (!buildingTextures.compareAndSet(false, true)) return;
+        final int epoch = worldEpoch;
+        loader.submit(() -> {
+            try {
+                NativeImage big = buildImage(rgb, s.width, s.height);
+                NativeImage small = buildSmall(rgb, s.width, s.height);
+                Minecraft.getInstance().execute(() -> {
+                    try {
+                        if (epoch == worldEpoch) {
+                            registerTextures(big, small);
+                        } else {
+                            big.close();
+                            small.close();
+                        }
+                    } finally {
+                        buildingTextures.set(false);
+                    }
+                });
+            } catch (Throwable t) {
+                buildingTextures.set(false);
+                t.printStackTrace();
+            }
+        });
+    }
+
+    private static NativeImage buildImage(int[] rgb, int w, int h) {
+        NativeImage img = new NativeImage(w, h, false);
         for (int i = 0; i < rgb.length; i++) {
             int c = rgb[i];
             int r = (c >> 16) & 0xFF, g = (c >> 8) & 0xFF, b = c & 0xFF;
-            img.setPixelRGBA(i % s.width, i / s.width, 0xFF000000 | (b << 16) | (g << 8) | r);
+            img.setPixelRGBA(i % w, i / w, 0xFF000000 | (b << 16) | (g << 8) | r);
         }
-        DynamicTexture tex = new DynamicTexture(img);
-        tex.setFilter(false, false);
-        ResourceLocation id = ResourceLocation.fromNamespaceAndPath("voxymap", "map");
-        Minecraft.getInstance().getTextureManager().register(id, tex);
-        textureId = id;
+        return img;
+    }
 
-        // 1/4 resolution box-filtered copy: used when zoomed far out so bilinear
-        // sampling has no visible aliasing (poor man's mipmap)
-        int sw = Math.max(1, s.width / 4);
-        int sh = Math.max(1, s.height / 4);
+    /** 1/4 resolution box-filtered copy: used when zoomed far out so bilinear sampling has no aliasing. */
+    private static NativeImage buildSmall(int[] rgb, int w, int h) {
+        int sw = Math.max(1, w / 4);
+        int sh = Math.max(1, h / 4);
         NativeImage small = new NativeImage(sw, sh, false);
         for (int z = 0; z < sh; z++) {
             for (int x = 0; x < sw; x++) {
                 int r = 0, g = 0, b = 0, n = 0;
                 for (int dz = 0; dz < 4; dz++) {
                     for (int dx = 0; dx < 4; dx++) {
-                        int i = (z * 4 + dz) * s.width + (x * 4 + dx);
+                        int i = (z * 4 + dz) * w + (x * 4 + dx);
                         if (i >= rgb.length) continue;
                         int c = rgb[i];
                         r += (c >> 16) & 0xFF;
@@ -1269,27 +1436,29 @@ public final class MapData {
                 small.setPixelRGBA(x, z, 0xFF000000 | ((b / n) << 16) | ((g / n) << 8) | (r / n));
             }
         }
-        DynamicTexture stex = new DynamicTexture(small);
-        stex.setFilter(true, false);
-        ResourceLocation sid = ResourceLocation.fromNamespaceAndPath("voxymap", "map_small");
-        Minecraft.getInstance().getTextureManager().register(sid, stex);
-        textureIdSmall = sid;
+        return small;
+    }
 
-        NativeImage bimg = biomeImage;
-        if (bimg != null) {
-            DynamicTexture btex = new DynamicTexture(bimg);
-            btex.setFilter(false, false);
-            ResourceLocation bid = ResourceLocation.fromNamespaceAndPath("voxymap", "map_biomes");
-            Minecraft.getInstance().getTextureManager().register(bid, btex);
-            biomeTextureId = bid;
+    private void registerTextures(NativeImage big, NativeImage small) {
+        if (big != null) {
+            DynamicTexture tex = new DynamicTexture(big);
+            tex.setFilter(false, false);
+            ResourceLocation id = ResourceLocation.fromNamespaceAndPath("voxymap", "map");
+            Minecraft.getInstance().getTextureManager().register(id, tex);
+            textureId = id;
+        }
+        if (small != null) {
+            DynamicTexture stex = new DynamicTexture(small);
+            stex.setFilter(true, false);
+            ResourceLocation sid = ResourceLocation.fromNamespaceAndPath("voxymap", "map_small");
+            Minecraft.getInstance().getTextureManager().register(sid, stex);
+            textureIdSmall = sid;
         }
     }
 
-    private void generateBiomeOverlay(Snapshot s, int[] scratch) {
+    private static NativeImage buildBiomeImage(Snapshot s) {
+        int w = s.width, h = s.height;
         long[] pixels = s.pixels;
-        int w = s.width;
-        int h = s.height;
-        // biome boundary image + label positions
         int[] biomeArr = new int[w * h];
         for (int i = 0; i < w * h; i++) {
             if (pixels[i] != LONG_EMPTY) biomeArr[i] = (int) ((pixels[i] >>> 53) & 0x1FF);
@@ -1308,52 +1477,106 @@ public final class MapData {
                         || (z < h - 1 && pixels[i2 + w] != LONG_EMPTY && biomeArr[i2] != biomeArr[i2 + w]);
             }
         }
-        // 2) 1px checkerboard mask on the border: half of the border pixels stay, so the dashes read
-        // as a regular dotted line no matter which way the border runs.
+        // 2) keep every border pixel, but alternate full and 25% opacity in a 1px checkerboard:
+        // the line stays continuous while the dashes still read at any zoom/direction.
         for (int z = 0; z < h; z++) {
             for (int x = 0; x < w; x++) {
                 int i2 = z * w + x;
-                if (edge[i2] && ((x + z) & 1) == 0) {
-                    bimg.setPixelRGBA(x, z, 0xC0FFFF00);
-                }
+                if (!edge[i2]) continue;
+                int alpha = ((x + z) & 1) == 0 ? 0xC0 : 0x40;
+                bimg.setPixelRGBA(x, z, (alpha << 24) | 0xFFFF00);
             }
         }
-        biomeImage = bimg;
+        return bimg;
+    }
+
+    private static int[] buildBiomeLabels(Snapshot s) {
+        int w = s.width, h = s.height;
+        long[] pixels = s.pixels;
+        int n = w * h;
+        int[] biomeArr = new int[n];
+        for (int i = 0; i < n; i++) {
+            if (pixels[i] != LONG_EMPTY) biomeArr[i] = (int) ((pixels[i] >>> 53) & 0x1FF);
+        }
+        boolean[] visited = new boolean[n];
+        boolean[] inRegion = new boolean[n];
+        int[] dist = new int[n];
+        int[] bq = new int[n];
         int[] labels = new int[3 * 128];
         int labelCount = 0;
-        {
-            boolean[] visited = new boolean[w * h];
-            int[] bq = scratch;
-            int minArea = Math.max(1, VoxyMapConfig.BIOME_LABEL_MIN_AREA.get());
-            for (int st = 0; st < w * h; st++) {
-                if (visited[st] || pixels[st] == LONG_EMPTY) continue;
-                int qh = 0, qt = 0;
-                bq[qt++] = st;
-                visited[st] = true;
-                long sumX = 0, sumZ = 0;
-                int b0 = biomeArr[st];
-                while (qh < qt) {
-                    int ii = bq[qh++];
-                    int x = ii % w, z = ii / w;
-                    sumX += x;
-                    sumZ += z;
-                    if (x > 0) { int j = ii - 1; if (!visited[j] && pixels[j] != LONG_EMPTY && biomeArr[j] == b0) { visited[j] = true; bq[qt++] = j; } }
-                    if (x < w - 1) { int j = ii + 1; if (!visited[j] && pixels[j] != LONG_EMPTY && biomeArr[j] == b0) { visited[j] = true; bq[qt++] = j; } }
-                    if (z > 0) { int j = ii - w; if (!visited[j] && pixels[j] != LONG_EMPTY && biomeArr[j] == b0) { visited[j] = true; bq[qt++] = j; } }
-                    if (z < h - 1) { int j = ii + w; if (!visited[j] && pixels[j] != LONG_EMPTY && biomeArr[j] == b0) { visited[j] = true; bq[qt++] = j; } }
+        int minArea = Math.max(1, VoxyMapConfig.BIOME_LABEL_MIN_AREA.get());
+        for (int st = 0; st < n; st++) {
+            if (visited[st] || pixels[st] == LONG_EMPTY) continue;
+            int qh = 0, qt = 0;
+            bq[qt++] = st;
+            visited[st] = true;
+            inRegion[st] = true;
+            int b0 = biomeArr[st];
+            while (qh < qt) {
+                int ii = bq[qh++];
+                int x = ii % w, z = ii / w;
+                if (x > 0) { int j = ii - 1; if (!visited[j] && pixels[j] != LONG_EMPTY && biomeArr[j] == b0) { visited[j] = true; inRegion[j] = true; bq[qt++] = j; } }
+                if (x < w - 1) { int j = ii + 1; if (!visited[j] && pixels[j] != LONG_EMPTY && biomeArr[j] == b0) { visited[j] = true; inRegion[j] = true; bq[qt++] = j; } }
+                if (z > 0) { int j = ii - w; if (!visited[j] && pixels[j] != LONG_EMPTY && biomeArr[j] == b0) { visited[j] = true; inRegion[j] = true; bq[qt++] = j; } }
+                if (z < h - 1) { int j = ii + w; if (!visited[j] && pixels[j] != LONG_EMPTY && biomeArr[j] == b0) { visited[j] = true; inRegion[j] = true; bq[qt++] = j; } }
+            }
+            if (qt >= minArea) {
+                int point = pickLabelPoint(bq, qt, inRegion, dist, w, h);
+                if ((labelCount + 1) * 3 > labels.length) {
+                    labels = Arrays.copyOf(labels, Math.max(labels.length * 2, (labelCount + 1) * 3));
                 }
-                if (qt >= minArea) {
-                    if ((labelCount + 1) * 3 > labels.length) {
-                        labels = Arrays.copyOf(labels, Math.max(labels.length * 2, (labelCount + 1) * 3));
-                    }
-                    labels[labelCount * 3] = (int) (sumX / qt);
-                    labels[labelCount * 3 + 1] = (int) (sumZ / qt);
-                    labels[labelCount * 3 + 2] = b0;
-                    labelCount++;
-                }
+                labels[labelCount * 3] = point % w;
+                labels[labelCount * 3 + 1] = point / w;
+                labels[labelCount * 3 + 2] = b0;
+                labelCount++;
+            }
+            // reset the per-region scratch so the next region starts blank
+            for (int k = 0; k < qt; k++) {
+                inRegion[bq[k]] = false;
+                dist[bq[k]] = 0;
             }
         }
-        biomeLabelsFlat = Arrays.copyOf(labels, labelCount * 3);
+        return Arrays.copyOf(labels, labelCount * 3);
+    }
+
+    /**
+     * Label anchor inside the region: the pixel farthest from the region border (centre of the
+     * largest inscribed circle). Keeps labels inside concave shapes where a plain centroid can fall
+     * outside the biome.
+     */
+    private static int pickLabelPoint(int[] region, int count, boolean[] inRegion, int[] dist, int w, int h) {
+        int[] queue = new int[count];
+        int qh = 0, qt = 0;
+        for (int k = 0; k < count; k++) {
+            int p = region[k];
+            int x = p % w, z = p / w;
+            boolean border = x == 0 || z == 0 || x == w - 1 || z == h - 1
+                    || !inRegion[p - 1] || !inRegion[p + 1] || !inRegion[p - w] || !inRegion[p + w];
+            if (border) {
+                dist[p] = 1;
+                queue[qt++] = p;
+            } else {
+                dist[p] = Integer.MAX_VALUE;
+            }
+        }
+        while (qh < qt) {
+            int p = queue[qh++];
+            int nd = dist[p] + 1;
+            int x = p % w, z = p / w;
+            if (x > 0 && inRegion[p - 1] && dist[p - 1] == Integer.MAX_VALUE) { dist[p - 1] = nd; queue[qt++] = p - 1; }
+            if (x < w - 1 && inRegion[p + 1] && dist[p + 1] == Integer.MAX_VALUE) { dist[p + 1] = nd; queue[qt++] = p + 1; }
+            if (z > 0 && inRegion[p - w] && dist[p - w] == Integer.MAX_VALUE) { dist[p - w] = nd; queue[qt++] = p - w; }
+            if (z < h - 1 && inRegion[p + w] && dist[p + w] == Integer.MAX_VALUE) { dist[p + w] = nd; queue[qt++] = p + w; }
+        }
+        int best = region[0], bestD = -1;
+        for (int k = 0; k < count; k++) {
+            int p = region[k];
+            if (dist[p] > bestD) {
+                bestD = dist[p];
+                best = p;
+            }
+        }
+        return best;
     }
 
     private int[] renderColor(Snapshot s, String style, int sea) {
@@ -1776,7 +1999,8 @@ public final class MapData {
                 out[idx] = 0xFF000000 | (r << 16) | (g << 8) | b;
             }
         }
-        generateBiomeOverlay(s, scratch);
+        // labels only: the boundary mask is built asynchronously when the overlay is enabled
+        biomeLabelsFlat = buildBiomeLabels(s);
         progress = 95;
 
         return out;

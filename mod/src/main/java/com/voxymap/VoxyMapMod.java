@@ -10,6 +10,7 @@ import net.neoforged.fml.config.ModConfig;
 import net.neoforged.neoforge.client.event.ClientPlayerNetworkEvent;
 import net.neoforged.neoforge.client.event.ClientTickEvent;
 import net.neoforged.neoforge.client.event.RegisterKeyMappingsEvent;
+import net.neoforged.neoforge.client.gui.IConfigScreenFactory;
 import net.neoforged.neoforge.common.NeoForge;
 import org.lwjgl.glfw.GLFW;
 
@@ -23,6 +24,9 @@ public class VoxyMapMod {
     public VoxyMapMod(IEventBus modBus, ModContainer container) {
         modBus.addListener(this::registerKeys);
         container.registerConfig(ModConfig.Type.CLIENT, VoxyMapConfig.SPEC);
+        // "config" button on the mod list entry opens our own config screen (same UI as Fabric)
+        container.registerExtensionPoint(IConfigScreenFactory.class,
+                (modContainer, parent) -> new MapConfigScreen(parent));
         NeoForge.EVENT_BUS.addListener(this::clientTick);
         NeoForge.EVENT_BUS.addListener(this::onLogin);
     }
