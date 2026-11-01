@@ -54,7 +54,8 @@ public final class MapData {
     private static final int NO_SOLID = -32768;
     private static final int NO_TOP = -32767;
     private static final int BATCH = 2000;
-    private static final int CACHE_VERSION = 6;
+    /** 7: buried-slice columns now keep their solid-height fallback instead of becoming empty. */
+    private static final int CACHE_VERSION = 7;
     private static final int FALLBACK_SEA = 63;
 
     private static final class Snapshot {
@@ -1485,7 +1486,9 @@ public final class MapData {
                         curTop = top;
                         curWater = topFluid;
                         curLvl = lvl;
-                        curFloor = NO_SOLID;
+                        // keep the decoded solid height: a buried slice's ceiling is the only height
+                        // information available when no section above holds the real surface
+                        curFloor = floor;
                         curBiome = biomeHere;
                     } else {
                         curTop = (int) ((prev >>> 24) & 0xFFFF) - 32768;
@@ -1494,7 +1497,7 @@ public final class MapData {
                         curFloor = (int) (prev & 0xFFFF) - 32768;
                         curBiome = (int) ((prev >>> 53) & 0x1FF);
                         if (top != NO_TOP) {
-                            boolean accept = curTop == NO_TOP
+                            boolean accept = (curTop == NO_TOP && (curFloor == NO_SOLID || top >= curFloor))
                                     || lvl < curLvl
                                     || (lvl == curLvl && top > curTop)
                                     // a much higher coarse-level top means the fine level only has
@@ -1516,6 +1519,14 @@ public final class MapData {
                         curLvl = lvl;
                         curBiome = biomeHere;
                     }
+                    // A "buried slice" (solid up to the section ceiling) still knows a lower bound for
+                    // the surface. Keep the highest such solid: when the surface happens to lie in the
+                    // section's top row and no section above has data, dropping the column produced the
+                    // black ring of holes on high mountains.
+                    if (curTop == NO_TOP && solidHere != Integer.MIN_VALUE
+                            && (curFloor == NO_SOLID || solidHere > curFloor)) {
+                        curFloor = solidHere;
+                    }
                     // floor: highest solid anywhere in the column (sea floor for water)
                     if (curTop != NO_TOP && solidHere != Integer.MIN_VALUE && solidHere < curTop) {
                         int prevF = curFloor == NO_SOLID ? Integer.MIN_VALUE : curFloor;
@@ -1526,6 +1537,8 @@ public final class MapData {
                     long out = ((long) (curTop + 32768)) << 24 | ((curFloor + 32768) & 0xFFFF);
                     if (curWater) out |= (1L << 52);
                     out |= ((long) curBiome) << 53;
+                    // the merge above compares LOD levels; the level must be stored for later sections
+                    out |= ((long) curLvl) << 48;
                     pixels[idx] = out;
                 }
             }
@@ -2078,7 +2091,7 @@ public final class MapData {
      * Depends only on the terrain + contour settings, never on the colour theme.
      */
     private boolean[] computeContour(int[] topArr, boolean[] isWaterPix, int[] smoothTop,
-                                     int lo, int hi, int w, int h, boolean enabled) {
+                                     int lo, int hi, int w, int h, boolean enabled, int[] stackBuf) {
         boolean[] contour = new boolean[w * h];
         if (!enabled) return contour;
         int contourInterval = Math.max(10, (hi - lo) / Math.max(1, VoxyMapConfig.CONTOUR_DENSITY.get()));
@@ -2110,7 +2123,7 @@ public final class MapData {
             }
         });
         boolean[] seen = new boolean[w * h];
-        int[] stack = new int[w * h];
+        int[] stack = (stackBuf != null && stackBuf.length >= w * h) ? stackBuf : new int[w * h];
         for (int start = 0; start < w * h; start++) {
             if (!contourRaw[start] || seen[start]) continue;
             int qh = 0, qt = 0;
@@ -2146,7 +2159,7 @@ public final class MapData {
         if (tc.contourEnabled != wantContour) {
             // contour visibility is a separate switch: rebuild only the mask, keep the terrain cache
             tc.contour = computeContour(tc.topArr, tc.isWaterPix, tc.smoothTop, tc.lo, tc.hi,
-                    tc.width, tc.height, wantContour);
+                    tc.width, tc.height, wantContour, null);
             tc.contourEnabled = wantContour;
         }
         int[] rgb = colorize(tc, style);
@@ -2416,7 +2429,9 @@ public final class MapData {
         }
         final int coastalK = 6;
         boolean[] coastalBand = new boolean[w * h];
-        int[] q = new int[w * h];
+        // the smoothing scratch buffer is free again: reuse it for the coastal BFS queue instead of
+        // allocating another int[w*h] (that is ~350 MB on this 87M-pixel map)
+        int[] q = scratch;
         int qn = 0;
         for (int i = 0; i < pixels.length; i++) {
             if (topArr[i] == Integer.MIN_VALUE) continue;
@@ -2628,7 +2643,7 @@ public final class MapData {
             }
         }
         boolean drawContours = contourOverride != null ? contourOverride : VoxyMapConfig.DRAW_CONTOURS.get();
-        boolean[] contour = computeContour(topArr, isWaterPix, smoothTop, lo, hi, w, h, drawContours);
+        boolean[] contour = computeContour(topArr, isWaterPix, smoothTop, lo, hi, w, h, drawContours, next);
 
         TerrainCache built = new TerrainCache(s, sea, fp, topArr, smoothTop, smoothFloor,
                 isWaterPix, contour, depthMap, lo, hi, rampLo, rampHi,
