@@ -661,9 +661,7 @@ public class MapScreen extends Screen {
             // reopening the map: restore the saved rotation/zoom and focus the player
             focusX = player != null ? player.getX() : centerX;
             focusZ = player != null ? player.getZ() : centerZ;
-            double fy = data.isWaterAt((int) Math.floor(focusX), (int) Math.floor(focusZ))
-                    ? data.seaLevel() : data.heightAt((int) Math.floor(focusX), (int) Math.floor(focusZ));
-            cam3d.setTarget(focusX, fy, focusZ);
+            cam3d.setTarget(focusX, groundMeshY(focusX, focusZ), focusZ);
             cam3d.yaw = data.getView3dYaw();
             cam3d.pitch = data.getView3dPitch();
             cam3d.distance = data.getView3dDistance();
@@ -671,9 +669,7 @@ public class MapScreen extends Screen {
             // seamless switch: keep the 2D focus, match the 2D scale, look straight down
             focusX = centerX;
             focusZ = centerZ;
-            double fy = data.isWaterAt((int) Math.floor(focusX), (int) Math.floor(focusZ))
-                    ? data.seaLevel() : data.heightAt((int) Math.floor(focusX), (int) Math.floor(focusZ));
-            cam3d.setTarget(focusX, fy, focusZ);
+            cam3d.setTarget(focusX, groundMeshY(focusX, focusZ), focusZ);
             double pb = data.getPixelBlocks();
             double tanHalf = Math.tan(Math.toRadians(fov3d * 0.5));
             double dist = pb * height / (2.0 * Math.max(0.05, zoom) * Math.max(1e-4, tanHalf));
@@ -749,7 +745,7 @@ public class MapScreen extends Screen {
             tx = data.getMinWX() + data.getMapWidth() * (double) data.getPixelBlocks() / 2.0;
             tz = data.getMinWZ() + data.getMapHeight() * (double) data.getPixelBlocks() / 2.0;
         }
-        double ty = data.heightAt((int) Math.floor(tx), (int) Math.floor(tz));
+        double ty = groundMeshY(tx, tz);
         cam3d.setTarget(tx, ty, tz);
         cam3d.distance = 1500f;
         fov3d = VoxyMapConfig.FOV_3D.get();
@@ -1186,8 +1182,8 @@ public class MapScreen extends Screen {
         dy /= dl;
         dz /= dl;
         // first, the camera might already be under the surface (orbiting into a hill)
-        if (ey <= groundYAt(ex, ez) && cam3d.distance < 4.0) {
-            return new double[]{ex, ey, ez};
+        if (ey <= groundMeshY(ex, ez) && cam3d.distance < 4.0) {
+            return new double[]{ex, ey / meshScale(), ez};
         }
         double maxT = Math.max(4000.0, cam3d.distance * 10.0);
         double step = Math.max(1.0, cam3d.distance * 0.003);
@@ -1196,13 +1192,13 @@ public class MapScreen extends Screen {
             double px = ex + dx * t;
             double py = ey + dy * t;
             double pz = ez + dz * t;
-            if (py <= groundYAt(px, pz)) {
+            if (py <= groundMeshY(px, pz)) {
                 // binary refine the crossing
                 double lo = prevT;
                 double hi = t;
                 for (int i = 0; i < 14; i++) {
                     double mid = (lo + hi) * 0.5;
-                    if (ey + dy * mid <= groundYAt(ex + dx * mid, ez + dz * mid)) {
+                    if (ey + dy * mid <= groundMeshY(ex + dx * mid, ez + dz * mid)) {
                         hi = mid;
                     } else {
                         lo = mid;
@@ -1211,6 +1207,7 @@ public class MapScreen extends Screen {
                 double ht = (lo + hi) * 0.5;
                 double hx = ex + dx * ht;
                 double hz = ez + dz * ht;
+                // display the picked point in world blocks, not in the vertically stretched space
                 return new double[]{hx, groundYAt(hx, hz), hz};
             }
             prevT = t;
@@ -1218,12 +1215,22 @@ public class MapScreen extends Screen {
         return null;
     }
 
-    /** Terrain (or water surface) height used by the 3D ray picker. */
+    /** Terrain (or water surface) height used by the 3D ray picker, in world blocks. */
     private double groundYAt(double wx, double wz) {
         MapData d = MapData.INSTANCE;
         int ix = (int) Math.round(wx);
         int iz = (int) Math.round(wz);
         return d.isWaterAt(ix, iz) ? d.seaLevel() : d.heightAt(ix, iz);
+    }
+
+    /** Vertical stretch applied to the mesh: the camera, picking and overlays work in this space. */
+    private static double meshScale() {
+        return Math.max(0.01, VoxyMapConfig.VERTICAL_SCALE_3D.get());
+    }
+
+    /** Terrain/water height in mesh space (world height multiplied by verticalScale3d). */
+    private double groundMeshY(double wx, double wz) {
+        return groundYAt(wx, wz) * meshScale();
     }
 
     /** Layer 4: cursor coordinates and the key hint, above the labels but below the buttons. */
@@ -1483,7 +1490,7 @@ public class MapScreen extends Screen {
         double pz = player.getZ();
         int bx = (int) Math.floor(px);
         int bz = (int) Math.floor(pz);
-        double ground = data.isWaterAt(bx, bz) ? data.seaLevel() : data.heightAt(bx, bz);
+        double ground = groundMeshY(bx, bz);
         double markY = ground + Math.max(0.0, VoxyMapConfig.PLAYER_MARKER_HEIGHT_3D.get());
         org.joml.Matrix4f vp = cam3d.viewProjection((float) width / Math.max(1f, (float) height), fov3d);
         org.joml.Vector3f top = cam3d.worldToScreen(px, markY, pz, vp, width, height);
@@ -1819,7 +1826,7 @@ public class MapScreen extends Screen {
             if (dxh * dxh + dzh * dzh > range * range) continue;
             int ix = (int) Math.floor(wx);
             int iz = (int) Math.floor(wz);
-            double wy = data.isWaterAt(ix, iz) ? data.seaLevel() : data.heightAt(ix, iz);
+            double wy = groundMeshY(wx, wz);
             org.joml.Vector3f p = cam3d.worldToScreen(wx, wy, wz, vp, width, height);
             if (p == null) continue;
             double sx = p.x;
@@ -1856,7 +1863,7 @@ public class MapScreen extends Screen {
         double step = Math.max(2.0, len * 0.004);
         for (double d = step; d < len - step; d += step) {
             double t = d / len;
-            if (ey + dy * t <= groundYAt(ex + dx * t, ez + dz * t)) return true;
+            if (ey + dy * t <= groundMeshY(ex + dx * t, ez + dz * t)) return true;
         }
         return false;
     }
@@ -2059,9 +2066,7 @@ public class MapScreen extends Screen {
             if (p != null) {
                 MapData data = MapData.INSTANCE;
                 if (view3d && cam3d != null) {
-                    double ty = data.isWaterAt((int) Math.floor(p.getX()), (int) Math.floor(p.getZ()))
-                            ? data.seaLevel() : data.heightAt((int) Math.floor(p.getX()), (int) Math.floor(p.getZ()));
-                    cam3d.setTarget(p.getX(), ty, p.getZ());
+                    cam3d.setTarget(p.getX(), groundMeshY(p.getX(), p.getZ()), p.getZ());
                     // straight down on the player arrow with the rotation reset
                     cam3d.yaw = 0f;
                     cam3d.pitch = PITCH_STRAIGHT_DOWN;
