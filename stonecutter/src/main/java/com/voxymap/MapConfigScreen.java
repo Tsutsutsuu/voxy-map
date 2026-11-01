@@ -83,6 +83,7 @@ public class MapConfigScreen extends Screen {
         add(Group.DATA, "mapScale", VoxyMapConfig.MAP_SCALE, 1, 8, null, true);
         add(Group.DATA, "maxLodLevel", VoxyMapConfig.MAX_LOD_LEVEL, 0, 4, null);
         add(Group.DATA, "cacheKeepCount", VoxyMapConfig.CACHE_KEEP_COUNT, 1, 100, null);
+        add(Group.DATA, "maxMapPixels", VoxyMapConfig.MAX_MAP_PIXELS, 10_000_000, 500_000_000, null);
         add(Group.DATA, "autoSeaLevel", VoxyMapConfig.AUTO_SEA_LEVEL, 0, 0, null, true);
         add(Group.DATA, "seaLevelOverride", VoxyMapConfig.SEA_LEVEL_OVERRIDE, -64, 384, null);
         add(Group.RENDERING, "defaultStyle", VoxyMapConfig.DEFAULT_STYLE, 0, 0, MapStyles.NAMES, true);
@@ -108,7 +109,7 @@ public class MapConfigScreen extends Screen {
         add(Group.RENDERING, "releaseTexturesOnClose", VoxyMapConfig.RELEASE_TEXTURES_ON_CLOSE, 0, 0, null);
         add(Group.RENDERING, "skipWorldRender", VoxyMapConfig.SKIP_WORLD_RENDER, 0, 0, null);
         // display & performance
-        add(Group.THREE_D, "renderScale3d", VoxyMapConfig.RENDER_SCALE_3D, 25, 200, null, true);
+        add(Group.THREE_D, "renderScale3d", VoxyMapConfig.RENDER_SCALE_3D, 10, 150, null, true);
         add(Group.THREE_D, "antialias3d", VoxyMapConfig.ANTIALIAS_3D, 0, 0, null);
         add(Group.THREE_D, "renderThreads3d", VoxyMapConfig.RENDER_THREADS_3D, 1, 8, null);
         // terrain & detail
@@ -118,14 +119,10 @@ public class MapConfigScreen extends Screen {
         add(Group.THREE_D, "lodStepNear", VoxyMapConfig.LOD_STEP_NEAR, 1, 128, null, true);
         add(Group.THREE_D, "lodStepMid", VoxyMapConfig.LOD_STEP_MID, 1, 256, null);
         add(Group.THREE_D, "lodStepFar", VoxyMapConfig.LOD_STEP_FAR, 1, 512, null);
-        add(Group.THREE_D, "lodHeightAvgNear", VoxyMapConfig.LOD_HEIGHT_AVG_NEAR, 0, 0, null, true);
-        add(Group.THREE_D, "lodHeightAvgMid", VoxyMapConfig.LOD_HEIGHT_AVG_MID, 0, 0, null);
-        add(Group.THREE_D, "lodHeightAvgFar", VoxyMapConfig.LOD_HEIGHT_AVG_FAR, 0, 0, null);
         add(Group.THREE_D, "lodRebuildDistance", VoxyMapConfig.LOD_REBUILD_DISTANCE, 50, 5000, null, true);
         add(Group.THREE_D, "lodZoomRebuildPct", VoxyMapConfig.LOD_ZOOM_REBUILD_PCT, 5, 100, null);
         // camera
         add(Group.THREE_D, "fov3d", VoxyMapConfig.FOV_3D, 30, 110, null, true);
-        add(Group.THREE_D, "pitch3d", VoxyMapConfig.PITCH_3D, -85, -5, null);
         add(Group.THREE_D, "minDistance3d", VoxyMapConfig.MIN_DISTANCE_3D, 16, 4096, null);
         add(Group.THREE_D, "maxDistance3d", VoxyMapConfig.MAX_DISTANCE_3D, 512, 32768, null);
         add(Group.THREE_D, "rotateSens3d", VoxyMapConfig.ROTATE_SENS_3D, 0, 0, null, true);
@@ -403,7 +400,15 @@ public class MapConfigScreen extends Screen {
                 set(it, Math.max(it.min(), Math.min(it.max(), parsed)));
             } else if (v instanceof Double) {
                 double parsed = Double.parseDouble(editText.trim());
-                set(it, Math.max(0.04, Math.min(8.0, Math.round(parsed * 100.0) / 100.0)));
+                // use the control's own range (like the Integer branch); 0.04..8.0 only as a
+                // fallback for controls that do not declare one
+                double lo = it.min();
+                double hi = it.max();
+                if (hi <= lo) {
+                    lo = 0.04;
+                    hi = 8.0;
+                }
+                set(it, Math.max(lo, Math.min(hi, Math.round(parsed * 100.0) / 100.0)));
             }
         } catch (NumberFormatException ignored) {
         }

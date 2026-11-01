@@ -64,13 +64,9 @@ public final class VoxyMapConfig {
     public static final Value<Integer> LOD_STEP_NEAR = new Value<>("lodStepNear", 4);
     public static final Value<Integer> LOD_STEP_MID = new Value<>("lodStepMid", 32);
     public static final Value<Integer> LOD_STEP_FAR = new Value<>("lodStepFar", 64);
-    public static final Value<Boolean> LOD_HEIGHT_AVG_NEAR = new Value<>("lodHeightAvgNear", true);
-    public static final Value<Boolean> LOD_HEIGHT_AVG_MID = new Value<>("lodHeightAvgMid", false);
-    public static final Value<Boolean> LOD_HEIGHT_AVG_FAR = new Value<>("lodHeightAvgFar", false);
     public static final Value<Integer> LOD_REBUILD_DISTANCE = new Value<>("lodRebuildDistance", 300);
     public static final Value<Integer> LOD_ZOOM_REBUILD_PCT = new Value<>("lodZoomRebuildPct", 25);
     public static final Value<Integer> FOV_3D = new Value<>("fov3d", 55);
-    public static final Value<Integer> PITCH_3D = new Value<>("pitch3d", -50);
     public static final Value<Integer> MIN_DISTANCE_3D = new Value<>("minDistance3d", 64);
     public static final Value<Integer> MAX_DISTANCE_3D = new Value<>("maxDistance3d", 8192);
     public static final Value<Double> ROTATE_SENS_3D = new Value<>("rotateSens3d", 2.0);
@@ -145,11 +141,17 @@ public final class VoxyMapConfig {
                 Value<?> v = (Value<?>) f.get(null);
                 if (v == null || !root.has(v.key)) continue;
                 JsonElement json = root.get(v.key);
-                if (json.isJsonPrimitive()) {
+                if (!json.isJsonPrimitive()) continue;
+                try {
                     v.set(json.getAsJsonPrimitive().getAsString());
+                } catch (RuntimeException e) {
+                    // one malformed entry must not abort loading every field after it (which then
+                    // would be saved back as defaults and silently reset the player's options)
+                    System.err.println("[voxymap] config value '" + v.key + "' is invalid: " + e.getMessage());
                 }
             }
-        } catch (Exception ignored) {
+        } catch (Exception e) {
+            System.err.println("[voxymap] config file could not be read, using defaults: " + e);
         }
     }
 

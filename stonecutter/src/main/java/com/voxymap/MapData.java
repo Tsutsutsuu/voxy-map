@@ -91,6 +91,8 @@ public final class MapData {
     private volatile NativeImage biomeImage;
     private volatile Identifier biomeTextureId;
     private volatile int[] biomeLabelsFlat = new int[0];
+    /** snapshot the label array was computed from: labels must not be reused across a refresh */
+    private volatile Snapshot biomeLabelsSnapshot;
     private volatile String style = MapStyles.NAMES[0];
     /** Per-world overlay toggles, persisted in the world's cache sidecar file (see loadUiState). */
     private volatile boolean biomeOverlay;
@@ -112,13 +114,6 @@ public final class MapData {
     /** bump when the biome border colour changes: forces the cached texture/edges to rebuild */
     private static final int BIOME_EDGE_VERSION = 2;
     private volatile int biomeEdgeVersion;
-    /** render-distance border mask (local window around the player) */
-    private volatile int[] renderDistPx;
-    private volatile int renderDistX0;
-    private volatile int renderDistZ0;
-    private volatile int renderDistW;
-    private volatile int renderDistH;
-    private volatile long renderDistKey = Long.MIN_VALUE;
     private final AtomicBoolean buildingTextures = new AtomicBoolean();
     private final AtomicBoolean buildingBiome = new AtomicBoolean();
     /** set when a texture build was requested while another one was running (retried on completion) */
@@ -331,7 +326,13 @@ public final class MapData {
         int gx = (int) Math.floorDiv((long) worldX - s.minWX, s.pixelBlocks);
         int gz = (int) Math.floorDiv((long) worldZ - s.minWZ, s.pixelBlocks);
         if (gx < 0 || gx >= s.width || gz < 0 || gz >= s.height) return true;
-        return s.pixels[gz * s.width + gx] == LONG_EMPTY;
+        long p = s.pixels[gz * s.width + gx];
+        if (p == LONG_EMPTY) return true;
+        // a column whose only data is a buried, top-less section is drawn as transparent by the 2D
+        // renderer; treat it as empty here too so the 3D mesh does not add black sea-level triangles
+        int top = (int) ((p >>> 24) & 0xFFFF) - 32768;
+        int floor = (int) (p & 0xFFFF) - 32768;
+        return top == NO_TOP && floor == NO_SOLID;
     }
 
     /** True when the top of the column at this position is water. */
@@ -349,12 +350,6 @@ public final class MapData {
     public int getColorEpoch() {
         ColorFrame f = colorFrame;
         return f == null ? 0 : f.epoch;
-    }
-
-    /** Direct access to the rendered colour buffer (read-only, do not mutate). */
-    public int[] getRgbSnapshot() {
-        ColorFrame f = colorFrame;
-        return f == null ? null : f.rgb;
     }
 
     /** The colour buffer together with the dimensions it was rendered at (null before first render). */
@@ -724,8 +719,7 @@ public final class MapData {
         terrainCache = null;
         biomeEdgePx = null;
         biomeEdgeVersion = 0;
-        renderDistPx = null;
-        renderDistKey = Long.MIN_VALUE;
+        biomeLabelsSnapshot = null;
     }
 
     /** True when the kept snapshot does not belong to the world that is loaded now. */
@@ -891,12 +885,6 @@ public final class MapData {
         oversizePixels = 0;
         dropSnapshotForWorldChange();
         updateAsync(true);
-    }
-
-    public void dismissOversizeWarning() {
-        oversizePixels = 0;
-        oversizeLimit = 0;
-        oversizeSafePixelBlocks = 0;
     }
 
     public boolean isInitialRefreshPending() {
@@ -1638,7 +1626,8 @@ public final class MapData {
             try {
                 NativeImage bimg = needTexture ? buildBiomeImage(s) : null;
                 int[] edges = buildBiomeEdges(s);
-                int[] labels = biomeLabelsFlat.length > 0 ? biomeLabelsFlat : buildBiomeLabels(s);
+                int[] labels = (biomeLabelsFlat.length > 0 && biomeLabelsSnapshot == s)
+                        ? biomeLabelsFlat : buildBiomeLabels(s);
                 Minecraft.getInstance().execute(() -> {
                     try {
                         if (biomainEpoch != worldEpoch) {
@@ -1648,6 +1637,7 @@ public final class MapData {
                         biomeEdgePx = edges;
                         biomeEdgeVersion = BIOME_EDGE_VERSION;
                         biomeLabelsFlat = labels;
+                        biomeLabelsSnapshot = s;
                         if (bimg != null) {
                             biomeImage = bimg;
                             DynamicTexture btex = new DynamicTexture(() -> "voxymap_bimg", bimg);
@@ -1780,80 +1770,6 @@ public final class MapData {
             Minecraft.getInstance().getTextureManager().register(sid, stex);
             textureIdSmall = sid;
         }
-    }
-
-    public int[] getRenderDistancePx() {
-        return renderDistPx;
-    }
-
-    public int getRenderDistX0() {
-        return renderDistX0;
-    }
-
-    public int getRenderDistZ0() {
-        return renderDistZ0;
-    }
-
-    public int getRenderDistW() {
-        return renderDistW;
-    }
-
-    public int getRenderDistH() {
-        return renderDistH;
-    }
-
-    /**
-     * Builds a local mask with the render-distance border (yellow) for the 3D view. Only the window
-     * around the player is touched, so this stays cheap even on very large maps.
-     */
-    public void ensureRenderDistanceEdges() {
-        var player = Minecraft.getInstance().player;
-        Snapshot s = snap;
-        if (player == null || s == null) return;
-        int distBlocks = Minecraft.getInstance().options.renderDistance().get() * 16;
-        int pb = Math.max(1, s.pixelBlocks);
-        int pBlockX = player.getBlockX();
-        int pBlockZ = player.getBlockZ();
-        long key = ((long) pBlockX << 32) ^ (pBlockZ & 0xFFFFFFFFL) ^ ((long) distBlocks << 8)
-                ^ ((long) pb << 40) ^ ((long) s.width << 20) ^ (long) s.height
-                ^ ((long) s.minWX << 4) ^ ((long) s.minWZ << 12);
-        if (renderDistPx != null && renderDistKey == key) return;
-        int pad = 4;
-        int x0 = (int) ((pBlockX - distBlocks - s.minWX) / pb) - pad;
-        int x1 = (int) ((pBlockX + distBlocks - s.minWX) / pb) + pad;
-        int z0 = (int) ((pBlockZ - distBlocks - s.minWZ) / pb) - pad;
-        int z1 = (int) ((pBlockZ + distBlocks - s.minWZ) / pb) + pad;
-        x0 = Math.max(0, x0);
-        z0 = Math.max(0, z0);
-        x1 = Math.min(s.width - 1, x1);
-        z1 = Math.min(s.height - 1, z1);
-        if (x1 <= x0 || z1 <= z0) return;
-        int w = x1 - x0 + 1;
-        int h = z1 - z0 + 1;
-        // Convert the four border lines to exact pixel indices instead of testing distances: the
-        // border's pixel column/row is simply floor(edge / pixelBlocks), which is correct for ANY
-        // blocks-per-pixel ratio (1:1, 1:2, 1:3, ...) and yields a single-pixel-wide box.
-        int colL = (int) Math.floor((pBlockX - distBlocks - s.minWX) / (double) pb);
-        int colR = (int) Math.floor((pBlockX + distBlocks - s.minWX) / (double) pb);
-        int rowT = (int) Math.floor((pBlockZ - distBlocks - s.minWZ) / (double) pb);
-        int rowB = (int) Math.floor((pBlockZ + distBlocks - s.minWZ) / (double) pb);
-        int[] mask = new int[w * h];
-        for (int zi = 0; zi < h; zi++) {
-            int zz = z0 + zi;
-            boolean rowLine = zz == rowT || zz == rowB;
-            for (int xi = 0; xi < w; xi++) {
-                int xx = x0 + xi;
-                if (rowLine || xx == colL || xx == colR) {
-                    mask[zi * w + xi] = 0xE0FFFF00;
-                }
-            }
-        }
-        renderDistPx = mask;
-        renderDistX0 = x0;
-        renderDistZ0 = z0;
-        renderDistW = w;
-        renderDistH = h;
-        renderDistKey = key;
     }
 
     /** ARGB biome border pixels (0x00 when there is no border), or null before it is built. */
@@ -2129,6 +2045,7 @@ public final class MapData {
         int[] rgb = colorize(tc, style);
         if (rebuildLabels && !skipBiomeLabels) {
             biomeLabelsFlat = buildBiomeLabels(s);
+            biomeLabelsSnapshot = s;
         }
         progress = 95;
         return rgb;
@@ -2140,7 +2057,6 @@ public final class MapData {
         final int sea;
         final String fingerprint;
         final int[] topArr;
-        final int[] floorArr;
         final int[] smoothTop;
         final int[] smoothFloor;
         final boolean[] isWaterPix;
@@ -2151,21 +2067,19 @@ public final class MapData {
         final int hi;
         final int rampLo;
         final int rampHi;
-        final int contourInterval;
         final boolean adaptive;
         final int width;
         final int height;
         final int pixelBlocks;
 
-        TerrainCache(Snapshot snapshot, int sea, String fingerprint, int[] topArr, int[] floorArr,
+        TerrainCache(Snapshot snapshot, int sea, String fingerprint, int[] topArr,
                      int[] smoothTop, int[] smoothFloor, boolean[] isWaterPix, boolean[] contour,
-                     float[] depthMap, int lo, int hi, int rampLo, int rampHi, int contourInterval,
+                     float[] depthMap, int lo, int hi, int rampLo, int rampHi,
                      boolean adaptive, int width, int height, int pixelBlocks) {
             this.snapshot = snapshot;
             this.sea = sea;
             this.fingerprint = fingerprint;
             this.topArr = topArr;
-            this.floorArr = floorArr;
             this.smoothTop = smoothTop;
             this.smoothFloor = smoothFloor;
             this.isWaterPix = isWaterPix;
@@ -2175,7 +2089,6 @@ public final class MapData {
             this.hi = hi;
             this.rampLo = rampLo;
             this.rampHi = rampHi;
-            this.contourInterval = contourInterval;
             this.adaptive = adaptive;
             this.width = width;
             this.height = height;
@@ -2530,33 +2443,41 @@ public final class MapData {
         boolean adaptive = VoxyMapConfig.ADAPTIVE_COLOR_RAMP.get();
         int lo = sea, hi = sea + 820;
         if (adaptive) {
-            // histogram of land heights: O(n) instead of sorting 70M+ values, same percentiles
-            final int HISTO_MIN = -64;
-            final int HISTO_MAX = 512;
-            int[] hist = new int[HISTO_MAX - HISTO_MIN + 1];
+            // histogram of land heights: O(n) instead of sorting 70M+ values. The bin range covers
+            // the real min/max heights (not a fixed [-64, 512] window) so heavily modded or
+            // amplified terrain above y=512 keeps its ramp detail instead of saturating.
+            int minH = Integer.MAX_VALUE, maxH = Integer.MIN_VALUE;
             int n = 0;
             for (int i = 0; i < w * h; i++) {
                 if (topArr[i] != Integer.MIN_VALUE && !isWaterPix[i]) {
-                    int v = Math.max(HISTO_MIN, Math.min(HISTO_MAX, topArr[i]));
-                    hist[v - HISTO_MIN]++;
+                    if (topArr[i] < minH) minH = topArr[i];
+                    if (topArr[i] > maxH) maxH = topArr[i];
                     n++;
                 }
             }
-            if (n > 100) {
+            if (n > 100 && maxH >= minH) {
+                int bin = Math.max(1, (maxH - minH) / 1024 + 1);
+                int bins = (maxH - minH) / bin + 1;
+                int[] hist = new int[bins];
+                for (int i = 0; i < w * h; i++) {
+                    if (topArr[i] != Integer.MIN_VALUE && !isWaterPix[i]) {
+                        hist[(topArr[i] - minH) / bin]++;
+                    }
+                }
                 int lowIdx = (int) (n * 0.01f);
                 int highIdx = Math.min(n - 1, (int) (n * 0.99f));
                 int acc = 0;
-                int loH = HISTO_MIN;
-                int hiH = HISTO_MAX;
+                int loH = minH;
+                int hiH = maxH;
                 boolean gotLo = false;
-                for (int k = 0; k < hist.length; k++) {
+                for (int k = 0; k < bins; k++) {
                     acc += hist[k];
                     if (!gotLo && acc > lowIdx) {
-                        loH = HISTO_MIN + k;
+                        loH = minH + k * bin;
                         gotLo = true;
                     }
                     if (acc > highIdx) {
-                        hiH = HISTO_MIN + k;
+                        hiH = minH + k * bin;
                         break;
                     }
                 }
@@ -2586,8 +2507,8 @@ public final class MapData {
         boolean drawContours = contourOverride != null ? contourOverride : VoxyMapConfig.DRAW_CONTOURS.get();
         boolean[] contour = computeContour(topArr, isWaterPix, smoothTop, lo, hi, w, h, drawContours);
 
-        TerrainCache built = new TerrainCache(s, sea, fp, topArr, floorArr, smoothTop, smoothFloor,
-                isWaterPix, contour, depthMap, lo, hi, rampLo, rampHi, contourInterval,
+        TerrainCache built = new TerrainCache(s, sea, fp, topArr, smoothTop, smoothFloor,
+                isWaterPix, contour, depthMap, lo, hi, rampLo, rampHi,
                 adaptive || VoxyMapConfig.MIN_MAX_RAMP.get(), w, h, pixelBlocks);
         built.contourEnabled = drawContours;
         terrainCache = built;

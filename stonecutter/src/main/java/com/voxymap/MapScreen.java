@@ -1,44 +1,12 @@
 package com.voxymap;
 
-import com.mojang.blaze3d.buffers.GpuBuffer;
-import com.mojang.blaze3d.buffers.GpuBufferSlice;
-import com.mojang.blaze3d.pipeline.ColorTargetState;
-import com.mojang.blaze3d.pipeline.DepthStencilState;
-import com.mojang.blaze3d.pipeline.RenderPipeline;
-import com.mojang.blaze3d.pipeline.RenderTarget;
-import com.mojang.blaze3d.platform.CompareOp;
-import com.mojang.blaze3d.systems.CommandEncoder;
-import com.mojang.blaze3d.systems.RenderPass;
-import com.mojang.blaze3d.systems.RenderPassDescriptor;
 import com.mojang.blaze3d.platform.NativeImage;
-import com.mojang.blaze3d.systems.RenderSystem;
-import com.mojang.blaze3d.IndexType;
-import com.mojang.blaze3d.GpuFormat;
-import com.mojang.blaze3d.textures.AddressMode;
-import com.mojang.blaze3d.textures.FilterMode;
-import com.mojang.blaze3d.textures.GpuSampler;
-import com.mojang.blaze3d.textures.GpuTexture;
-import com.mojang.blaze3d.textures.GpuTextureView;
-import com.mojang.blaze3d.ProjectionType;
-import com.mojang.blaze3d.PrimitiveTopology;
-import com.mojang.blaze3d.vertex.BufferBuilder;
-import com.mojang.blaze3d.vertex.ByteBufferBuilder;
-import com.mojang.blaze3d.vertex.DefaultVertexFormat;
-import com.mojang.blaze3d.vertex.MeshData;
-import net.minecraft.client.renderer.ProjectionMatrixBuffer;
 import org.joml.Matrix4f;
 import org.joml.Vector3f;
-import org.joml.Vector4f;
-import java.nio.ByteBuffer;
-import java.util.Optional;
-import java.util.OptionalDouble;
-import com.mojang.math.Axis;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.renderer.RenderPipelines;
-import net.minecraft.client.renderer.StagedVertexBuffer;
 import net.minecraft.client.renderer.rendertype.RenderType;
-import com.mojang.blaze3d.vertex.VertexConsumer;
 import net.minecraft.client.renderer.texture.DynamicTexture;
 import net.minecraft.client.input.KeyEvent;
 import net.minecraft.client.input.MouseButtonEvent;
@@ -76,7 +44,6 @@ public class MapScreen extends Screen {
     private boolean dragging;
     private int menuX, menuY, menuWorldX, menuWorldZ, menuWorldY;
     private boolean menuOpen;
-    private boolean linearFilter = true;
     /** 3D height-field view toggle. */
     private boolean view3d;
     private Map3D.Camera cam3d;
@@ -100,7 +67,6 @@ public class MapScreen extends Screen {
     /** back-off after an empty/failed mesh build so the background pool is not spun every frame */
     private long meshRetryAtNs;
     private float fov3d = 55f;
-    private double verticalScale3d = 1.0;
     private Map3DSoft.Framebuffer fb3d;
     private NativeImage img3d;
     private DynamicTexture tex3dDyn;
@@ -108,20 +74,6 @@ public class MapScreen extends Screen {
     private boolean cam3dDirty = true;
     private long dbg3dNanos;
     private long dbg3dFrames;
-    // F8: self-contained 3D test (fixed cube, no map data) to validate the 26.2 GPU path
-    private boolean test3d;
-    private GpuTexture testTex;
-    private GpuTextureView testView;
-    private GpuTexture testDepth;
-    private GpuTextureView testDepthView;
-    private GpuSampler testSampler;
-    private RenderPipeline testPipeline;
-    private StagedVertexBuffer testStaged;
-    private int testW, testH;
-    private long testFrames;
-    private static RenderPipeline pipeline3d;
-    private static ProjectionMatrixBuffer projectionBuffer3d;
-    private java.util.concurrent.CompletableFuture<Void> soft3dTask;
     private long lastCamChangeNs;
     private int labels3dDrawn;
     private int labels3dTotal;
@@ -135,26 +87,6 @@ public class MapScreen extends Screen {
     private boolean pending3dOrbit;
     private boolean pendingFxaa;
     private volatile boolean soft3dPending;
-    // GPU path: render the mesh into an offscreen texture during the level pass, blit it on the GUI
-    private GpuBuffer vb3dGpu;
-    private GpuBuffer ib3dGpu;
-    private int indexCount3dGpu;
-    private boolean gpu3dBuffersReady;
-    private GpuTexture tex3dGpu;
-    private GpuTextureView texView3dGpu;
-    private GpuTexture depth3dGpu;
-    private GpuTextureView depthView3dGpu;
-    private GpuSampler sampler3dGpu;
-    private int gpu3dW, gpu3dH;
-    private boolean gpu3dFailed;
-    private volatile boolean gpu3dActive;
-    // GPU path: vertices are pre-projected to NDC on the CPU, so the GPU only needs unit matrices
-    private StagedVertexBuffer staged3d;
-    private StagedVertexBuffer.Draw stagedDraw3d;
-    private long ndcCamVersion = Long.MIN_VALUE;
-    private volatile boolean ndcPending;
-    private Map3D.Camera ndcCamSnapshot;
-    private Matrix4f ndcVp;
     private boolean styleMenuOpen;
     private float configPressT;
     private float openT = 1f;
@@ -648,14 +580,10 @@ public class MapScreen extends Screen {
             lines.add(String.format(Locale.ROOT, "3d: mesh=%s building=%s frames=%d render=%.1fms",
                     mesh3d != null, building3d, dbg3dFrames, dbg3dNanos / 1_000_000.0));
             int[] dbgEdges = data.isBiomeOverlay() ? data.getBiomeEdgeSnapshot() : null;
-            int[] dbgRd = data.isRenderDistanceOverlay() ? data.getRenderDistancePx() : null;
             lines.add("labels3d: drawn=" + labels3dDrawn + " / " + labels3dTotal);
-            lines.add(String.format(Locale.ROOT, "overlay: biome=%s rd=%s%s",
+            lines.add(String.format(Locale.ROOT, "overlay: biome=%s rd=%s",
                     dbgEdges == null ? "off" : (dbgEdges.length + "px"),
-                    dbgRd == null ? "off" : (dbgRd.length + "px"),
-                    dbgRd == null ? "" : String.format(Locale.ROOT, " rdWin=%d,%d %dx%d",
-                            data.getRenderDistX0(), data.getRenderDistZ0(),
-                            data.getRenderDistW(), data.getRenderDistH())));
+                    data.isRenderDistanceOverlay() ? "on (analytic)" : "off"));
             if (mesh3d != null) {
                 lines.add(String.format(Locale.ROOT, "lod: verts=%d tris=%d baseStep=%dpx near=%d mid=%d far=%d",
                         mesh3d.vertices.length / 7, mesh3d.indices.length / 3, mesh3d.step,
@@ -701,21 +629,10 @@ public class MapScreen extends Screen {
         return ellipsis + s.substring(cut);
     }
 
-    /** Layer 4: loading / empty / style-change messages, below the buttons and the dialog. */
-    /** Whether the 3D view is active (used by the mixin). */
-    public boolean isView3d() {
-        return view3d;
-    }
-
     // ---- 2D/3D switching: always seamless, with a short linear rotation on the way back ----
     private float exit3dT = -1f;
     private float exitFromYaw;
     private float exitFromPitch;
-
-    /** @return true while the exit animation is running (the screen is still drawing 3D) */
-    public boolean isExiting3d() {
-        return exit3dT >= 0f;
-    }
 
     private void toggle3D() {
         toggle3D(false);
@@ -834,7 +751,6 @@ public class MapScreen extends Screen {
         }
         double ty = data.heightAt((int) Math.floor(tx), (int) Math.floor(tz));
         cam3d.setTarget(tx, ty, tz);
-        cam3d.pitch = (float) Math.toRadians(VoxyMapConfig.PITCH_3D.get());
         cam3d.distance = 1500f;
         fov3d = VoxyMapConfig.FOV_3D.get();
     }
@@ -904,18 +820,13 @@ public class MapScreen extends Screen {
         final int fStepA = stepNear;
         final int fStepB = stepMid;
         final int fStepC = stepFar;
-        final boolean[] fHeightAvg = {
-                VoxyMapConfig.LOD_HEIGHT_AVG_NEAR.get(),
-                VoxyMapConfig.LOD_HEIGHT_AVG_MID.get(),
-                VoxyMapConfig.LOD_HEIGHT_AVG_FAR.get()
-        };
         final int[] fSteps = stepsPx;
         final boolean fLodDebug = wantLodDebug;
         final double fCamDist = camDist;
         java.util.concurrent.CompletableFuture.runAsync(() -> {
             Map3D.Mesh mesh = null;
             try {
-                mesh = Map3D.buildLod(data, fcx, fey, fcz, fv, fSteps, radii, fLodDebug, fHeightAvg);
+                mesh = Map3D.buildLod(data, fcx, fey, fcz, fv, fSteps, radii, fLodDebug);
             } catch (Throwable t) {
                 // never leave building3d stuck: a thrown background build would otherwise disable
                 // the 3D mesh for the rest of the session
@@ -978,46 +889,18 @@ public class MapScreen extends Screen {
         cam3dDirty = true;
     }
 
-
-    /** Uploads the shared grid vertices and a sequential index buffer for the GPU path. */
-    /**
-     * Renders the 3D view with the GPU into an offscreen colour texture. Called from the level render
-     * event, where a RenderPass is valid; the GUI then blits that texture.
-     */
-    /**
-     * GPU 3D pass: draws the mesh straight into the main framebuffer from the level render event,
-     * mirroring the official Fabric custom-render-pipeline example. The GUI then draws its normal
-     * 2D UI on top.
-     */
-    /**
-     * Renders the 3D view into the offscreen texture using vanilla's {@link StagedVertexBuffer} and a
-     * custom pipeline, mirroring the official Fabric render-pipeline example.
-     */
-    /** Camera-space depth test: only vertices comfortably in front of the near plane are kept. */
-    private static boolean inFront(float[] verts, int index, Matrix4f view) {
-        int o = index * 7;
-        float x = verts[o];
-        float y = verts[o + 1];
-        float z = verts[o + 2];
-        float vz = view.m02() * x + view.m12() * y + view.m22() * z + view.m32();
-        return vz < -2f;
-    }
-
-    /**
-     * Self-contained GPU 3D test: renders a rotating coloured cube into an offscreen texture and
-     * blits it, using no map data at all. Press F8 in the map screen to toggle it.
-     */
-    /**
-     * Uploads the whole mesh once (GPU-resident) and draws it with one call per frame.
-     * Called from the level render event, like the official Fabric example.
-     */
-    /** Uploads the world-space mesh to GPU buffers once per mesh build. */
     /**
      * Re-renders the CPU view when the camera changed. Rendering runs off-thread so dragging never
      * blocks the client; the finished image is copied into the dynamic texture on the main thread.
      */
     private void updateSoft3d() {
         if (screenClosed || !view3d || mesh3d == null || cam3d == null) return;
+        // the FOV setting is live: applying it here avoids forcing the player to reopen the map
+        int wantFov = Math.max(30, Math.min(110, VoxyMapConfig.FOV_3D.get()));
+        if (wantFov != (int) fov3d) {
+            fov3d = wantFov;
+            cam3dDirty = true;
+        }
         ensureSoft3d();
         if (soft3dPending) return;
         boolean dirty = cam3dDirty;
@@ -1049,10 +932,14 @@ public class MapScreen extends Screen {
                 double rdCx = pl != null ? pl.getX() : 0;
                 double rdCz = pl != null ? pl.getZ() : 0;
                 double rdDist = Minecraft.getInstance().options.renderDistance().get() * 16.0;
+                final int[] abgr;
                 try {
                     Map3DSoft.render(mesh, cam, fov, fb, 0xFF0D0D14, md,
-                            VoxyMapConfig.LOD_DEBUG_COLORS_3D.get(), edges, null, 0, 0, 0, 0,
+                            VoxyMapConfig.LOD_DEBUG_COLORS_3D.get(), edges,
                             rdCx, rdCz, rdDist, rdOn);
+                    // ARGB -> ABGR conversion runs here, on the background thread; the main thread
+                    // only does one bulk write into the NativeImage
+                    abgr = Map3DSoft.toAbgr(fb);
                 } catch (Throwable t) {
                     // a failed background render must not leave the 3D view stuck on "render pending"
                     t.printStackTrace();
@@ -1066,7 +953,7 @@ public class MapScreen extends Screen {
                         // screen that already closed: writing them would touch a closed NativeImage
                         if (screenClosed || gen != soft3dGen || img3d == null) return;
                         dbg3dNanos = nanos;
-                        copyToImageAndUpload(fb);
+                        uploadAbgr(abgr, fb.width, fb.height);
                         dbg3dFrames++;
                     } finally {
                         soft3dPending = false;
@@ -1076,40 +963,77 @@ public class MapScreen extends Screen {
             return;
         }
         if (pendingFxaa && settled) {
-            // camera stopped: run one antialiasing pass over the finished image
+            // camera stopped: run one antialiasing pass over the finished image, off the main thread
             pendingFxaa = false;
-            if (screenClosed || img3d == null || tex3dDyn == null) return;
-            try {
-                dbg3dNanos = System.nanoTime();
-                Map3DSoft.applyFxaa(fb3d);
-                copyToImageAndUpload(fb3d);
-                dbg3dNanos = System.nanoTime() - dbg3dNanos;
-            } catch (Throwable t) {
-                t.printStackTrace();
-            }
+            if (screenClosed || img3d == null || tex3dDyn == null || fb3d == null) return;
+            soft3dPending = true;
+            final int gen = soft3dGen;
+            final Map3DSoft.Framebuffer fb = fb3d;
+            java.util.concurrent.CompletableFuture.runAsync(() -> {
+                long t0 = System.nanoTime();
+                final int[] abgr;
+                try {
+                    Map3DSoft.applyFxaa(fb);
+                    abgr = Map3DSoft.toAbgr(fb);
+                } catch (Throwable t) {
+                    t.printStackTrace();
+                    Minecraft.getInstance().execute(() -> soft3dPending = false);
+                    return;
+                }
+                long nanos = System.nanoTime() - t0;
+                Minecraft.getInstance().execute(() -> {
+                    try {
+                        if (screenClosed || gen != soft3dGen || img3d == null) return;
+                        dbg3dNanos = nanos;
+                        uploadAbgr(abgr, fb.width, fb.height);
+                    } finally {
+                        soft3dPending = false;
+                    }
+                });
+            });
         }
     }
 
     /**
-     * Copies the CPU framebuffer into the dynamic texture. Note: NativeImage.getPixels() returns a
-     * COPY, so the pixels must be written through setPixelABGR (writing the returned array had no
-     * effect - that made the 3D view black).
+     * Writes a prepared ABGR buffer into the dynamic texture. 26.2 exposes the native memory through
+     * {@code NativeImage.getPixelBytes()}, so this can be one bulk copy instead of one call per pixel
+     * (which used to cost 10-60 ms per camera change on the main thread). The method is looked up
+     * reflectively because the 26.1.2 target has no such API; there it falls back to setPixelABGR.
      */
-    private void copyToImageAndUpload(Map3DSoft.Framebuffer fb) {
-        int w = fb.width;
-        int h = fb.height;
+    private void uploadAbgr(int[] abgr, int w, int h) {
+        if (img3d == null || img3d.isClosed() || tex3dDyn == null) return;
+        if (img3d.getWidth() != w || img3d.getHeight() != h) return;
+        if (writePixelsBulk(img3d, abgr, w, h)) {
+            tex3dDyn.upload();
+            return;
+        }
         for (int y = 0; y < h; y++) {
             int row = y * w;
             for (int x = 0; x < w; x++) {
-                int c = fb.color[row + x];
-                int a = (c >>> 24) & 0xFF;
-                int r = (c >> 16) & 0xFF;
-                int g = (c >> 8) & 0xFF;
-                int b = c & 0xFF;
-                img3d.setPixelABGR(x, y, (a << 24) | (b << 16) | (g << 8) | r);
+                img3d.setPixelABGR(x, y, abgr[row + x]);
             }
         }
         tex3dDyn.upload();
+    }
+
+    private static java.lang.reflect.Method pixelBytesMethod;
+    private static boolean pixelBytesResolved;
+
+    /** @return true when the bulk path exists and was used */
+    private static boolean writePixelsBulk(NativeImage image, int[] abgr, int w, int h) {
+        try {
+            if (!pixelBytesResolved) {
+                pixelBytesResolved = true;
+                pixelBytesMethod = NativeImage.class.getMethod("getPixelBytes");
+            }
+            if (pixelBytesMethod == null) return false;
+            java.nio.ByteBuffer buf = (java.nio.ByteBuffer) pixelBytesMethod.invoke(image);
+            buf.order(java.nio.ByteOrder.LITTLE_ENDIAN).asIntBuffer().put(abgr, 0, w * h);
+            return true;
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            pixelBytesMethod = null;
+            return false;
+        }
     }
 
     private void releaseSoft3d() {
@@ -1921,58 +1845,8 @@ public class MapScreen extends Screen {
     }
 
     /**
-     * 3D render-distance box: the four world-space edges of the square around the player, projected
-     * and drawn as thin screen lines that follow the terrain height (single pixels, like the 2D box).
+     * True when the terrain blocks the line of sight between the camera and a label anchor.
      */
-    private void drawRenderDistanceBox3d(GuiGraphicsExtractor g) {
-        var player = Minecraft.getInstance().player;
-        MapData data = MapData.INSTANCE;
-        if (player == null || cam3d == null || !data.isRenderDistanceOverlay()) return;
-        if (!data.isReady() || data.getMapWidth() <= 0) return;
-        double dist = Minecraft.getInstance().options.renderDistance().get() * 16.0;
-        double px = player.getX();
-        double pz = player.getZ();
-        org.joml.Matrix4f vp = cam3d.viewProjection(
-                (float) width / Math.max(1f, (float) height), fov3d);
-        double[][] corners = {
-                {px - dist, pz - dist},
-                {px + dist, pz - dist},
-                {px + dist, pz + dist},
-                {px - dist, pz + dist}
-        };
-        org.joml.Vector3f[] proj = new org.joml.Vector3f[4];
-        for (int i = 0; i < 4; i++) {
-            double cx = corners[i][0];
-            double cz = corners[i][1];
-            proj[i] = cam3d.worldToScreen(cx, groundYAt(cx, cz), cz, vp, width, height);
-        }
-        final int color = 0xFFFFEE00;
-        for (int e = 0; e < 4; e++) {
-            org.joml.Vector3f a = proj[e];
-            org.joml.Vector3f b = proj[(e + 1) & 3];
-            if (a == null || b == null) continue;
-            drawLine2d(g, a.x, a.y, b.x, b.y, color);
-        }
-    }
-
-    /** One-pixel DDA line (the HUD has no line primitive). */
-    private void drawLine2d(GuiGraphicsExtractor g, float x0, float y0, float x1, float y1, int color) {
-        float dx = x1 - x0;
-        float dy = y1 - y0;
-        int steps = (int) Math.max(Math.abs(dx), Math.abs(dy));
-        if (steps <= 0) {
-            g.fill((int) x0, (int) y0, (int) x0 + 2, (int) y0 + 2, color);
-            return;
-        }
-        for (int i = 0; i <= steps; i++) {
-            float t = i / (float) steps;
-            int x = Math.round(x0 + dx * t);
-            int y = Math.round(y0 + dy * t);
-            g.fill(x, y, x + 2, y + 2, color);
-        }
-    }
-
-    /** True when the terrain blocks the line of sight between the camera and a label anchor. */
     private boolean isOccluded3d(double ex, double ey, double ez, double tx, double ty, double tz) {
         double dx = tx - ex;
         double dy = ty - ey;
@@ -2504,3 +2378,4 @@ public class MapScreen extends Screen {
         return true;
     }
 }
+

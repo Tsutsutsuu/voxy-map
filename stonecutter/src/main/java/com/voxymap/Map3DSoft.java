@@ -17,6 +17,7 @@ public final class Map3DSoft {
     private static float[] sSwz;
     private static int[] sScol;
     private static int[] sFxaaOut;
+    private static int[] sAbgr;
 
     private Map3DSoft() {
     }
@@ -42,20 +43,7 @@ public final class Map3DSoft {
 
     public static void render(Map3D.Mesh mesh, Map3D.Camera cam, float fovDegrees,
                               Framebuffer fb, int background, com.voxymap.MapData data,
-                              boolean vertexColors) {
-        render(mesh, cam, fovDegrees, fb, background, data, vertexColors, null);
-    }
-
-    public static void render(Map3D.Mesh mesh, Map3D.Camera cam, float fovDegrees,
-                              Framebuffer fb, int background, com.voxymap.MapData data,
-                              boolean vertexColors, int[] biomeEdges) {
-        render(mesh, cam, fovDegrees, fb, background, data, vertexColors, biomeEdges, null, 0, 0, 0, 0, 0, 0, 0, false);
-    }
-
-    public static void render(Map3D.Mesh mesh, Map3D.Camera cam, float fovDegrees,
-                              Framebuffer fb, int background, com.voxymap.MapData data,
                               boolean vertexColors, int[] biomeEdges,
-                              int[] rdPx, int rdX0, int rdZ0, int rdW, int rdH,
                               double rdCenterX, double rdCenterZ, double rdDist, boolean rdEnabled) {
         fb.clear(background);
         float aspect = (float) fb.width / (float) fb.height;
@@ -120,7 +108,7 @@ public final class Map3DSoft {
                         sx[b], sy[b], sinv[b], swx[b], swz[b],
                         sx[c], sy[c], sinv[c], swx[c], swz[c], data,
                         scol[a], scol[b], scol[c], vertexColors, colors,
-                        biomeEdges, rdPx, rdX0, rdZ0, rdW, rdH, rdCenterX, rdCenterZ, rdDist, rdEnabled);
+                        biomeEdges, rdCenterX, rdCenterZ, rdDist, rdEnabled);
             }
             return;
         }
@@ -149,7 +137,7 @@ public final class Map3DSoft {
                                 fsx[b], fsy[b], fsinv[b], fswx[b], fswz[b],
                                 fsx[c], fsy[c], fsinv[c], fswx[c], fswz[c], data,
                                 fscol[a], fscol[b], fscol[c], fVertexColors, colors,
-                                biomeEdges, rdPx, rdX0, rdZ0, rdW, rdH, rdCenterX, rdCenterZ, rdDist, rdEnabled);
+                                biomeEdges, rdCenterX, rdCenterZ, rdDist, rdEnabled);
                     }
                 } finally {
                     latch.countDown();
@@ -187,7 +175,7 @@ public final class Map3DSoft {
                                  float x2, float y2, float i2, float wx2, float wz2,
                                  com.voxymap.MapData data, int c0, int c1, int c2, boolean vertexColors,
                                  com.voxymap.MapData.ColorFrame colors,
-                                 int[] biomeEdges, int[] rdPx, int rdX0, int rdZ0, int rdW, int rdH,
+                                 int[] biomeEdges,
                                  double rdCenterX, double rdCenterZ, double rdDist, boolean rdEnabled) {
         // frustum cull: reject triangles entirely outside the screen before computing bounds
         float triMinX = Math.min(x0, Math.min(x1, x2));
@@ -276,6 +264,28 @@ public final class Map3DSoft {
     }
 
     /**
+     * Converts the ARGB framebuffer to the byte layout NativeImage expects (ABGR ints, RGBA bytes in
+     * little-endian memory). Intended for a background thread: the result can then be written to
+     * {@code NativeImage.getPixelBytes()} with one bulk put on the main thread instead of millions of
+     * setPixelABGR calls.
+     */
+    public static int[] toAbgr(Framebuffer fb) {
+        int n = fb.width * fb.height;
+        if (sAbgr == null || sAbgr.length < n) sAbgr = new int[n];
+        int[] src = fb.color;
+        int[] dst = sAbgr;
+        for (int i = 0; i < n; i++) {
+            int c = src[i];
+            int a = (c >>> 24) & 0xFF;
+            int r = (c >> 16) & 0xFF;
+            int g = (c >> 8) & 0xFF;
+            int b = c & 0xFF;
+            dst[i] = (a << 24) | (b << 16) | (g << 8) | r;
+        }
+        return dst;
+    }
+
+    /**
      * Cheap FXAA-style edge smoothing: only pixels next to a strong luma edge are blended with their
      * neighbours along the dominant gradient, so flat areas stay sharp.
      */
@@ -350,13 +360,5 @@ public final class Map3DSoft {
 
     private static int clamp(int v, int lo, int hi) {
         return v < lo ? lo : (v > hi ? hi : v);
-    }
-
-    private static float min3(float a, float b, float c) {
-        return Math.min(a, Math.min(b, c));
-    }
-
-    private static float max3(float a, float b, float c) {
-        return Math.max(a, Math.max(b, c));
     }
 }

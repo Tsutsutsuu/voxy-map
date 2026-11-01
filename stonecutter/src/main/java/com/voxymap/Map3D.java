@@ -9,157 +9,31 @@ import org.joml.Vector4f;
  * simple orbit camera. Rendering lives in the screen (each loader has its own draw path).
  */
 public final class Map3D {
-    public static final int DEFAULT_GRID = 512;
 
     private Map3D() {
     }
 
     /** A height-field mesh: interleaved position (x,y,z) + colour (r,g,b,a) per vertex. */
     public static final class Mesh {
-        public final int gridW;
-        public final int gridH;
+        /** sampling step (map pixels per vertex) of the finest layer, shown in the debug panel */
         public final int step;
         public final float[] vertices;
         public final int[] indices;
-        public final float minY;
-        public final float maxY;
 
-        Mesh(int gridW, int gridH, int step, float[] vertices, int[] indices, float minY, float maxY) {
-            this.gridW = gridW;
-            this.gridH = gridH;
+        Mesh(int step, float[] vertices, int[] indices) {
             this.step = step;
             this.vertices = vertices;
             this.indices = indices;
-            this.minY = minY;
-            this.maxY = maxY;
-        }
-
-        public int vertexCount() {
-            return vertices.length / 7;
-        }
-
-        public int triangleCount() {
-            return indices.length / 3;
         }
     }
 
     /**
-     * Builds the 3D mesh by sampling the existing map snapshot: height from {@link MapData#heightAt},
-     * colour from the rendered RGB buffer. Unexplored pixels produce no triangles at all.
-     */
-    public static Mesh build(MapData data, int gridSize, double verticalScale) {
-        int mapW = data.getMapWidth();
-        int mapH = data.getMapHeight();
-        if (mapW <= 0 || mapH <= 0) return null;
-        int grid = Math.max(8, gridSize);
-        int step = Math.max(1, (Math.max(mapW, mapH) + grid - 1) / grid);
-        int gw = (mapW + step - 1) / step;
-        int gh = (mapH + step - 1) / step;
-        int n = gw * gh;
-        float[] verts = new float[n * 7];
-        boolean[] empty = new boolean[n];
-        float minY = Float.MAX_VALUE;
-        float maxY = -Float.MAX_VALUE;
-        int pixelBlocks = data.getPixelBlocks();
-        long minWX = data.getMinWX();
-        long minWZ = data.getMinWZ();
-        for (int gz = 0; gz < gh; gz++) {
-            for (int gx = 0; gx < gw; gx++) {
-                int px = Math.min(mapW - 1, gx * step);
-                int pz = Math.min(mapH - 1, gz * step);
-                int worldX = (int) (minWX + (long) px * pixelBlocks);
-                int worldZ = (int) (minWZ + (long) pz * pixelBlocks);
-                boolean e = data.isEmptyAt(worldX, worldZ);
-                int i = gz * gw + gx;
-                empty[i] = e;
-                int rgb = data.getRgbAt(px, pz);
-                int r = (rgb >> 16) & 0xFF;
-                int g = (rgb >> 8) & 0xFF;
-                int b = rgb & 0xFF;
-                float y;
-                if (e) {
-                    y = 0f;
-                } else if (data.isWaterAt(worldX, worldZ)) {
-                    // water is a flat plane at the world sea level, not the column top
-                    y = (float) (data.seaLevel() * verticalScale);
-                    minY = Math.min(minY, y);
-                    maxY = Math.max(maxY, y);
-                } else {
-                    y = (float) (data.heightAt(worldX, worldZ) * verticalScale);
-                    minY = Math.min(minY, y);
-                    maxY = Math.max(maxY, y);
-                }
-                int o = i * 7;
-                verts[o] = (float) (minWX + (long) px * pixelBlocks);
-                verts[o + 1] = y;
-                verts[o + 2] = (float) (minWZ + (long) pz * pixelBlocks);
-                verts[o + 3] = r / 255f;
-                verts[o + 4] = g / 255f;
-                verts[o + 5] = b / 255f;
-                verts[o + 6] = e ? 0f : 1f;
-            }
-        }
-        if (minY > maxY) {
-            minY = 0f;
-            maxY = 0f;
-        }
-        // triangles: (x,z)-(x,z+1)-(x+1,z) and (x+1,z)-(x,z+1)-(x+1,z+1), skipping holes
-        int[] idx = new int[Math.max(6, gw * gh * 6)];
-        int count = 0;
-        for (int gz = 0; gz < gh - 1; gz++) {
-            for (int gx = 0; gx < gw - 1; gx++) {
-                int a = gz * gw + gx;
-                int b = a + 1;
-                int c = a + gw;
-                int d = c + 1;
-                if (!empty[a] && !empty[b] && !empty[c]) {
-                    idx[count++] = a;
-                    idx[count++] = c;
-                    idx[count++] = b;
-                }
-                if (!empty[b] && !empty[d] && !empty[c]) {
-                    idx[count++] = b;
-                    idx[count++] = c;
-                    idx[count++] = d;
-                }
-            }
-        }
-        if (count == 0) return null;
-        int[] indices = new int[count];
-        System.arraycopy(idx, 0, indices, 0, count);
-        return new Mesh(gw, gh, step, verts, indices, minY, maxY);
-    }
-
-    /**
-     * Builds a distance-based LOD mesh: several concentric layers around {@code center}, each with
-     * its own sampling step. Layers overlap and are drawn far-to-near, so the finer inner layer
-     * covers the coarser one (no cracks to weld). The map may be rectangular; every layer is simply
-     * clipped to the real map bounds.
-     */
-    public static Mesh buildLod(MapData data, double centerX, double centerZ, double verticalScale,
-                                int[] stepPx, double[] radiiBlocks) {
-        return buildLod(data, centerX, centerZ, verticalScale, stepPx, radiiBlocks, false);
-    }
-
-    public static Mesh buildLod(MapData data, double centerX, double centerZ, double verticalScale,
-                                int[] stepPx, double[] radiiBlocks, boolean debugColors) {
-        return buildLod(data, centerX, data.heightAt((int) Math.floor(centerX), (int) Math.floor(centerZ)) + 120.0,
-                centerZ, verticalScale, stepPx, radiiBlocks, debugColors);
-    }
-
-    /**
-     * Spherical LOD: layers are concentric spheres around the camera eye position, so the detail
-     * radius depends on the true 3D distance (not a horizontal cylinder) and does not change with zoom.
+     * Builds a distance-based LOD mesh: several concentric spherical layers around the camera eye,
+     * each with its own sampling step. Layers are assigned per triangle, so no cracks have to be
+     * welded, and every layer is clipped to the real map bounds.
      */
     public static Mesh buildLod(MapData data, double eyeX, double eyeY, double eyeZ, double verticalScale,
                                 int[] stepPx, double[] radiiBlocks, boolean debugColors) {
-        return buildLod(data, eyeX, eyeY, eyeZ, verticalScale, stepPx, radiiBlocks, debugColors,
-                new boolean[]{false, false, false});
-    }
-
-    public static Mesh buildLod(MapData data, double eyeX, double eyeY, double eyeZ, double verticalScale,
-                                int[] stepPx, double[] radiiBlocks, boolean debugColors,
-                                boolean[] heightAvg) {
         // per-layer tints for the LOD debug view: near = red, mid = green, far = blue
         final int[] tint = {0xE02020, 0x20E020, 0x2020E0};
         int mapW = data.getMapWidth();
@@ -171,20 +45,16 @@ public final class Map3D {
 
         java.util.ArrayList<float[]> verts = new java.util.ArrayList<>();
         java.util.ArrayList<Integer> idxList = new java.util.ArrayList<>();
-        float minY = Float.MAX_VALUE;
-        float maxY = -Float.MAX_VALUE;
         for (int layer = 0; layer < stepPx.length; layer++) {
-            double radius = radiiBlocks[Math.min(layer, radiiBlocks.length - 1)];
             double outerRadius = radiiBlocks[Math.min(layer, radiiBlocks.length - 1)];
             double innerRadius = layer == 0 ? 0.0 : radiiBlocks[Math.min(layer - 1, radiiBlocks.length - 1)];
             // Real stitching: judge the boundary at the coarser grid's cell centres so both layers
             // keep exactly the same coarse cells (identical staircase, no gap, no extension).
             int coarseStep = stepPx[stepPx.length - 1];
-            double margin = 0.0;
-            int px0 = (int) Math.floor((eyeX - radius - minWX) / pb);
-            int px1 = (int) Math.ceil((eyeX + radius - minWX) / pb);
-            int pz0 = (int) Math.floor((eyeZ - radius - minWZ) / pb);
-            int pz1 = (int) Math.ceil((eyeZ + radius - minWZ) / pb);
+            int px0 = (int) Math.floor((eyeX - outerRadius - minWX) / pb);
+            int px1 = (int) Math.ceil((eyeX + outerRadius - minWX) / pb);
+            int pz0 = (int) Math.floor((eyeZ - outerRadius - minWZ) / pb);
+            int pz1 = (int) Math.ceil((eyeZ + outerRadius - minWZ) / pb);
             // every layer snaps to the same (coarsest) origin, so coarse cells line up across layers
             int alignAll = stepPx[stepPx.length - 1];
             px0 = Math.floorDiv(px0, alignAll) * alignAll;
@@ -223,12 +93,8 @@ public final class Map3D {
                         y = 0f;
                     } else if (data.isWaterAt(worldX, worldZ)) {
                         y = (float) (data.seaLevel() * verticalScale);
-                        minY = Math.min(minY, y);
-                        maxY = Math.max(maxY, y);
                     } else {
                         y = (float) (data.heightAt(worldX, worldZ) * verticalScale);
-                        minY = Math.min(minY, y);
-                        maxY = Math.max(maxY, y);
                     }
                     // NOTE: layer membership is decided PER TRIANGLE below. Testing it per vertex
                     // dropped every triangle that crossed a voxel border and left a ring-shaped gap.
@@ -299,11 +165,7 @@ public final class Map3D {
         }
         int[] indices = new int[idxList.size()];
         for (int i = 0; i < indices.length; i++) indices[i] = idxList.get(i);
-        if (minY > maxY) {
-            minY = 0f;
-            maxY = 0f;
-        }
-        return new Mesh(0, 0, stepPx[0], vertexData, indices, minY, maxY);
+        return new Mesh(stepPx[0], vertexData, indices);
     }
 
     /** Orbit camera around a target point. Pitch is negative when looking down. */

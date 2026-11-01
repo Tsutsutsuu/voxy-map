@@ -21,9 +21,9 @@ stonecutter {
         fun match(project: String, vararg loaders: String, version: String = project) {
             for (loader in loaders) version("$project-$loader", version).buildscript("build.$loader.gradle.kts")
         }
-        // only 26.1.2 for now; add more nodes here later
-        // TODO: 26.1.2 needs its own 3D render path (different GUI render classes); re-enable when adapted
-        //match("26.1", "fabric", version = "26.1.2")
+        // 26.1.2 compiles the same sources (verified 2026-11-02: only leftover 26.2-only GPU
+        // imports/fields broke it, and those are gone). Runtime behaviour still needs a smoke test.
+        match("26.1", "fabric", version = "26.1.2")
         match("26.2", "fabric", version = "26.2")
         vcsVersion = "26.2-fabric"
     }
