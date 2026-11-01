@@ -1050,7 +1050,11 @@ public class MapScreen extends Screen {
             // first build: use the same top line and warning colour as a refresh, so both states match
             Component msg = data.isLoading()
                     ? Component.translatable("voxymap.ui.updating", data.getProgress())
-                    : (data.getError().isEmpty() ? Component.translatable("voxymap.ui.no_data") : Component.literal(data.getError()));
+                    : (data.outOfMemory
+                        ? Component.translatable("voxymap.ui.outOfMemory")
+                        : (data.getError().isEmpty()
+                            ? Component.translatable("voxymap.ui.no_data")
+                            : Component.literal(data.getError())));
             drawStatusLine(g, msg, 24, data.isLoading() ? COL_WARN : COL_TEXT);
         } else if (data.isLoading()) {
             // an old map is on screen while the refresh runs in the background

@@ -184,6 +184,7 @@
   "voxymap.ui.oversize.line2": "Loading it may run out of memory and crash the game.",
   "voxymap.ui.oversize.line3": "The limit can be changed in config/voxymap-client.json (maxMapPixels).",
   "voxymap.ui.oversize.noSafe": "Even the coarsest 1:8 map would exceed the memory limit.",
+  "voxymap.ui.outOfMemory": "Out of memory: this map is too large for the game's heap. Lower the map scale (1:3 or coarser) or raise the game memory.",
   "voxymap.ui.oversize.safe": "Load safely (coarser)",
   "voxymap.ui.oversize.force": "Load anyway",
   "voxymap.config.maxMapPixels": "Map memory limit (pixels)",

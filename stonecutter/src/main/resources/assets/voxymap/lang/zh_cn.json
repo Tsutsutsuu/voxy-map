@@ -221,6 +221,7 @@
   "voxymap.ui.oversize.line2": "继续加载可能内存不足导致游戏崩溃。",
   "voxymap.ui.oversize.line3": "阈值可在配置文件 config/voxymap-client.json 中调整（maxMapPixels）。",
   "voxymap.ui.oversize.noSafe": "即使用最粗的 1:8 比例，地图仍超过内存上限。",
+  "voxymap.ui.outOfMemory": "内存不足：地图超出游戏堆上限。请把地图比例调粗（1:3 或更低），或提高游戏内存。",
   "voxymap.ui.oversize.safe": "安全模式加载（降档）",
   "voxymap.ui.oversize.force": "仍然加载",
   "voxymap.config.maxMapPixels": "地图内存上限（像素）",

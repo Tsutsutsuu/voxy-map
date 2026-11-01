@@ -54,7 +54,7 @@ public final class MapData {
     private static final int NO_SOLID = -32768;
     private static final int NO_TOP = -32767;
     private static final int BATCH = 2000;
-    private static final int CACHE_VERSION = 5;
+    private static final int CACHE_VERSION = 6;
     private static final int FALLBACK_SEA = 63;
 
     private static final class Snapshot {
@@ -63,8 +63,11 @@ public final class MapData {
         final long minWX, minWZ;
         final int pixelBlocks;
         final Map<Integer, String> biomeNames;
+        /** identity of this snapshot: the colour cache must belong to the same snapshot */
+        final long stamp;
 
-        Snapshot(long[] pixels, int width, int height, long minWX, long minWZ, int pixelBlocks, Map<Integer, String> biomeNames) {
+        Snapshot(long[] pixels, int width, int height, long minWX, long minWZ, int pixelBlocks,
+                 Map<Integer, String> biomeNames, long stamp) {
             this.pixels = pixels;
             this.width = width;
             this.height = height;
@@ -72,6 +75,7 @@ public final class MapData {
             this.minWZ = minWZ;
             this.pixelBlocks = pixelBlocks;
             this.biomeNames = biomeNames;
+            this.stamp = stamp;
         }
     }
 
@@ -153,6 +157,9 @@ public final class MapData {
     private volatile int texEpoch;
     /** 3D view: skip building biome labels during colour renders */
     public volatile boolean skipBiomeLabels;
+
+    /** set when the last map build/render ran out of heap (shown as a hint instead of a raw error) */
+    public volatile boolean outOfMemory;
 
     private long sessionStartMs;
     private double lastUpdateX = Double.NaN, lastUpdateZ = Double.NaN;
@@ -764,6 +771,7 @@ public final class MapData {
         loading = true;
         progress = 0;
         error = "";
+        outOfMemory = false;
         oversizePixels = 0;
         oversizeLimit = 0;
         oversizeSafePixelBlocks = 0;
@@ -772,7 +780,12 @@ public final class MapData {
         final int epoch = worldEpoch;
         loader.submit(() -> {
             boolean handedToMainThread = false;
+            Snapshot prevSnap = null;
+            Path prevSnapStorage = null;
+            Snapshot built = null;
             try {
+                prevSnap = snap;
+                prevSnapStorage = snapStorage;
                 // the world changed after this request was queued: drop it instead of uploading the
                 // previous world's map into the new one
                 if (epoch != worldEpoch) return;
@@ -808,7 +821,7 @@ public final class MapData {
                 } else if (!sameWorld) {
                     dropSnapshotForWorldChange();
                 }
-                Snapshot built = forceReload ? null : (sameWorld ? snap : loadCache(storage));
+                built = forceReload ? null : (sameWorld ? snap : loadCache(storage));
                 // a cache from a different map scale cannot be reused: rebuild at the new scale
                 if (built != null && built.pixelBlocks != effectivePixelBlocks()) built = null;
                 if (built == null) {
@@ -842,6 +855,7 @@ public final class MapData {
                         progress = 95;
                         uploadTexture(target, rgb);
                         lastRenderedStyle = renderStyle;
+                        outOfMemory = false;
                         progress = 100;
                     } finally {
                         loading = false;
@@ -852,9 +866,35 @@ public final class MapData {
                     lastUpdateX = mc.player.getX();
                     lastUpdateZ = mc.player.getZ();
                 }
+            } catch (OutOfMemoryError oom) {
+                oom.printStackTrace();
+                // The colour pass died: put the previous snapshot back so the map/3D view never
+                // shows new terrain with the old colour buffer (that is what produced the black
+                // patches), then offer the safe scaling like any other too-large map.
+                restorePreviousSnapshot(prevSnap, prevSnapStorage);
+                outOfMemory = true;
+                error = "OutOfMemoryError";
+                if (built != null && !allowOversize) {
+                    long limit = mapPixelLimit();
+                    long px = (long) built.width * built.height;
+                    long blockW = (long) built.width * built.pixelBlocks;
+                    long blockH = (long) built.height * built.pixelBlocks;
+                    int safe = Math.max(1, built.pixelBlocks);
+                    long safePx = px;
+                    while (safe < 8) {
+                        safePx = (blockW / safe) * (blockH / safe);
+                        if (safePx <= limit) break;
+                        safe++;
+                    }
+                    oversizePixels = px;
+                    oversizeLimit = limit;
+                    oversizeSafePixelBlocks = safePx <= limit ? safe : 0;
+                }
             } catch (Throwable t) {
                 t.printStackTrace();
                 error = t.getClass().getSimpleName() + ": " + t.getMessage();
+                // a failed build/render must not leave a half-updated snapshot behind either
+                restorePreviousSnapshot(prevSnap, prevSnapStorage);
             } finally {
                 if (!handedToMainThread) {
                     loading = false;
@@ -866,6 +906,25 @@ public final class MapData {
     }
 
     /** True while the initial refresh is still waiting for its delay. */
+    /** Puts the snapshot that was current before a failed update back, so data and colours stay paired. */
+    private void restorePreviousSnapshot(Snapshot previous, Path previousStorage) {
+        snap = previous;
+        snapStorage = previousStorage;
+        // the partially built analysis cache must not stay paired with a different snapshot
+        terrainCache = null;
+    }
+
+    /**
+     * Pixel budget for the terrain analysis. The arrays peak at roughly 60 bytes per pixel on top of
+     * the snapshot and the colour buffer, so even a large heap can only take a fraction of the
+     * configured limit; when the estimate exceeds this the oversize dialog suggests a coarser scale.
+     */
+    private static long mapPixelLimit() {
+        long configured = Math.max(10_000_000L, VoxyMapConfig.MAX_MAP_PIXELS.get());
+        long heapCap = Math.max(10_000_000L, (long) (Runtime.getRuntime().maxMemory() * 0.6) / 64L);
+        return Math.min(configured, heapCap);
+    }
+
     /** Reload with the suggested safe grid (coarser blocks per pixel). */
     public void retryWithSafeGrid() {
         if (oversizeSafePixelBlocks <= 0) return;
@@ -1007,8 +1066,12 @@ public final class MapData {
     }
 
     private static final int COLOR_CACHE_MAGIC = 0x56584331;
-    /** bumped to 2: the parallel/barrier-correct smoothing and histogram ramp changed the pixels. */
-    private static final int COLOR_CACHE_VERSION = 2;
+    /**
+     * 3: the colour cache now records the snapshot stamp, so a cached colour buffer can never be
+     * paired with a rebuilt snapshot again (that mismatch is what left black blocks on the map when
+     * a refresh ran out of memory before it could re-render the colours).
+     */
+    private static final int COLOR_CACHE_VERSION = 3;
 
     /** everything that changes the produced pixels; changing any of these invalidates the .vxc */
     private static String colorCacheKey(String style, int sea) {
@@ -1032,9 +1095,12 @@ public final class MapData {
             int w = in.readInt();
             int h = in.readInt();
             int pb = in.readInt();
+            long stamp = in.readLong();
             String key = in.readUTF();
             int clen = in.readInt();
-            if (w != s.width || h != s.height || pb != s.pixelBlocks
+            // the colour cache is only valid for the exact snapshot it was rendered from: a rebuilt
+            // snapshot (same dimensions!) whose re-render failed must not reuse the old colours
+            if (w != s.width || h != s.height || pb != s.pixelBlocks || stamp != s.stamp
                     || !key.equals(colorCacheKey(style, sea))) return null;
             byte[] comp = new byte[clen];
             in.readFully(comp);
@@ -1061,6 +1127,7 @@ public final class MapData {
             out.writeInt(s.width);
             out.writeInt(s.height);
             out.writeInt(s.pixelBlocks);
+            out.writeLong(s.stamp);
             out.writeUTF(colorCacheKey(style, sea));
             out.writeInt(comp.length);
             out.write(comp);
@@ -1082,7 +1149,7 @@ public final class MapData {
             dos.writeLong(s.minWX);
             dos.writeLong(s.minWZ);
             dos.writeInt(s.pixelBlocks);
-            dos.writeLong(0L);
+            dos.writeLong(s.stamp);
             dos.writeInt(s.biomeNames.size());
             for (Map.Entry<Integer, String> e : s.biomeNames.entrySet()) {
                 dos.writeInt(e.getKey());
@@ -1178,7 +1245,7 @@ public final class MapData {
             long mwx = dis.readLong();
             long mwz = dis.readLong();
             int pb = dis.readInt();
-            long cachedMtime = dis.readLong();
+            long stamp = dis.readLong();
             // Voxy rewrites its RocksDB constantly (mtime always newer after a restart),
             // so an existing cache stays valid; the manual refresh forces a rebuild.
             int bioN = dis.readInt();
@@ -1195,7 +1262,7 @@ public final class MapData {
             if (raw == null || raw.length != w * h * 8) return null;
             long[] px = new long[w * h];
             ByteBuffer.wrap(raw).order(ByteOrder.LITTLE_ENDIAN).asLongBuffer().get(px);
-            return new Snapshot(px, w, h, mwx, mwz, pb, bio);
+            return new Snapshot(px, w, h, mwx, mwz, pb, bio, stamp);
         } catch (Throwable t) {
             return null;
         }
@@ -1268,13 +1335,11 @@ public final class MapData {
                 RocksBridge.close(it);
             }
             if (maxWXv == Long.MIN_VALUE) return null;
-            // Guard against OutOfMemory: the analysis arrays peak at roughly 50-70 bytes per pixel on
-            // top of the 8 bytes per pixel stored in the snapshot. Cap the accepted size by half of
-            // the available heap even when the configured limit is larger (a forced load can still
-            // bypass this), then let the player decide between the safe grid and forcing the load.
-            final long configuredLimit = Math.max(10_000_000L, VoxyMapConfig.MAX_MAP_PIXELS.get());
-            final long heapLimit = Math.max(10_000_000L, Runtime.getRuntime().maxMemory() / 64L);
-            final long limit = Math.min(configuredLimit, heapLimit);
+            // Guard against OutOfMemory: the analysis arrays peak at roughly 60 bytes per pixel on top
+            // of the snapshot and colour buffers. Cap the accepted size by a fraction of the heap even
+            // when the configured limit is larger (a forced load can still bypass this), then let the
+            // player decide between the safe grid and forcing the load.
+            final long limit = mapPixelLimit();
             int pb = pixelBlocks;
             int gw = (int) ((maxWXv - minWXv + pb - 1) / pb);
             int gh = (int) ((maxWZv - minWZv + pb - 1) / pb);
@@ -1326,7 +1391,7 @@ public final class MapData {
                 RocksBridge.close(it2);
             }
             flush(futures, pix, gw, gh, minWXv, minWZv, pixelBlocks);
-            return new Snapshot(pix, gw, gh, minWXv, minWZv, pixelBlocks, biomeNames);
+            return new Snapshot(pix, gw, gh, minWXv, minWZv, pixelBlocks, biomeNames, System.nanoTime());
         } finally {
             for (Object h : handles) RocksBridge.close(h);
             RocksBridge.close(db);
@@ -2113,6 +2178,10 @@ public final class MapData {
         if (cached != null && cached.snapshot == s && cached.sea == sea && fp.equals(cached.fingerprint)) {
             return cached;
         }
+        // Drop the stale cache before allocating the new analysis arrays. It pins the previous
+        // snapshot plus ~22 B/px of arrays; on an 87M-pixel refresh that is ~2.6 GB of avoidable
+        // peak and was what pushed the colour pass into OutOfMemoryError.
+        terrainCache = null;
         long[] pixels = s.pixels;
         int w = s.width;
         int h = s.height;
@@ -2275,21 +2344,33 @@ public final class MapData {
         // coastal water stays shallow (the map rim is left empty)
         float[] depthMap = new float[w * h];
         boolean[] depthKnown = new boolean[w * h];
-        float[] knownVals = new float[w * h];
+        // 90th percentile via a small histogram instead of a float[w*h] array (that array alone was
+        // ~350 MB of peak heap on an 87M-pixel map)
+        final int DEPTH_BINS = 4096;
+        int[] depthHist = new int[DEPTH_BINS];
         int knownN = 0;
         for (int i = 0; i < pixels.length; i++) {
             if (!isWaterPix[i] || topArr[i] == Integer.MIN_VALUE) continue;
             int floor = floorArr[i];
             if (floor < topArr[i]) {
-                depthMap[i] = topArr[i] - floor;
+                int d = topArr[i] - floor;
+                depthMap[i] = d;
                 depthKnown[i] = true;
-                knownVals[knownN++] = depthMap[i];
+                depthHist[Math.min(DEPTH_BINS - 1, d)]++;
+                knownN++;
             }
         }
         float fillDepth = 20f;
         if (knownN > 0) {
-            Arrays.sort(knownVals, 0, knownN);
-            fillDepth = knownVals[Math.min(knownN - 1, (int) (knownN * 0.9f))];
+            int target = (int) (knownN * 0.9f);
+            int acc = 0;
+            for (int b = 0; b < DEPTH_BINS; b++) {
+                acc += depthHist[b];
+                if (acc > target) {
+                    fillDepth = Math.max(1f, b);
+                    break;
+                }
+            }
         }
         final int coastalK = 6;
         boolean[] coastalBand = new boolean[w * h];
