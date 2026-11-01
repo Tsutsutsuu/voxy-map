@@ -101,7 +101,12 @@ public final class MapData {
     private volatile double zoom = 0.5;
     private volatile Identifier textureId;
     private volatile Identifier textureIdSmall;
-    private volatile int[] lastRgb;
+    /**
+     * Immutable rendered colour buffer. The pixels, their dimensions and the epoch are published as
+     * one volatile reference: readers (LOD build, 3D rasteriser) never see a new array with stale
+     * dimensions, which used to produce an AIOOBE in the background mesh builder.
+     */
+    private volatile ColorFrame colorFrame;
     /** biome border pixels (w*h ARGB) for the 3D overlay / labels */
     private volatile int[] biomeEdgePx;
     /** bump when the biome border colour changes: forces the cached texture/edges to rebuild */
@@ -116,7 +121,8 @@ public final class MapData {
     private volatile long renderDistKey = Long.MIN_VALUE;
     private final AtomicBoolean buildingTextures = new AtomicBoolean();
     private final AtomicBoolean buildingBiome = new AtomicBoolean();
-    private volatile int lastW, lastH;
+    /** set when a texture build was requested while another one was running (retried on completion) */
+    private volatile boolean textureBuildPending;
     /** actual size of the currently registered map texture */
     private volatile int texW, texH;
     private volatile boolean loading;
@@ -140,7 +146,7 @@ public final class MapData {
     private volatile Path lastStorage;
     /** World the current snapshot was built from, used to reuse it when rejoining that world. */
     private volatile Path snapStorage;
-    /** Palette the current {@code lastRgb} was rendered with. */
+    /** Palette the current colour frame was rendered with. */
     private volatile String lastRenderedStyle;
     private boolean styleInitialized;
     private boolean initialRefreshDone;
@@ -148,8 +154,6 @@ public final class MapData {
     private volatile int worldEpoch;
     /** temporary override for the contour setting (the 3D view hides them); null = use config */
     public static volatile Boolean contourOverride;
-    /** bumped every time the rendered colour buffer changes */
-    private volatile int colorEpoch;
     /** bumped on every texture upload request; stale async builds compare against it */
     private volatile int texEpoch;
     /** 3D view: skip building biome labels during colour renders */
@@ -159,6 +163,21 @@ public final class MapData {
     private double lastUpdateX = Double.NaN, lastUpdateZ = Double.NaN;
 
     private MapData() {
+    }
+
+    /** Immutable rendered colour buffer, published as one object (see {@link #colorFrame}). */
+    public static final class ColorFrame {
+        public final int[] rgb;
+        public final int width;
+        public final int height;
+        public final int epoch;
+
+        ColorFrame(int[] rgb, int width, int height, int epoch) {
+            this.rgb = rgb;
+            this.width = width;
+            this.height = height;
+            this.epoch = epoch;
+        }
     }
 
     // ------------------------------------------------------------- state
@@ -326,24 +345,29 @@ public final class MapData {
         return p != LONG_EMPTY && (p & (1L << 52)) != 0;
     }
 
-    /** Rendered RGB colour at a map pixel (0 when no data yet). */
     /** Increments whenever the rendered colour buffer is replaced. */
     public int getColorEpoch() {
-        return colorEpoch;
+        ColorFrame f = colorFrame;
+        return f == null ? 0 : f.epoch;
     }
 
     /** Direct access to the rendered colour buffer (read-only, do not mutate). */
     public int[] getRgbSnapshot() {
-        return lastRgb;
+        ColorFrame f = colorFrame;
+        return f == null ? null : f.rgb;
     }
 
+    /** The colour buffer together with the dimensions it was rendered at (null before first render). */
+    public ColorFrame getColorFrame() {
+        return colorFrame;
+    }
+
+    /** Rendered RGB colour at a map pixel (0 when no data yet). */
     public int getRgbAt(int mapX, int mapZ) {
-        int[] rgb = lastRgb;
-        int w = lastW;
-        int h = lastH;
-        if (rgb == null || w <= 0 || h <= 0) return 0;
-        if (mapX < 0 || mapZ < 0 || mapX >= w || mapZ >= h) return 0;
-        return rgb[mapZ * w + mapX];
+        ColorFrame f = colorFrame;
+        if (f == null || f.width <= 0 || f.height <= 0) return 0;
+        if (mapX < 0 || mapZ < 0 || mapX >= f.width || mapZ >= f.height) return 0;
+        return f.rgb[mapZ * f.width + mapX];
     }
 
     /** Biome id at a world position, or -1 when unknown. */
@@ -502,6 +526,21 @@ public final class MapData {
         zoom = VoxyMapConfig.DEFAULT_ZOOM.get();
     }
 
+    /**
+     * Loads the per-world UI state of the world that is active now, on the calling (main) thread.
+     * Called when the map screen opens so remember3dView/rememberZoom do not consult the previous
+     * world's values before the async map build had a chance to load them.
+     */
+    public void loadCurrentWorldUiState() {
+        // already loaded for this world (map reopened, window resized, back from the config screen)
+        if (lastStorage != null) return;
+        if (!isOverworld()) return;
+        Path storage = findStorage();
+        if (storage == null) return;
+        lastStorage = storage;
+        loadUiState();
+    }
+
     private void saveUiState() {
         Path storage = lastStorage;
         if (storage == null) return;
@@ -654,10 +693,39 @@ public final class MapData {
         // cached texture instead of rebuilding and re-rendering (see updateAsync). A different world
         // is detected by comparing the storage path (needsWorldReload) and drops the old grid first.
         releaseTextures();
+        dropAnalysisCaches();
+        // 3D and forced-grid state is per-world too: without this a new world could inherit the
+        // previous world's 3D mode/camera or its safety-grid choice, and the first saveUiState()
+        // would write the current values into the previous world's state file
+        view3d = false;
+        view3dCameraSaved = false;
+        view3dYaw = (float) Math.toRadians(45);
+        view3dPitch = (float) Math.toRadians(-50);
+        view3dDistance = 1500f;
+        skipBiomeLabels = false;
+        contourOverride = null;
+        pixelBlocksOverride = 0;
+        allowOversize = false;
+        // do not persist per-world UI state until the new world's storage is known
+        lastStorage = null;
         error = "";
         progress = -1;
         biomeKeyCache.clear();
         applyConfiguredDefaults();
+    }
+
+    /**
+     * Drops the caches that pin the previous world's snapshot and its per-pixel arrays. The kept
+     * snapshot/colour frame are deliberately retained so rejoining the same world can re-upload the
+     * texture, but the terrain analysis (~30 B/px) has no value once the world is gone and would
+     * otherwise keep the old world in memory (doubling the peak when another world is built).
+     */
+    private void dropAnalysisCaches() {
+        terrainCache = null;
+        biomeEdgePx = null;
+        biomeEdgeVersion = 0;
+        renderDistPx = null;
+        renderDistKey = Long.MIN_VALUE;
     }
 
     /** True when the kept snapshot does not belong to the world that is loaded now. */
@@ -669,14 +737,13 @@ public final class MapData {
 
     /** Drops the kept snapshot and its textures before a different world is built. */
     public void dropSnapshotForWorldChange() {
-        if (snap == null && lastRgb == null) return;
+        if (snap == null && colorFrame == null) return;
         snap = null;
         snapStorage = null;
-        lastRgb = null;
+        colorFrame = null;
         lastRenderedStyle = null;
-        lastW = 0;
-        lastH = 0;
         biomeLabelsFlat = new int[0];
+        dropAnalysisCaches();
         releaseAllTextures();
     }
 
@@ -729,7 +796,8 @@ public final class MapData {
                 boolean sameWorld = snap != null && storage.equals(snapStorage);
                 if (sameWorld && !forceReload) {
                     final Snapshot kept = snap;
-                    final int[] keptRgb = lastRgb;
+                    ColorFrame keptFrame = colorFrame;
+                    final int[] keptRgb = keptFrame == null ? null : keptFrame.rgb;
                     if (keptRgb != null && style.equals(lastRenderedStyle)) {
                         handedToMainThread = true;
                         mc.execute(() -> {
@@ -806,9 +874,13 @@ public final class MapData {
     /** True while the initial refresh is still waiting for its delay. */
     /** Reload with the suggested safe grid (coarser blocks per pixel). */
     public void retryWithSafeGrid() {
+        if (oversizeSafePixelBlocks <= 0) return;
         pixelBlocksOverride = Math.max(1, oversizeSafePixelBlocks);
         allowOversize = false;
         oversizePixels = 0;
+        // drop the previous (oversized) snapshot first: keeping it alive while the coarser grid is
+        // being built doubles the peak, which is exactly what the safe mode is trying to avoid
+        dropSnapshotForWorldChange();
         updateAsync(true);
     }
 
@@ -817,6 +889,7 @@ public final class MapData {
         pixelBlocksOverride = 0;
         allowOversize = true;
         oversizePixels = 0;
+        dropSnapshotForWorldChange();
         updateAsync(true);
     }
 
@@ -946,7 +1019,8 @@ public final class MapData {
     }
 
     private static final int COLOR_CACHE_MAGIC = 0x56584331;
-    private static final int COLOR_CACHE_VERSION = 1;
+    /** bumped to 2: the parallel/barrier-correct smoothing and histogram ramp changed the pixels. */
+    private static final int COLOR_CACHE_VERSION = 2;
 
     /** everything that changes the produced pixels; changing any of these invalidates the .vxc */
     private static String colorCacheKey(String style, int sea) {
@@ -1206,10 +1280,13 @@ public final class MapData {
                 RocksBridge.close(it);
             }
             if (maxWXv == Long.MIN_VALUE) return null;
-            // Guard against OutOfMemory: the analysis arrays need roughly 20 bytes per pixel on top of
-            // the 8 bytes per pixel stored in the snapshot. Instead of silently downgrading or dying,
-            // report the size and let the player decide (dialog in MapScreen).
-            final long limit = Math.max(10_000_000L, VoxyMapConfig.MAX_MAP_PIXELS.get());
+            // Guard against OutOfMemory: the analysis arrays peak at roughly 50-70 bytes per pixel on
+            // top of the 8 bytes per pixel stored in the snapshot. Cap the accepted size by half of
+            // the available heap even when the configured limit is larger (a forced load can still
+            // bypass this), then let the player decide between the safe grid and forcing the load.
+            final long configuredLimit = Math.max(10_000_000L, VoxyMapConfig.MAX_MAP_PIXELS.get());
+            final long heapLimit = Math.max(10_000_000L, Runtime.getRuntime().maxMemory() / 64L);
+            final long limit = Math.min(configuredLimit, heapLimit);
             int pb = pixelBlocks;
             int gw = (int) ((maxWXv - minWXv + pb - 1) / pb);
             int gh = (int) ((maxWZv - minWZv + pb - 1) / pb);
@@ -1220,9 +1297,11 @@ public final class MapData {
                         && (long) ((maxWXv - minWXv + safe - 1) / safe) * ((maxWZv - minWZv + safe - 1) / safe) > limit) {
                     safe++;
                 }
+                long safePixels = (long) ((maxWXv - minWXv + safe - 1) / safe) * ((maxWZv - minWZv + safe - 1) / safe);
                 oversizePixels = pixelsEstimate;
                 oversizeLimit = limit;
-                oversizeSafePixelBlocks = safe;
+                // 0 = even the coarsest grid does not fit: the dialog must not offer "load safely"
+                oversizeSafePixelBlocks = safePixels <= limit ? safe : 0;
                 return null;
             }
             long[] pix = new long[gw * gh];
@@ -1495,9 +1574,10 @@ public final class MapData {
     /** Render the colour grid off the render thread, then upload it on the client thread. */
     /** Writes the most recently rendered map as a PNG. */
     public boolean exportPng(java.nio.file.Path out) {
-        int[] rgb = lastRgb;
-        int w = lastW, h = lastH;
-        if (rgb == null || w <= 0 || h <= 0) return false;
+        ColorFrame f = colorFrame;
+        if (f == null || f.width <= 0 || f.height <= 0) return false;
+        int[] rgb = f.rgb;
+        int w = f.width, h = f.height;
         try {
             java.nio.file.Files.createDirectories(out.getParent());
             java.awt.image.BufferedImage img = new java.awt.image.BufferedImage(w, h, java.awt.image.BufferedImage.TYPE_INT_RGB);
@@ -1539,10 +1619,9 @@ public final class MapData {
     /** Re-upload the main textures from the last rendered grid (background, used when reopening). */
     public void ensureMainTextures() {
         if (textureId != null) return;
-        Snapshot s = snap;
-        int[] rgb = lastRgb;
-        if (s == null || rgb == null) return;
-        buildTexturesAsync(s, rgb);
+        ColorFrame f = colorFrame;
+        if (snap == null || f == null) return;
+        buildTexturesAsync(f.width, f.height, f.rgb);
     }
 
     /** Build the 1-bit biome boundary mask + labels on the loader thread (overlay only). */
@@ -1588,28 +1667,31 @@ public final class MapData {
     }
 
     private void uploadTexture(Snapshot s, int[] rgb) {
-        lastRgb = rgb;
-        colorEpoch++;
+        ColorFrame prev = colorFrame;
+        colorFrame = new ColorFrame(rgb, s.width, s.height, prev == null ? 1 : prev.epoch + 1);
         texEpoch++;
-        lastW = s.width;
-        lastH = s.height;
         Minecraft mc = Minecraft.getInstance();
         // a rebuilt grid invalidates the biome overlay: drop it so ensureBiomeTexture regenerates it
         releaseOne(mc, biomeTextureId);
         biomeTextureId = null;
         biomeImage = null;
-        buildTexturesAsync(s, rgb);
+        buildTexturesAsync(s.width, s.height, rgb);
     }
 
     /** Builds the NativeImages on the loader thread; only the GPU upload runs on the main thread. */
-    private void buildTexturesAsync(Snapshot s, int[] rgb) {
-        if (!buildingTextures.compareAndSet(false, true)) return;
+    private void buildTexturesAsync(int w, int h, int[] rgb) {
+        if (!buildingTextures.compareAndSet(false, true)) {
+            // a build is already running with an older colour buffer: remember to start a fresh one
+            // when it finishes instead of silently leaving the map with stale colours
+            textureBuildPending = true;
+            return;
+        }
         final int epoch = texEpoch;
         final int worldEpochAtStart = worldEpoch;
         loader.submit(() -> {
             try {
-                NativeImage big = buildImage(rgb, s.width, s.height);
-                NativeImage small = buildSmall(rgb, s.width, s.height);
+                NativeImage big = buildImage(rgb, w, h);
+                NativeImage small = buildSmall(rgb, w, h);
                 Minecraft.getInstance().execute(() -> {
                     try {
                         if (epoch == texEpoch && worldEpochAtStart == worldEpoch) {
@@ -1621,9 +1703,21 @@ public final class MapData {
                     } finally {
                         buildingTextures.set(false);
                     }
+                    if (textureBuildPending) {
+                        textureBuildPending = false;
+                        // only rebuild when this build was stale (a newer colour arrived) or no
+                        // texture exists yet; otherwise the finished build is already the newest
+                        if (epoch != texEpoch || textureId == null) {
+                            ColorFrame f = colorFrame;
+                            if (f != null && snap != null) {
+                                buildTexturesAsync(f.width, f.height, f.rgb);
+                            }
+                        }
+                    }
                 });
             } catch (Throwable t) {
                 buildingTextures.set(false);
+                textureBuildPending = false;
                 t.printStackTrace();
             }
         });
@@ -2591,8 +2685,10 @@ public final class MapData {
         final int[] fOut = out;
         final int fw = w;
         final int fh = h;
+        // Two separate banded passes with a latch barrier between them. Doing both passes inside a
+        // single parallelRows call let the vertical pass read the neighbour band's rows before that
+        // band had written its horizontal pass, which produced horizontal seams every band boundary.
         parallelRows(h, (z0, z1) -> {
-            // horizontal pass
             for (int z = z0; z < z1; z++) {
                 int row = z * fw;
                 for (int x = 0; x < fw; x++) {
@@ -2609,7 +2705,8 @@ public final class MapData {
                     fTmp[row + x] = cnt == 0 ? Integer.MIN_VALUE : sum / cnt;
                 }
             }
-            // vertical pass (reads fTmp, writes fOut: both row-independent)
+        });
+        parallelRows(h, (z0, z1) -> {
             for (int z = z0; z < z1; z++) {
                 for (int x = 0; x < fw; x++) {
                     int sum = 0, cnt = 0;

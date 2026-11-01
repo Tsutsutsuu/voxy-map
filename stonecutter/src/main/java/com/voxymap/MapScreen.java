@@ -62,6 +62,8 @@ import java.util.Map;
 public class MapScreen extends Screen {
     private static final double ZOOM_MIN = 0.04;
     private static final double ZOOM_MAX = 8.0;
+    /** pitch used for "straight down" (entering 3D, centring on the player, exit animation) */
+    private static final float PITCH_STRAIGHT_DOWN = (float) Math.toRadians(-89.0);
     /** Top-right rows: map scale slider above the palette dropdown. */
     private static final int SCALE_ROW_Y = 8;
     private static final int STYLE_ROW_Y = 32;
@@ -90,6 +92,13 @@ public class MapScreen extends Screen {
     private boolean builtLodDebug;
     private double builtCamDist = -1.0;
     private double builtCenterZ = Double.NaN;
+    private double builtNearRadius = -1.0;
+    private double builtMidRadius = -1.0;
+    /** look-at target the mesh was built for: orbiting the camera no longer forces a rebuild */
+    private double builtTargetX = Double.NaN;
+    private double builtTargetZ = Double.NaN;
+    /** back-off after an empty/failed mesh build so the background pool is not spun every frame */
+    private long meshRetryAtNs;
     private float fov3d = 55f;
     private double verticalScale3d = 1.0;
     private Map3DSoft.Framebuffer fb3d;
@@ -118,6 +127,10 @@ public class MapScreen extends Screen {
     private int labels3dTotal;
     private int[] lastBiomeEdges;
     private boolean lastRdOn;
+    /** bumped whenever the 3D framebuffer/texture pair is rebuilt; stale frames are discarded */
+    private int soft3dGen;
+    /** set once the screen is closing so late background frames never touch released resources */
+    private boolean screenClosed;
     /** middle-drag started in 2D: switch to 3D on the first move and keep orbiting */
     private boolean pending3dOrbit;
     private boolean pendingFxaa;
@@ -321,11 +334,20 @@ public class MapScreen extends Screen {
 
     @Override
     protected void init() {
+        // init() also runs when this screen is resumed from the config screen, so clear the flag
+        // that invalidates frames from a temporarily released 3D framebuffer
+        screenClosed = false;
         openT = 0f;
         closing = false;
         closeT = 0f;
+        // load this world's per-world UI state before deciding whether to reopen in 3D. It used to be
+        // loaded from the async map build only, so a new/slow world could inherit the previous
+        // world's 3D mode and camera (and then write those values into the previous world's state
+        // file while its storage path was still the current one).
+        MapData data0 = MapData.INSTANCE;
+        data0.loadCurrentWorldUiState();
         // restore this world's last 3D mode if the player asked to remember it
-        if (!view3d && VoxyMapConfig.REMEMBER_3D_VIEW.get() && MapData.INSTANCE.getView3d()) {
+        if (!view3d && VoxyMapConfig.REMEMBER_3D_VIEW.get() && data0.getView3d()) {
             toggle3D(true);
         }
         // restore the last zoom for this world (or the configured default)
@@ -479,6 +501,9 @@ public class MapScreen extends Screen {
                         fb3d.width, fb3d.height, fb3d.width, fb3d.height);
             }
             drawPlayerMarker3d(g);
+            // the label blockers (buttons, plates) are the same controls in 3D; without this the
+            // 3D labels could be drawn on top of them because the 2D branch never ran
+            collectLabelBlockers(mouseX, mouseY);
             drawBiomeLabels3d(g);
         } else {
             drawMap(g, data, uiScale);
@@ -505,6 +530,10 @@ public class MapScreen extends Screen {
                             data.getProgress()), 24, COL_WARN);
                 } else if (data.isStyleChanging()) {
                     drawStatusLine(g, Component.translatable("voxymap.ui.view3dBuildingColors"), 24, COL_WARN);
+                } else if (data.getMapWidth() <= 0) {
+                    // no data / build error: show the same message the 2D view uses instead of a
+                    // black screen with no explanation
+                    drawStatusText(g, data);
                 } else if (building3d || mesh3d == null) {
                     drawStatusLine(g, Component.translatable("voxymap.ui.view3dBuildingMesh"), 24, COL_WARN);
                 }
@@ -539,6 +568,13 @@ public class MapScreen extends Screen {
         // nearest neighbour; smaller uses linear (pre-filtered copy when far out)
         int texW = data.getTextureWidth();
         int texH = data.getTextureHeight();
+        if (texW <= 0 || texH <= 0) {
+            // the big texture was released on close (releaseTexturesOnClose) while the 1/4 copy is
+            // still registered: keep drawing it at the map's size instead of returning early, which
+            // used to leave the reopened map black until the big texture finished uploading
+            texW = data.getMapWidth();
+            texH = data.getMapHeight();
+        }
         if (texW <= 0 || texH <= 0) return;
         double x0 = width / 2.0 - centerPx() * zoom;
         double y0 = height / 2.0 - centerPz() * zoom;
@@ -621,8 +657,10 @@ public class MapScreen extends Screen {
                             data.getRenderDistX0(), data.getRenderDistZ0(),
                             data.getRenderDistW(), data.getRenderDistH())));
             if (mesh3d != null) {
-                lines.add(String.format(Locale.ROOT, "lod: verts=%d tris=%d baseStep=%dpx near=4px mid=8px far=34px",
-                        mesh3d.vertices.length / 7, mesh3d.indices.length / 3, mesh3d.step));
+                lines.add(String.format(Locale.ROOT, "lod: verts=%d tris=%d baseStep=%dpx near=%d mid=%d far=%d",
+                        mesh3d.vertices.length / 7, mesh3d.indices.length / 3, mesh3d.step,
+                        VoxyMapConfig.LOD_STEP_NEAR.get(), VoxyMapConfig.LOD_STEP_MID.get(),
+                        VoxyMapConfig.LOD_STEP_FAR.get()));
             }
             if (cam3d != null) {
                 lines.add(String.format(Locale.ROOT, "cam: t=(%.0f,%.0f,%.0f) yaw=%.2f pitch=%.2f dist=%.0f",
@@ -722,11 +760,10 @@ public class MapScreen extends Screen {
             double pb = data.getPixelBlocks();
             double tanHalf = Math.tan(Math.toRadians(fov3d * 0.5));
             double dist = pb * height / (2.0 * Math.max(0.05, zoom) * Math.max(1e-4, tanHalf));
-            dist = Math.max(VoxyMapConfig.MIN_DISTANCE_3D.get(),
-                    Math.min(VoxyMapConfig.MAX_DISTANCE_3D.get(), dist));
+            dist = Math.max(minDistance3d(), Math.min(maxDistance3d(), dist));
             cam3d.distance = (float) dist;
             cam3d.yaw = 0f;
-            cam3d.pitch = (float) Math.toRadians(-89.0);
+            cam3d.pitch = PITCH_STRAIGHT_DOWN;
         }
         cam3dDirty = true;
         data.skipBiomeLabels = true;
@@ -754,11 +791,31 @@ public class MapScreen extends Screen {
             double z = pb * height / (2.0 * Math.max(1.0, cam3d.distance) * Math.max(1e-4, tanHalf));
             zoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, z));
         }
+        restore3dOverrides();
+    }
+
+    /**
+     * Undoes the process-wide 3D-only overrides (hidden contours, skipped label rebuilds) so the
+     * 2D view is left in the state the player's settings describe. Called both when leaving the 3D
+     * view normally and when the map screen is closed while still in 3D.
+     */
+    private void restore3dOverrides() {
+        MapData data = MapData.INSTANCE;
         data.skipBiomeLabels = false;
         if (MapData.contourOverride != null) {
             MapData.contourOverride = null;
             data.requestColorRerender();
         }
+    }
+
+    /** Closest allowed 3D camera distance (tolerates a swapped min/max config). */
+    private static float minDistance3d() {
+        return Math.min(VoxyMapConfig.MIN_DISTANCE_3D.get(), VoxyMapConfig.MAX_DISTANCE_3D.get());
+    }
+
+    /** Farthest allowed 3D camera distance (tolerates a swapped min/max config). */
+    private static float maxDistance3d() {
+        return Math.max(VoxyMapConfig.MIN_DISTANCE_3D.get(), VoxyMapConfig.MAX_DISTANCE_3D.get());
     }
 
     private void ensureCamera3d() {
@@ -790,6 +847,8 @@ public class MapScreen extends Screen {
         int stepFar = Math.max(stepMid, VoxyMapConfig.LOD_STEP_FAR.get());
         double wantVScale = VoxyMapConfig.VERTICAL_SCALE_3D.get();
         boolean wantLodDebug = VoxyMapConfig.LOD_DEBUG_COLORS_3D.get();
+        double nearRadius = Math.max(200.0, VoxyMapConfig.LOD_NEAR_RADIUS.get());
+        double midRadius = Math.max(nearRadius + 100.0, VoxyMapConfig.LOD_MID_RADIUS.get());
         var player = Minecraft.getInstance().player;
         double cx;
         double cz;
@@ -805,6 +864,8 @@ public class MapScreen extends Screen {
             cx = data.getMinWX() + data.getMapWidth() * (double) data.getPixelBlocks() / 2.0;
             cz = data.getMinWZ() + data.getMapHeight() * (double) data.getPixelBlocks() / 2.0;
         }
+        double targetX = cam3d != null ? cam3d.targetX : cx;
+        double targetZ = cam3d != null ? cam3d.targetZ : cz;
         // the LOD mesh is built once and only rebuilt when its settings change or the camera travels
         // far away (rebuilding on every small movement made LOD switching feel sluggish)
         double camDist0 = cam3d != null ? cam3d.distance : 1500.0;
@@ -817,18 +878,25 @@ public class MapScreen extends Screen {
                 && builtStepA == stepNear && builtStepB == stepMid && builtStepC == stepFar
                 && builtVScale3d == wantVScale
                 && builtLodDebug == wantLodDebug
+                && builtNearRadius == nearRadius
+                && builtMidRadius == midRadius
                 && !zoomChanged
-                && Math.abs(cx - builtCenterX) < VoxyMapConfig.LOD_REBUILD_DISTANCE.get()
-                && Math.abs(cz - builtCenterZ) < VoxyMapConfig.LOD_REBUILD_DISTANCE.get();
+                // compare the look-at target, not the orbiting eye: rotating the camera used to
+                // rebuild the whole mesh every ~300 blocks of eye travel
+                && Math.abs(targetX - builtTargetX) < VoxyMapConfig.LOD_REBUILD_DISTANCE.get()
+                && Math.abs(targetZ - builtTargetZ) < VoxyMapConfig.LOD_REBUILD_DISTANCE.get();
         if (upToDate || building3d) return;
+        if (System.nanoTime() < meshRetryAtNs) return;
         building3d = true;
         // detail is expressed as "every N x N map pixels get one vertex"
         int[] stepsPx = {stepNear, stepMid, stepFar};
         double camDist = cam3d != null ? cam3d.distance : 1500.0;
         // fixed layer radii (spherical): the detail size does not change with zoom
-        double nearRadius = Math.max(200.0, VoxyMapConfig.LOD_NEAR_RADIUS.get());
-        double midRadius = Math.max(nearRadius + 100.0, VoxyMapConfig.LOD_MID_RADIUS.get());
         double[] radii = {nearRadius, midRadius, 1.0e9};
+        final int colorEpoch0 = data.getColorEpoch();
+        final int pixelBlocks0 = data.getPixelBlocks();
+        final double ftargetX = targetX;
+        final double ftargetZ = targetZ;
         final double fcx = cx;
         final double fcz = cz;
         final double fey = cam3d != null ? cam3d.eyeY() : 120.0;
@@ -845,23 +913,42 @@ public class MapScreen extends Screen {
         final boolean fLodDebug = wantLodDebug;
         final double fCamDist = camDist;
         java.util.concurrent.CompletableFuture.runAsync(() -> {
-            Map3D.Mesh mesh = Map3D.buildLod(data, fcx, fey, fcz, fv, fSteps, radii, fLodDebug, fHeightAvg);
+            Map3D.Mesh mesh = null;
+            try {
+                mesh = Map3D.buildLod(data, fcx, fey, fcz, fv, fSteps, radii, fLodDebug, fHeightAvg);
+            } catch (Throwable t) {
+                // never leave building3d stuck: a thrown background build would otherwise disable
+                // the 3D mesh for the rest of the session
+                t.printStackTrace();
+            }
+            final Map3D.Mesh built = mesh;
             Minecraft.getInstance().execute(() -> {
-                if (mesh != null) {
-                    mesh3d = mesh;
-                    builtStepA = fStepA;
-                    builtStepB = fStepB;
-                    builtStepC = fStepC;
-                    builtColorEpoch = data.getColorEpoch();
-                    builtPixelBlocks = data.getPixelBlocks();
-                    builtVScale3d = fv;
-                    builtLodDebug = fLodDebug;
-                    builtCamDist = fCamDist;
-                    builtCenterX = fcx;
-                    builtCenterZ = fcz;
-                    cam3dDirty = true;
+                try {
+                    if (built != null) {
+                        mesh3d = built;
+                        builtStepA = fStepA;
+                        builtStepB = fStepB;
+                        builtStepC = fStepC;
+                        builtColorEpoch = colorEpoch0;
+                        builtPixelBlocks = pixelBlocks0;
+                        builtVScale3d = fv;
+                        builtLodDebug = fLodDebug;
+                        builtCamDist = fCamDist;
+                        builtNearRadius = nearRadius;
+                        builtMidRadius = midRadius;
+                        builtCenterX = fcx;
+                        builtCenterZ = fcz;
+                        builtTargetX = ftargetX;
+                        builtTargetZ = ftargetZ;
+                        meshRetryAtNs = 0L;
+                        cam3dDirty = true;
+                    } else {
+                        // empty mesh or a failed build: back off instead of retrying every frame
+                        meshRetryAtNs = System.nanoTime() + 3_000_000_000L;
+                    }
+                } finally {
+                    building3d = false;
                 }
-                building3d = false;
             });
         });
     }
@@ -875,9 +962,11 @@ public class MapScreen extends Screen {
         int w = Math.max(2, (int) (width * guiScale * pct / 100f));
         int wh = Math.max(2, (int) (height * guiScale * pct / 100f));
         if (fb3d != null && fb3d.width == w && fb3d.height == wh) return;
+        // stale background frames are identified by this generation: bump it before replacing the
+        // framebuffer/texture pair so their callbacks are discarded instead of writing a closed image
+        soft3dGen++;
         if (tex3dId != null) {
-            var oldTex = mc.getTextureManager().getTexture(tex3dId);
-            if (oldTex != null) oldTex.close();
+            // TextureManager.release closes the old DynamicTexture (and its NativeImage)
             mc.getTextureManager().release(tex3dId);
             tex3dId = null;
         }
@@ -928,7 +1017,7 @@ public class MapScreen extends Screen {
      * blocks the client; the finished image is copied into the dynamic texture on the main thread.
      */
     private void updateSoft3d() {
-        if (!view3d || mesh3d == null || cam3d == null) return;
+        if (screenClosed || !view3d || mesh3d == null || cam3d == null) return;
         ensureSoft3d();
         if (soft3dPending) return;
         boolean dirty = cam3dDirty;
@@ -940,6 +1029,7 @@ public class MapScreen extends Screen {
             lastCamChangeNs = now;
             pendingFxaa = VoxyMapConfig.ANTIALIAS_3D.get();
             soft3dPending = true;
+            final int gen = soft3dGen;
             final Map3D.Camera cam = new Map3D.Camera();
             cam.targetX = cam3d.targetX;
             cam.targetY = cam3d.targetY;
@@ -950,7 +1040,7 @@ public class MapScreen extends Screen {
             final Map3D.Mesh mesh = mesh3d;
             final Map3DSoft.Framebuffer fb = fb3d;
             final float fov = fov3d;
-            soft3dTask = java.util.concurrent.CompletableFuture.runAsync(() -> {
+            java.util.concurrent.CompletableFuture.runAsync(() -> {
                 long t0 = System.nanoTime();
                 MapData md = MapData.INSTANCE;
                 int[] edges = md.isBiomeOverlay() ? md.getBiomeEdgeSnapshot() : null;
@@ -959,14 +1049,25 @@ public class MapScreen extends Screen {
                 double rdCx = pl != null ? pl.getX() : 0;
                 double rdCz = pl != null ? pl.getZ() : 0;
                 double rdDist = Minecraft.getInstance().options.renderDistance().get() * 16.0;
-                Map3DSoft.render(mesh, cam, fov, fb, 0xFF0D0D14, md,
-                        VoxyMapConfig.LOD_DEBUG_COLORS_3D.get(), edges, null, 0, 0, 0, 0,
-                        rdCx, rdCz, rdDist, rdOn);
+                try {
+                    Map3DSoft.render(mesh, cam, fov, fb, 0xFF0D0D14, md,
+                            VoxyMapConfig.LOD_DEBUG_COLORS_3D.get(), edges, null, 0, 0, 0, 0,
+                            rdCx, rdCz, rdDist, rdOn);
+                } catch (Throwable t) {
+                    // a failed background render must not leave the 3D view stuck on "render pending"
+                    t.printStackTrace();
+                    Minecraft.getInstance().execute(() -> soft3dPending = false);
+                    return;
+                }
                 long nanos = System.nanoTime() - t0;
                 Minecraft.getInstance().execute(() -> {
                     try {
+                        // discard frames for a framebuffer/texture pair that is gone or for a
+                        // screen that already closed: writing them would touch a closed NativeImage
+                        if (screenClosed || gen != soft3dGen || img3d == null) return;
                         dbg3dNanos = nanos;
                         copyToImageAndUpload(fb);
+                        dbg3dFrames++;
                     } finally {
                         soft3dPending = false;
                     }
@@ -977,10 +1078,15 @@ public class MapScreen extends Screen {
         if (pendingFxaa && settled) {
             // camera stopped: run one antialiasing pass over the finished image
             pendingFxaa = false;
-            dbg3dNanos = System.nanoTime();
-            Map3DSoft.applyFxaa(fb3d);
-            copyToImageAndUpload(fb3d);
-            dbg3dNanos = System.nanoTime() - dbg3dNanos;
+            if (screenClosed || img3d == null || tex3dDyn == null) return;
+            try {
+                dbg3dNanos = System.nanoTime();
+                Map3DSoft.applyFxaa(fb3d);
+                copyToImageAndUpload(fb3d);
+                dbg3dNanos = System.nanoTime() - dbg3dNanos;
+            } catch (Throwable t) {
+                t.printStackTrace();
+            }
         }
     }
 
@@ -1007,9 +1113,10 @@ public class MapScreen extends Screen {
     }
 
     private void releaseSoft3d() {
+        // bump the generation first so any in-flight frame is discarded before resources go away
+        soft3dGen++;
         if (tex3dId != null) {
-            var tex = Minecraft.getInstance().getTextureManager().getTexture(tex3dId);
-            if (tex != null) tex.close();
+            // TextureManager.release closes the DynamicTexture, which also closes its NativeImage
             Minecraft.getInstance().getTextureManager().release(tex3dId);
             tex3dId = null;
         }
@@ -1410,6 +1517,7 @@ public class MapScreen extends Screen {
     private void drawOversizeWarning(GuiGraphicsExtractor g, int mouseX, int mouseY) {
         MapData data = MapData.INSTANCE;
         OversizeBox box = oversizeBox();
+        boolean hasSafe = data.oversizeSafePixelBlocks > 0;
         g.fill(0, 0, width, height, 0x99000000);
         g.fill(box.x(), box.y(), box.x() + box.w(), box.y() + box.h(), COL_PANEL_DIALOG);
         g.fill(box.x(), box.y(), box.x() + box.w(), box.y() + 1, COL_BORDER);
@@ -1424,9 +1532,17 @@ public class MapScreen extends Screen {
         g.centeredText(font, Component.translatable("voxymap.ui.oversize.line2"), width / 2, ty, COL_TEXT_DIM);
         ty += font.lineHeight + 2;
         g.centeredText(font, Component.translatable("voxymap.ui.oversize.line3"), width / 2, ty, COL_TEXT_DIM);
-        drawDialogButton(g, box.firstBtnX(), box.btnY(), box.btnW(), box.btnH(),
-                Component.translatable("voxymap.ui.oversize.safe"), COL_ACCENT, mouseX, mouseY);
-        drawDialogButton(g, box.secondBtnX(), box.btnY(), box.btnW(), box.btnH(),
+        if (!hasSafe) {
+            ty += font.lineHeight + 2;
+            g.centeredText(font, Component.translatable("voxymap.ui.oversize.noSafe"),
+                    width / 2, ty, COL_WARN);
+        }
+        if (hasSafe) {
+            drawDialogButton(g, box.firstBtnX(), box.btnY(), box.btnW(), box.btnH(),
+                    Component.translatable("voxymap.ui.oversize.safe"), COL_ACCENT, mouseX, mouseY);
+        }
+        int forceX = hasSafe ? box.secondBtnX() : box.x() + (box.w() - box.btnW()) / 2;
+        drawDialogButton(g, forceX, box.btnY(), box.btnW(), box.btnH(),
                 Component.translatable("voxymap.ui.oversize.force"), COL_WARN, mouseX, mouseY);
     }
 
@@ -1449,12 +1565,13 @@ public class MapScreen extends Screen {
         org.joml.Vector3f top = cam3d.worldToScreen(px, markY, pz, vp, width, height);
         org.joml.Vector3f base = cam3d.worldToScreen(px, ground, pz, vp, width, height);
         if (top == null || base == null) return;
-        // vertical line from the marker down to the terrain
+        // vertical line from the marker down to the terrain (clipped to the screen: an extreme
+        // camera angle can project this line tens of thousands of pixels tall)
         int lineX = Math.round(top.x);
         int y0 = Math.min(Math.round(top.y), Math.round(base.y));
         int y1 = Math.max(Math.round(top.y), Math.round(base.y));
-        for (int yy = y0; yy <= y1; yy++) {
-            g.fill(lineX, yy, lineX + 1, yy + 1, 0xFFFFFFFF);
+        if (y1 >= 0 && y0 <= height) {
+            g.fill(lineX, Math.max(0, y0), lineX + 1, Math.min(height, y1 + 1), 0xFFFFFFFF);
         }
         // arrow: a HORIZONTAL quad (normal = world +Y) textured with the 2D arrow artwork.
         // v=0 is the TIP, so it sits at the player's facing end; the quad is subdivided so the
@@ -1742,7 +1859,13 @@ public class MapScreen extends Screen {
         MapData data = MapData.INSTANCE;
         if (!data.isBiomeOverlay() || cam3d == null || data.getMapWidth() <= 0) return;
         int[] labels = data.getBiomeLabelsFlat();
-        if (labels.length == 0) return;
+        if (labels.length == 0) {
+            labels3dTotal = 0;
+            labels3dDrawn = 0;
+            return;
+        }
+        labels3dTotal = labels.length / 3;
+        labels3dDrawn = 0;
         int pb = data.getPixelBlocks();
         long minWX = data.getMinWX();
         long minWZ = data.getMinWZ();
@@ -2012,6 +2135,9 @@ public class MapScreen extends Screen {
         if (VoxyMapConfig.REMEMBER_ZOOM.get()) {
             MapData.INSTANCE.setZoom(zoom);
         }
+        // closing the map while still in 3D used to leave the contour/label overrides set for the
+        // rest of the session (2D contours vanished, biome labels stopped rebuilding)
+        restore3dOverrides();
         if (VoxyMapConfig.RELEASE_TEXTURES_ON_CLOSE.get()) {
             try {
                 MapData.INSTANCE.releaseTextures();
@@ -2020,6 +2146,30 @@ public class MapScreen extends Screen {
             }
         }
         super.onClose();
+    }
+
+    @Override
+    public void removed() {
+        // reached both when the map is closed and when another screen temporarily replaces it
+        // (e.g. the config screen); init() clears screenClosed again on return
+        screenClosed = true;
+        releaseSoft3d();
+        releaseArrowTexture();
+        super.removed();
+    }
+
+    /** Releases the 3D arrow texture and the source image it samples from. */
+    private void releaseArrowTexture() {
+        if (arrowImgId != null) {
+            Minecraft.getInstance().getTextureManager().release(arrowImgId);
+            arrowImgId = null;
+        }
+        arrowImg = null;
+        arrowCacheKey = "";
+        if (sourceArrow != null) {
+            sourceArrow.close();
+            sourceArrow = null;
+        }
     }
 
     @Override
@@ -2040,7 +2190,7 @@ public class MapScreen extends Screen {
                     cam3d.setTarget(p.getX(), ty, p.getZ());
                     // straight down on the player arrow with the rotation reset
                     cam3d.yaw = 0f;
-                    cam3d.pitch = (float) Math.toRadians(-89.0);
+                    cam3d.pitch = PITCH_STRAIGHT_DOWN;
                     cam3dDirty = true;
                 } else {
                     centerX = p.getX();
@@ -2066,12 +2216,14 @@ public class MapScreen extends Screen {
         if (!data.isOverworld()) return true;
         if (MapData.INSTANCE.oversizePixels > 0) {
             OversizeBox box = oversizeBox();
-            if (button == 0 && mx >= box.firstBtnX() && mx <= box.firstBtnX() + box.btnW()
+            boolean hasSafe = data.oversizeSafePixelBlocks > 0;
+            if (button == 0 && hasSafe && mx >= box.firstBtnX() && mx <= box.firstBtnX() + box.btnW()
                     && my >= box.btnY() && my <= box.btnY() + box.btnH()) {
                 data.retryWithSafeGrid();
                 return true;
             }
-            if (button == 0 && mx >= box.secondBtnX() && mx <= box.secondBtnX() + box.btnW()
+            int forceX = hasSafe ? box.secondBtnX() : box.x() + (box.w() - box.btnW()) / 2;
+            if (button == 0 && mx >= forceX && mx <= forceX + box.btnW()
                     && my >= box.btnY() && my <= box.btnY() + box.btnH()) {
                 data.retryOversized();
                 return true;
@@ -2163,7 +2315,8 @@ public class MapScreen extends Screen {
         Component d3m = Component.translatable("voxymap.ui.view3d");
         int d3wm = font.width(d3m) + 12;
         if (button == 0 && mx >= selX2 - 6 - d3wm && mx <= selX2 - 6 && my >= selY2 && my <= selY2 + 20) {
-            if (!data.isLoading()) {
+            // match the painted disabled state: no switching while a style change is running
+            if (!data.isLoading() && !data.isStyleChanging()) {
                 toggle3D();
             }
             return true;
@@ -2286,9 +2439,8 @@ public class MapScreen extends Screen {
                 // middle drag: orbit around the target
                 double sens = 0.006 * VoxyMapConfig.ROTATE_SENS_3D.get();
                 cam3d.yaw -= (float) (dx * sens);
-                float limit = (float) Math.toRadians(-85);
                 float minPitch = (float) Math.toRadians(-5);
-                cam3d.pitch = Math.max(limit,
+                cam3d.pitch = Math.max(PITCH_STRAIGHT_DOWN,
                         Math.min(minPitch, cam3d.pitch - (float) (dy * sens * 0.66)));
             } else {
                 // right button: no camera action
@@ -2307,6 +2459,9 @@ public class MapScreen extends Screen {
 
     @Override
     public boolean mouseReleased(MouseButtonEvent e) {
+        // a middle-click that never turned into a drag must not leave the "switch to 3D" pending:
+        // otherwise the next left-drag jumped into the 3D view out of nowhere
+        if (e.button() == 2) pending3dOrbit = false;
         double mx = e.x();
         double my = e.y();
         if (sliderDragging) {
@@ -2330,8 +2485,10 @@ public class MapScreen extends Screen {
         if (!MapData.INSTANCE.isOverworld()) return true;
         if (view3d && cam3d != null) {
             double zoomStep = 1.0 + 0.15 * VoxyMapConfig.ZOOM_SENS_3D.get();
-            cam3d.distance = (float) Math.max(VoxyMapConfig.MIN_DISTANCE_3D.get(),
-                    Math.min(VoxyMapConfig.MAX_DISTANCE_3D.get(),
+            // a horizontal-only scroll (scrollY == 0) must not zoom the 3D view
+            if (scrollY == 0) return false;
+            cam3d.distance = (float) Math.max(minDistance3d(),
+                    Math.min(maxDistance3d(),
                             cam3d.distance * (scrollY > 0 ? 1.0 / zoomStep : zoomStep)));
             cam3dDirty = true;
             return true;

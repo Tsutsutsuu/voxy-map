@@ -60,6 +60,9 @@ public final class Map3DSoft {
         fb.clear(background);
         float aspect = (float) fb.width / (float) fb.height;
         Matrix4f vp = cam.viewProjection(aspect, fovDegrees);
+        // one immutable colour frame for the whole frame: no per-pixel volatile reads and no torn
+        // "new pixels + old dimensions" reads
+        final com.voxymap.MapData.ColorFrame colors = data.getColorFrame();
         float[] verts = mesh.vertices;
         int[] idx = mesh.indices;
         int vcount = verts.length / 7;
@@ -116,7 +119,7 @@ public final class Map3DSoft {
                 triangle(fb, 0, 1, sx[a], sy[a], sinv[a], swx[a], swz[a],
                         sx[b], sy[b], sinv[b], swx[b], swz[b],
                         sx[c], sy[c], sinv[c], swx[c], swz[c], data,
-                        scol[a], scol[b], scol[c], vertexColors,
+                        scol[a], scol[b], scol[c], vertexColors, colors,
                         biomeEdges, rdPx, rdX0, rdZ0, rdW, rdH, rdCenterX, rdCenterZ, rdDist, rdEnabled);
             }
             return;
@@ -145,7 +148,7 @@ public final class Map3DSoft {
                                 triangle(fb, fBand, fBands, fsx[a], fsy[a], fsinv[a], fswx[a], fswz[a],
                                 fsx[b], fsy[b], fsinv[b], fswx[b], fswz[b],
                                 fsx[c], fsy[c], fsinv[c], fswx[c], fswz[c], data,
-                                fscol[a], fscol[b], fscol[c], fVertexColors,
+                                fscol[a], fscol[b], fscol[c], fVertexColors, colors,
                                 biomeEdges, rdPx, rdX0, rdZ0, rdW, rdH, rdCenterX, rdCenterZ, rdDist, rdEnabled);
                     }
                 } finally {
@@ -183,6 +186,7 @@ public final class Map3DSoft {
                                  float x1, float y1, float i1, float wx1, float wz1,
                                  float x2, float y2, float i2, float wx2, float wz2,
                                  com.voxymap.MapData data, int c0, int c1, int c2, boolean vertexColors,
+                                 com.voxymap.MapData.ColorFrame colors,
                                  int[] biomeEdges, int[] rdPx, int rdX0, int rdZ0, int rdW, int rdH,
                                  double rdCenterX, double rdCenterZ, double rdDist, boolean rdEnabled) {
         // frustum cull: reject triangles entirely outside the screen before computing bounds
@@ -240,8 +244,13 @@ public final class Map3DSoft {
                     fb.color[di] = 0xFF000000 | (r << 16) | (g << 8) | b;
                 } else {
                     int rgb = 0;
-                    int[] buf = data.getRgbSnapshot();
-                    if (buf != null && mx + mz * mapW < buf.length) rgb = buf[mx + mz * mapW];
+                    if (colors != null) {
+                        int cw = colors.width;
+                        int ch = colors.height;
+                        int ccol = mx < cw ? mx : cw - 1;
+                        int crow = mz < ch ? mz : ch - 1;
+                        if (ccol >= 0 && crow >= 0) rgb = colors.rgb[crow * cw + ccol];
+                    }
                     if (biomeEdges != null && mx + mz * mapW < biomeEdges.length) {
                         rgb = blendOverlay(rgb, biomeEdges[mx + mz * mapW]);
                     }
