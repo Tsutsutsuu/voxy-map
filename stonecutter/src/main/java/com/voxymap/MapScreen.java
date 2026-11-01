@@ -376,7 +376,9 @@ public class MapScreen extends Screen {
         double h = data.getMapHeight() * zoom;
         int srcW = useSmall ? Math.max(1, data.getMapWidth() / 4) : data.getMapWidth();
         int srcH = useSmall ? Math.max(1, data.getMapHeight() / 4) : data.getMapHeight();
-        g.blit(RenderPipelines.GUI_TEXTURED, tex, (int) Math.round(x0), (int) Math.round(y0),
+        // GUI_TEXTURED is opaque; use the premultiplied-alpha pipeline so unexplored (alpha 0)
+        // pixels let the background through instead of drawing black
+        g.blit(RenderPipelines.GUI_TEXTURED_PREMULTIPLIED_ALPHA, tex, (int) Math.round(x0), (int) Math.round(y0),
                 0f, 0f, Math.max(1, (int) Math.round(w)), Math.max(1, (int) Math.round(h)),
                 srcW, srcH, srcW, srcH);
     }

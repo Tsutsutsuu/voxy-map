@@ -374,9 +374,13 @@ public class MapScreen extends Screen {
         double h = data.getMapHeight() * zoom;
         int srcW = useSmall ? Math.max(1, data.getMapWidth() / 4) : data.getMapWidth();
         int srcH = useSmall ? Math.max(1, data.getMapHeight() / 4) : data.getMapHeight();
+        // unexplored pixels are alpha 0: enable blending so they show the background
+        RenderSystem.enableBlend();
+        RenderSystem.defaultBlendFunc();
         g.blit(tex, (int) Math.round(x0), (int) Math.round(y0),
                 Math.max(1, (int) Math.round(w)), Math.max(1, (int) Math.round(h)),
                 0, 0, srcW, srcH, srcW, srcH);
+        RenderSystem.disableBlend();
     }
 
     /** Layer 2: things drawn on top of the map - biome boundaries, player marker, render-distance box. */
