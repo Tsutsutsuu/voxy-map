@@ -315,6 +315,9 @@ public class MapScreen extends Screen {
                 data.updateAsync();
             }
         }
+        // travelled farther than refreshDistanceChunks while the map was closed: auto-refresh now,
+        // because the automatic refresh only runs while the map is visible
+        data.refreshIfMoved();
     }
 
     @Override

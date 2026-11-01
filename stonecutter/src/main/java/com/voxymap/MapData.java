@@ -162,6 +162,8 @@ public final class MapData {
     public volatile boolean outOfMemory;
 
     private long sessionStartMs;
+    /** debounces automatic refreshes so a failing rebuild cannot restart every tick */
+    private long lastAutoRefreshMs;
     private double lastUpdateX = Double.NaN, lastUpdateZ = Double.NaN;
 
     private MapData() {
@@ -687,6 +689,7 @@ public final class MapData {
     /** Called when the client leaves a world or joins another one. */
     public void resetForNewWorld() {
         sessionStartMs = 0;
+        lastAutoRefreshMs = 0;
         lastUpdateX = Double.NaN;
         lastUpdateZ = Double.NaN;
         initialRefreshDone = false;
@@ -811,6 +814,11 @@ public final class MapData {
                             try {
                                 if (textureId == null) uploadTexture(kept, keptRgb);
                                 progress = 100;
+                                Minecraft m = Minecraft.getInstance();
+                                if (m.player != null) {
+                                    lastUpdateX = m.player.getX();
+                                    lastUpdateZ = m.player.getZ();
+                                }
                             } finally {
                                 loading = false;
                                 requested.set(false);
@@ -1039,14 +1047,48 @@ public final class MapData {
         // keeps the "wait a few minutes so SeedGen can fill the storage" promise, and stops the
         // map from being built and cached from a nearly empty storage.
         boolean movedAllowed = moved && !initialPending;
-        if ((movedAllowed || timeUp || oldWorld) && !loading) {
-            if (timeUp || oldWorld) initialRefreshDone = true;
-            updateAsync(false);
+        boolean initialTrigger = timeUp || oldWorld;
+        boolean mapOpen = Minecraft.getInstance().gui.screen() instanceof MapScreen;
+        // Auto refresh only runs while the map is visible: a full rebuild is expensive and the old
+        // code triggered it on every tick when the player travelled far (the "正在刷新 0%" flicker).
+        // Opening the map after travelling calls refreshIfMoved() instead.
+        boolean movementRefresh = movedAllowed && mapOpen;
+        if ((movementRefresh || initialTrigger) && !loading
+                && oversizePixels == 0 && !outOfMemory
+                && now - lastAutoRefreshMs > 15_000L) {
+            if (initialTrigger) initialRefreshDone = true;
+            lastAutoRefreshMs = now;
+            if (movementRefresh) {
+                // remember the position the async build was started for: a failed refresh must not
+                // restart on every tick
+                lastUpdateX = mc.player.getX();
+                lastUpdateZ = mc.player.getZ();
+            }
+            // movement means new Voxy data exists, so the snapshot must be rebuilt; the initial
+            // refresh only reuses the disk cache so joining a world does not re-read everything
+            updateAsync(!movementRefresh);
         }
     }
 
-    // ------------------------------------------------------------ disk cache
+    /**
+     * Called when the map screen opens. With auto-refresh enabled the snapshot is rebuilt when the
+     * player travelled farther than {@code refreshDistanceChunks} while the map was closed (auto
+     * refresh itself only runs while the map is visible, to avoid rebuilding huge maps in the
+     * background and to stop the old per-tick retry loop).
+     */
+    public void refreshIfMoved() {
+        if (!VoxyMapConfig.AUTO_REFRESH.get() || loading || outOfMemory || oversizePixels > 0) return;
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.player == null || Double.isNaN(lastUpdateX)) return;
+        double dist = VoxyMapConfig.REFRESH_DISTANCE_CHUNKS.get() * 16.0;
+        if (Math.hypot(mc.player.getX() - lastUpdateX, mc.player.getZ() - lastUpdateZ) <= dist) return;
+        if (isInitialRefreshPending()) return;
+        lastUpdateX = mc.player.getX();
+        lastUpdateZ = mc.player.getZ();
+        updateAsync(true);
+    }
 
+    // ------------------------------------------------------------ disk cache
     private static Path cacheDir() {
         return Minecraft.getInstance().gameDirectory.toPath().resolve("voxymap-cache");
     }
