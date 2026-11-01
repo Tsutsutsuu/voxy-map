@@ -102,13 +102,41 @@ public final class MapData {
     private volatile Identifier textureId;
     private volatile Identifier textureIdSmall;
     private volatile int[] lastRgb;
+    /** biome border pixels (w*h ARGB) for the 3D overlay / labels */
+    private volatile int[] biomeEdgePx;
+    /** bump when the biome border colour changes: forces the cached texture/edges to rebuild */
+    private static final int BIOME_EDGE_VERSION = 2;
+    private volatile int biomeEdgeVersion;
+    /** render-distance border mask (local window around the player) */
+    private volatile int[] renderDistPx;
+    private volatile int renderDistX0;
+    private volatile int renderDistZ0;
+    private volatile int renderDistW;
+    private volatile int renderDistH;
+    private volatile long renderDistKey = Long.MIN_VALUE;
     private final AtomicBoolean buildingTextures = new AtomicBoolean();
     private final AtomicBoolean buildingBiome = new AtomicBoolean();
     private volatile int lastW, lastH;
+    /** actual size of the currently registered map texture */
+    private volatile int texW, texH;
     private volatile boolean loading;
     private volatile boolean styleChanging;
+    /** last 3D view mode for this world (per-world ui state) */
+    private volatile boolean view3d;
+    /** remembered orbit camera (per-world ui state) */
+    private volatile float view3dYaw = (float) Math.toRadians(45);
+    private volatile float view3dPitch = (float) Math.toRadians(-50);
+    private volatile float view3dDistance = 1500f;
+    private volatile boolean view3dCameraSaved;
     private volatile int progress = -1;
     private volatile String error = "";
+    /** non-zero while the "map too large" warning dialog should be shown */
+    public volatile long oversizePixels;
+    public volatile long oversizeLimit;
+    public volatile int oversizeSafePixelBlocks;
+    /** 0 = derive from mapScale, >0 = forced grid (safe mode), -1 = force the oversized grid */
+    private volatile int pixelBlocksOverride;
+    private volatile boolean allowOversize;
     private volatile Path lastStorage;
     /** World the current snapshot was built from, used to reuse it when rejoining that world. */
     private volatile Path snapStorage;
@@ -118,6 +146,14 @@ public final class MapData {
     private boolean initialRefreshDone;
     /** Bumped whenever the client leaves/joins a world, so stale build results can be dropped. */
     private volatile int worldEpoch;
+    /** temporary override for the contour setting (the 3D view hides them); null = use config */
+    public static volatile Boolean contourOverride;
+    /** bumped every time the rendered colour buffer changes */
+    private volatile int colorEpoch;
+    /** bumped on every texture upload request; stale async builds compare against it */
+    private volatile int texEpoch;
+    /** 3D view: skip building biome labels during colour renders */
+    public volatile boolean skipBiomeLabels;
 
     private long sessionStartMs;
     private double lastUpdateX = Double.NaN, lastUpdateZ = Double.NaN;
@@ -145,6 +181,14 @@ public final class MapData {
 
     public String getStyle() {
         return style;
+    }
+
+    public int getTextureWidth() {
+        return texW;
+    }
+
+    public int getTextureHeight() {
+        return texH;
     }
 
     public Identifier getTexture() {
@@ -260,6 +304,48 @@ public final class MapData {
         return top;
     }
 
+
+    /** True when the map snapshot has no data at this position (unexplored). */
+    public boolean isEmptyAt(int worldX, int worldZ) {
+        Snapshot s = snap;
+        if (s == null) return true;
+        int gx = (int) Math.floorDiv((long) worldX - s.minWX, s.pixelBlocks);
+        int gz = (int) Math.floorDiv((long) worldZ - s.minWZ, s.pixelBlocks);
+        if (gx < 0 || gx >= s.width || gz < 0 || gz >= s.height) return true;
+        return s.pixels[gz * s.width + gx] == LONG_EMPTY;
+    }
+
+    /** True when the top of the column at this position is water. */
+    public boolean isWaterAt(int worldX, int worldZ) {
+        Snapshot s = snap;
+        if (s == null) return false;
+        int gx = (int) Math.floorDiv((long) worldX - s.minWX, s.pixelBlocks);
+        int gz = (int) Math.floorDiv((long) worldZ - s.minWZ, s.pixelBlocks);
+        if (gx < 0 || gx >= s.width || gz < 0 || gz >= s.height) return false;
+        long p = s.pixels[gz * s.width + gx];
+        return p != LONG_EMPTY && (p & (1L << 52)) != 0;
+    }
+
+    /** Rendered RGB colour at a map pixel (0 when no data yet). */
+    /** Increments whenever the rendered colour buffer is replaced. */
+    public int getColorEpoch() {
+        return colorEpoch;
+    }
+
+    /** Direct access to the rendered colour buffer (read-only, do not mutate). */
+    public int[] getRgbSnapshot() {
+        return lastRgb;
+    }
+
+    public int getRgbAt(int mapX, int mapZ) {
+        int[] rgb = lastRgb;
+        int w = lastW;
+        int h = lastH;
+        if (rgb == null || w <= 0 || h <= 0) return 0;
+        if (mapX < 0 || mapZ < 0 || mapX >= w || mapZ >= h) return 0;
+        return rgb[mapZ * w + mapX];
+    }
+
     /** Biome id at a world position, or -1 when unknown. */
     public int biomeAt(int worldX, int worldZ) {
         Snapshot s = snap;
@@ -323,10 +409,13 @@ public final class MapData {
 
     public void setMapScale(int value) {
         mapScale = Math.max(1, Math.min(8, value));
+        pixelBlocksOverride = 0;
+        allowOversize = false;
         saveUiState();
     }
 
     private int effectivePixelBlocks() {
+        if (pixelBlocksOverride > 0) return pixelBlocksOverride;
         return Math.max(1, Math.min(8, mapScale));
     }
 
@@ -365,6 +454,20 @@ public final class MapData {
                     if (scale != null) {
                         try {
                             mapScale = Math.max(1, Math.min(8, Integer.parseInt(scale.trim())));
+                        } catch (NumberFormatException ignored) {
+                        }
+                    }
+                    String savedView3d = props.getProperty("view3d");
+                    if (savedView3d != null) view3d = Boolean.parseBoolean(savedView3d);
+                    String sYaw = props.getProperty("view3dYaw");
+                    String sPitch = props.getProperty("view3dPitch");
+                    String sDist = props.getProperty("view3dDistance");
+                    if (sYaw != null && sPitch != null && sDist != null) {
+                        try {
+                            view3dYaw = Float.parseFloat(sYaw);
+                            view3dPitch = Float.parseFloat(sPitch);
+                            view3dDistance = Math.max(1f, Float.parseFloat(sDist));
+                            view3dCameraSaved = true;
                         } catch (NumberFormatException ignored) {
                         }
                     }
@@ -410,6 +513,12 @@ public final class MapData {
             props.setProperty("biomes", Boolean.toString(biomeOverlay));
             props.setProperty("renderDistance", Boolean.toString(renderDistanceOverlay));
             props.setProperty("mapScale", Integer.toString(mapScale));
+            props.setProperty("view3d", Boolean.toString(view3d));
+            if (view3dCameraSaved) {
+                props.setProperty("view3dYaw", Float.toString(view3dYaw));
+                props.setProperty("view3dPitch", Float.toString(view3dPitch));
+                props.setProperty("view3dDistance", Float.toString(view3dDistance));
+            }
             try (OutputStream out = Files.newOutputStream(file)) {
                 props.store(out, "voxymap per-world ui state");
             }
@@ -440,6 +549,40 @@ public final class MapData {
         return out;
     }
 
+    public boolean getView3d() {
+        return view3d;
+    }
+
+    public float getView3dYaw() {
+        return view3dYaw;
+    }
+
+    public float getView3dPitch() {
+        return view3dPitch;
+    }
+
+    public float getView3dDistance() {
+        return view3dDistance;
+    }
+
+    public boolean hasView3dCamera() {
+        return view3dCameraSaved;
+    }
+
+    public void setView3dCamera(float yaw, float pitch, float distance) {
+        view3dYaw = yaw;
+        view3dPitch = pitch;
+        view3dDistance = Math.max(1f, distance);
+        view3dCameraSaved = true;
+        saveUiState();
+    }
+
+    public void setView3d(boolean value) {
+        if (view3d == value) return;
+        view3d = value;
+        saveUiState();
+    }
+
     public void setStyle(String s) {
         if (!isReady() || loading || styleChanging) return;
         style = s;
@@ -449,10 +592,36 @@ public final class MapData {
         styleChanging = true;
         loader.submit(() -> {
             try {
-                int[] rgb = renderColor(target, s, sea);
+                int[] rgb = renderColor(target, s, sea, false);
                 Minecraft.getInstance().execute(() -> {
                     uploadTexture(target, rgb);
                     lastRenderedStyle = s;
+                    styleChanging = false;
+                });
+            } catch (Throwable t) {
+                t.printStackTrace();
+                styleChanging = false;
+            }
+        });
+    }
+
+    /**
+     * Re-renders the colour buffer only (no data reload). Used when a display option such as the
+     * contour overlay changes; much cheaper than a full refresh.
+     */
+    public void requestColorRerender() {
+        if (!isReady() || loading || styleChanging) return;
+        Snapshot target = snap;
+        if (target == null) return;
+        int sea = seaLevel();
+        String current = style;
+        styleChanging = true;
+        loader.submit(() -> {
+            try {
+                int[] rgb = renderColor(target, current, sea, false);
+                Minecraft.getInstance().execute(() -> {
+                    uploadTexture(target, rgb);
+                    lastRenderedStyle = current;
                     styleChanging = false;
                 });
             } catch (Throwable t) {
@@ -534,6 +703,9 @@ public final class MapData {
         loading = true;
         progress = 0;
         error = "";
+        oversizePixels = 0;
+        oversizeLimit = 0;
+        oversizeSafePixelBlocks = 0;
         Minecraft mc = Minecraft.getInstance();
         final int sea = seaLevel();
         final int epoch = worldEpoch;
@@ -580,6 +752,8 @@ public final class MapData {
                 if (built == null) {
                     built = buildPixels(storage);
                     if (built == null) {
+                        // oversize warning (dialog) or a genuinely empty storage
+                        if (oversizePixels > 0) return;
                         error = "no sections found in Voxy storage";
                         return;
                     }
@@ -630,6 +804,28 @@ public final class MapData {
     }
 
     /** True while the initial refresh is still waiting for its delay. */
+    /** Reload with the suggested safe grid (coarser blocks per pixel). */
+    public void retryWithSafeGrid() {
+        pixelBlocksOverride = Math.max(1, oversizeSafePixelBlocks);
+        allowOversize = false;
+        oversizePixels = 0;
+        updateAsync(true);
+    }
+
+    /** Reload anyway, accepting the risk of running out of memory. */
+    public void retryOversized() {
+        pixelBlocksOverride = 0;
+        allowOversize = true;
+        oversizePixels = 0;
+        updateAsync(true);
+    }
+
+    public void dismissOversizeWarning() {
+        oversizePixels = 0;
+        oversizeLimit = 0;
+        oversizeSafePixelBlocks = 0;
+    }
+
     public boolean isInitialRefreshPending() {
         return !initialRefreshDone && VoxyMapConfig.INITIAL_REFRESH_DELAY_MINUTES.get() > 0;
     }
@@ -755,7 +951,8 @@ public final class MapData {
     /** everything that changes the produced pixels; changing any of these invalidates the .vxc */
     private static String colorCacheKey(String style, int sea) {
         return style + "|" + sea + "|" + VoxyMapConfig.MAP_SCALE.get() + "|"
-                + VoxyMapConfig.DRAW_CONTOURS.get() + "|" + VoxyMapConfig.MIN_CONTOUR_AREA.get() + "|"
+                + (contourOverride != null ? contourOverride : VoxyMapConfig.DRAW_CONTOURS.get()) + "|"
+                + VoxyMapConfig.MIN_CONTOUR_AREA.get() + "|"
                 + VoxyMapConfig.CONTOUR_DENSITY.get() + "|" + VoxyMapConfig.DRAW_HILLSHADE.get() + "|"
                 + VoxyMapConfig.DRAW_WATER_DEPTH.get() + "|" + VoxyMapConfig.ADAPTIVE_COLOR_RAMP.get() + "|"
                 + VoxyMapConfig.MIN_MAX_RAMP.get() + "|" + VoxyMapConfig.WATER_BLUR.get() + "|"
@@ -1009,8 +1206,25 @@ public final class MapData {
                 RocksBridge.close(it);
             }
             if (maxWXv == Long.MIN_VALUE) return null;
-            int gw = (int) ((maxWXv - minWXv + pixelBlocks - 1) / pixelBlocks);
-            int gh = (int) ((maxWZv - minWZv + pixelBlocks - 1) / pixelBlocks);
+            // Guard against OutOfMemory: the analysis arrays need roughly 20 bytes per pixel on top of
+            // the 8 bytes per pixel stored in the snapshot. Instead of silently downgrading or dying,
+            // report the size and let the player decide (dialog in MapScreen).
+            final long limit = Math.max(10_000_000L, VoxyMapConfig.MAX_MAP_PIXELS.get());
+            int pb = pixelBlocks;
+            int gw = (int) ((maxWXv - minWXv + pb - 1) / pb);
+            int gh = (int) ((maxWZv - minWZv + pb - 1) / pb);
+            long pixelsEstimate = (long) gw * gh;
+            if (pixelsEstimate > limit && !allowOversize) {
+                int safe = Math.max(1, pb);
+                while (safe < 8
+                        && (long) ((maxWXv - minWXv + safe - 1) / safe) * ((maxWZv - minWZv + safe - 1) / safe) > limit) {
+                    safe++;
+                }
+                oversizePixels = pixelsEstimate;
+                oversizeLimit = limit;
+                oversizeSafePixelBlocks = safe;
+                return null;
+            }
             long[] pix = new long[gw * gh];
             Arrays.fill(pix, LONG_EMPTY);
 
@@ -1301,6 +1515,8 @@ public final class MapData {
         // the 1/4 texture is kept on purpose: ~5 MB of VRAM, and reopening shows it instantly
         releaseOne(mc, textureId);
         textureId = null;
+        texW = 0;
+        texH = 0;
         releaseOne(mc, biomeTextureId);
         biomeTextureId = null;
         biomeImage = null;
@@ -1331,27 +1547,35 @@ public final class MapData {
 
     /** Build the 1-bit biome boundary mask + labels on the loader thread (overlay only). */
     public void ensureBiomeTexture() {
-        if (biomeTextureId != null) return;
+        // the 3D overlay needs the edge array even when the 2D texture already exists (e.g. the map
+        // was opened before this feature was added), so do not early-out on the texture alone
+        if (biomeTextureId != null && biomeEdgePx != null && biomeEdgeVersion == BIOME_EDGE_VERSION) return;
         Snapshot s = snap;
         if (s == null) return;
         if (!buildingBiome.compareAndSet(false, true)) return;
         final int biomainEpoch = worldEpoch;
+        final boolean needTexture = biomeTextureId == null;
         loader.submit(() -> {
             try {
-                NativeImage bimg = buildBiomeImage(s);
+                NativeImage bimg = needTexture ? buildBiomeImage(s) : null;
+                int[] edges = buildBiomeEdges(s);
                 int[] labels = biomeLabelsFlat.length > 0 ? biomeLabelsFlat : buildBiomeLabels(s);
                 Minecraft.getInstance().execute(() -> {
                     try {
                         if (biomainEpoch != worldEpoch) {
-                            bimg.close();
+                            if (bimg != null) bimg.close();
                             return;
                         }
-                        biomeImage = bimg;
+                        biomeEdgePx = edges;
+                        biomeEdgeVersion = BIOME_EDGE_VERSION;
                         biomeLabelsFlat = labels;
-                        DynamicTexture btex = new DynamicTexture(() -> "voxymap_bimg", bimg);
-                        Identifier bid = Identifier.fromNamespaceAndPath("voxymap", "map_biomes");
-                        Minecraft.getInstance().getTextureManager().register(bid, btex);
-                        biomeTextureId = bid;
+                        if (bimg != null) {
+                            biomeImage = bimg;
+                            DynamicTexture btex = new DynamicTexture(() -> "voxymap_bimg", bimg);
+                            Identifier bid = Identifier.fromNamespaceAndPath("voxymap", "map_biomes");
+                            Minecraft.getInstance().getTextureManager().register(bid, btex);
+                            biomeTextureId = bid;
+                        }
                     } finally {
                         buildingBiome.set(false);
                     }
@@ -1365,6 +1589,8 @@ public final class MapData {
 
     private void uploadTexture(Snapshot s, int[] rgb) {
         lastRgb = rgb;
+        colorEpoch++;
+        texEpoch++;
         lastW = s.width;
         lastH = s.height;
         Minecraft mc = Minecraft.getInstance();
@@ -1378,14 +1604,15 @@ public final class MapData {
     /** Builds the NativeImages on the loader thread; only the GPU upload runs on the main thread. */
     private void buildTexturesAsync(Snapshot s, int[] rgb) {
         if (!buildingTextures.compareAndSet(false, true)) return;
-        final int epoch = worldEpoch;
+        final int epoch = texEpoch;
+        final int worldEpochAtStart = worldEpoch;
         loader.submit(() -> {
             try {
                 NativeImage big = buildImage(rgb, s.width, s.height);
                 NativeImage small = buildSmall(rgb, s.width, s.height);
                 Minecraft.getInstance().execute(() -> {
                     try {
-                        if (epoch == worldEpoch) {
+                        if (epoch == texEpoch && worldEpochAtStart == worldEpoch) {
                             registerTextures(big, small);
                         } else {
                             big.close();
@@ -1439,11 +1666,19 @@ public final class MapData {
     }
 
     private void registerTextures(NativeImage big, NativeImage small) {
+        Minecraft mc = Minecraft.getInstance();
+        // replace cleanly: drop the previous texture objects before registering the new ones
+        releaseOne(mc, textureId);
+        textureId = null;
+        releaseOne(mc, textureIdSmall);
+        textureIdSmall = null;
         if (big != null) {
             DynamicTexture tex = new DynamicTexture(() -> "voxymap_img", big);
             Identifier id = Identifier.fromNamespaceAndPath("voxymap", "map");
             Minecraft.getInstance().getTextureManager().register(id, tex);
             textureId = id;
+            texW = big.getWidth();
+            texH = big.getHeight();
         }
         if (small != null) {
             DynamicTexture stex = new DynamicTexture(() -> "voxymap_small", small);
@@ -1451,6 +1686,109 @@ public final class MapData {
             Minecraft.getInstance().getTextureManager().register(sid, stex);
             textureIdSmall = sid;
         }
+    }
+
+    public int[] getRenderDistancePx() {
+        return renderDistPx;
+    }
+
+    public int getRenderDistX0() {
+        return renderDistX0;
+    }
+
+    public int getRenderDistZ0() {
+        return renderDistZ0;
+    }
+
+    public int getRenderDistW() {
+        return renderDistW;
+    }
+
+    public int getRenderDistH() {
+        return renderDistH;
+    }
+
+    /**
+     * Builds a local mask with the render-distance border (yellow) for the 3D view. Only the window
+     * around the player is touched, so this stays cheap even on very large maps.
+     */
+    public void ensureRenderDistanceEdges() {
+        var player = Minecraft.getInstance().player;
+        Snapshot s = snap;
+        if (player == null || s == null) return;
+        int distBlocks = Minecraft.getInstance().options.renderDistance().get() * 16;
+        int pb = Math.max(1, s.pixelBlocks);
+        int pBlockX = player.getBlockX();
+        int pBlockZ = player.getBlockZ();
+        long key = ((long) pBlockX << 32) ^ (pBlockZ & 0xFFFFFFFFL) ^ ((long) distBlocks << 8)
+                ^ ((long) pb << 40) ^ ((long) s.width << 20) ^ (long) s.height
+                ^ ((long) s.minWX << 4) ^ ((long) s.minWZ << 12);
+        if (renderDistPx != null && renderDistKey == key) return;
+        int pad = 4;
+        int x0 = (int) ((pBlockX - distBlocks - s.minWX) / pb) - pad;
+        int x1 = (int) ((pBlockX + distBlocks - s.minWX) / pb) + pad;
+        int z0 = (int) ((pBlockZ - distBlocks - s.minWZ) / pb) - pad;
+        int z1 = (int) ((pBlockZ + distBlocks - s.minWZ) / pb) + pad;
+        x0 = Math.max(0, x0);
+        z0 = Math.max(0, z0);
+        x1 = Math.min(s.width - 1, x1);
+        z1 = Math.min(s.height - 1, z1);
+        if (x1 <= x0 || z1 <= z0) return;
+        int w = x1 - x0 + 1;
+        int h = z1 - z0 + 1;
+        // Convert the four border lines to exact pixel indices instead of testing distances: the
+        // border's pixel column/row is simply floor(edge / pixelBlocks), which is correct for ANY
+        // blocks-per-pixel ratio (1:1, 1:2, 1:3, ...) and yields a single-pixel-wide box.
+        int colL = (int) Math.floor((pBlockX - distBlocks - s.minWX) / (double) pb);
+        int colR = (int) Math.floor((pBlockX + distBlocks - s.minWX) / (double) pb);
+        int rowT = (int) Math.floor((pBlockZ - distBlocks - s.minWZ) / (double) pb);
+        int rowB = (int) Math.floor((pBlockZ + distBlocks - s.minWZ) / (double) pb);
+        int[] mask = new int[w * h];
+        for (int zi = 0; zi < h; zi++) {
+            int zz = z0 + zi;
+            boolean rowLine = zz == rowT || zz == rowB;
+            for (int xi = 0; xi < w; xi++) {
+                int xx = x0 + xi;
+                if (rowLine || xx == colL || xx == colR) {
+                    mask[zi * w + xi] = 0xE0FFFF00;
+                }
+            }
+        }
+        renderDistPx = mask;
+        renderDistX0 = x0;
+        renderDistZ0 = z0;
+        renderDistW = w;
+        renderDistH = h;
+        renderDistKey = key;
+    }
+
+    /** ARGB biome border pixels (0x00 when there is no border), or null before it is built. */
+    public int[] getBiomeEdgeSnapshot() {
+        return biomeEdgePx;
+    }
+
+    private static int[] buildBiomeEdges(Snapshot s) {
+        int w = s.width;
+        int h = s.height;
+        long[] pixels = s.pixels;
+        int[] biomeArr = new int[w * h];
+        for (int i = 0; i < w * h; i++) {
+            if (pixels[i] != LONG_EMPTY) biomeArr[i] = (int) ((pixels[i] >>> 53) & 0x1FF);
+        }
+        int[] edges = new int[w * h];
+        for (int z = 0; z < h; z++) {
+            for (int x = 0; x < w; x++) {
+                int i2 = z * w + x;
+                if (pixels[i2] == LONG_EMPTY) continue;
+                boolean edge = (x < w - 1 && pixels[i2 + 1] != LONG_EMPTY && biomeArr[i2] != biomeArr[i2 + 1])
+                        || (z < h - 1 && pixels[i2 + w] != LONG_EMPTY && biomeArr[i2] != biomeArr[i2 + w]);
+                if (!edge) continue;
+                // same alternating alpha as the 2D overlay: a continuous but dashed-looking line
+                int alpha = ((x + z) & 1) == 0 ? 0xC0 : 0x40;
+                edges[i2] = (alpha << 24) | 0x00FFCC;  // ARGB: R=0 G=255 B=204 (teal)
+            }
+        }
+        return edges;
     }
 
     private static NativeImage buildBiomeImage(Snapshot s) {
@@ -1481,7 +1819,7 @@ public final class MapData {
                 int i2 = z * w + x;
                 if (!edge[i2]) continue;
                 int alpha = ((x + z) & 1) == 0 ? 0xC0 : 0x40;
-                bimg.setPixelABGR(x, z, (alpha << 24) | 0xFFFF00);
+                bimg.setPixelABGR(x, z, (alpha << 24) | 0xCCFF00);
             }
         }
         return bimg;
@@ -1576,7 +1914,198 @@ public final class MapData {
         return best;
     }
 
+    @FunctionalInterface
+    private interface BandTask {
+        void run(int z0, int z1);
+    }
+
+    /** Runs a row band task on up to 8 daemon threads; falls back to inline for tiny heights. */
+    private static void parallelRows(int h, BandTask task) {
+        int threads = Math.max(1, Math.min(8, Runtime.getRuntime().availableProcessors()));
+        if (threads <= 1 || h < 64) {
+            task.run(0, h);
+            return;
+        }
+        java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(threads);
+        for (int k = 0; k < threads; k++) {
+            final int z0 = k * h / threads;
+            final int z1 = (k + 1) * h / threads;
+            Thread th = new Thread(() -> {
+                try {
+                    task.run(z0, z1);
+                } finally {
+                    latch.countDown();
+                }
+            }, "voxymap-color-" + k);
+            th.setDaemon(true);
+            th.start();
+        }
+        try {
+            latch.await();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
     private int[] renderColor(Snapshot s, String style, int sea) {
+        return renderColor(s, style, sea, true);
+    }
+
+    /**
+     * @param rebuildLabels rebuild the biome label array. Style switches and 3D colour re-renders
+     *                      leave the biomes untouched, so they can reuse the previous labels.
+     */
+
+    /**
+     * Contour mask from the smoothed land height, dropping small fragments by connected-area size.
+     * Depends only on the terrain + contour settings, never on the colour theme.
+     */
+    private boolean[] computeContour(int[] topArr, boolean[] isWaterPix, int[] smoothTop,
+                                     int lo, int hi, int w, int h, boolean enabled) {
+        boolean[] contour = new boolean[w * h];
+        if (!enabled) return contour;
+        int contourInterval = Math.max(10, (hi - lo) / Math.max(1, VoxyMapConfig.CONTOUR_DENSITY.get()));
+        int minContourArea = VoxyMapConfig.MIN_CONTOUR_AREA.get();
+        boolean[] contourRaw = new boolean[w * h];
+        final int[] fTopA = topArr;
+        final int[] fSmoothT = smoothTop;
+        final boolean[] fWaterC = isWaterPix;
+        final boolean[] fRaw = contourRaw;
+        final int fwC = w;
+        final int fhC = h;
+        final int fInterval = contourInterval;
+        parallelRows(fhC, (z0, z1) -> {
+            for (int z = z0; z < z1; z++) {
+                int rowBase = z * fwC;
+                for (int x = 0; x < fwC; x++) {
+                    int i = rowBase + x;
+                    if (fTopA[i] == Integer.MIN_VALUE || fWaterC[i]) continue;
+                    int tv = fSmoothT[i];
+                    if (tv == Integer.MIN_VALUE) continue;
+                    if (x < fwC - 1 && fSmoothT[i + 1] != Integer.MIN_VALUE
+                            && Math.floorDiv(tv, fInterval) != Math.floorDiv(fSmoothT[i + 1], fInterval)) {
+                        fRaw[i] = true;
+                    } else if (z < fhC - 1 && fSmoothT[i + fwC] != Integer.MIN_VALUE
+                            && Math.floorDiv(tv, fInterval) != Math.floorDiv(fSmoothT[i + fwC], fInterval)) {
+                        fRaw[i] = true;
+                    }
+                }
+            }
+        });
+        boolean[] seen = new boolean[w * h];
+        int[] stack = new int[w * h];
+        for (int start = 0; start < w * h; start++) {
+            if (!contourRaw[start] || seen[start]) continue;
+            int qh = 0, qt = 0;
+            stack[qt++] = start;
+            seen[start] = true;
+            while (qh < qt) {
+                int idx = stack[qh++];
+                int x = idx % w, z = idx / w;
+                for (int dz = -1; dz <= 1; dz++) {
+                    int zz = z + dz;
+                    if (zz < 0 || zz >= h) continue;
+                    for (int dx = -1; dx <= 1; dx++) {
+                        int xx = x + dx;
+                        if (xx < 0 || xx >= w) continue;
+                        int j = zz * w + xx;
+                        if (contourRaw[j] && !seen[j]) {
+                            seen[j] = true;
+                            stack[qt++] = j;
+                        }
+                    }
+                }
+            }
+            if (qt >= minContourArea) {
+                for (int k = 0; k < qt; k++) contour[stack[k]] = true;
+            }
+        }
+        return contour;
+    }
+
+    private int[] renderColor(Snapshot s, String style, int sea, boolean rebuildLabels) {
+        TerrainCache tc = terrainFor(s, sea);
+        boolean wantContour = contourOverride != null ? contourOverride : VoxyMapConfig.DRAW_CONTOURS.get();
+        if (tc.contourEnabled != wantContour) {
+            // contour visibility is a separate switch: rebuild only the mask, keep the terrain cache
+            tc.contour = computeContour(tc.topArr, tc.isWaterPix, tc.smoothTop, tc.lo, tc.hi,
+                    tc.width, tc.height, wantContour);
+            tc.contourEnabled = wantContour;
+        }
+        int[] rgb = colorize(tc, style);
+        if (rebuildLabels && !skipBiomeLabels) {
+            biomeLabelsFlat = buildBiomeLabels(s);
+        }
+        progress = 95;
+        return rgb;
+    }
+
+    /** Cached, style-independent terrain analysis shared by every colour theme. */
+    private static final class TerrainCache {
+        final Snapshot snapshot;
+        final int sea;
+        final String fingerprint;
+        final int[] topArr;
+        final int[] floorArr;
+        final int[] smoothTop;
+        final int[] smoothFloor;
+        final boolean[] isWaterPix;
+        boolean[] contour;
+        boolean contourEnabled;
+        final float[] depthMap;
+        final int lo;
+        final int hi;
+        final int rampLo;
+        final int rampHi;
+        final int contourInterval;
+        final boolean adaptive;
+        final int width;
+        final int height;
+        final int pixelBlocks;
+
+        TerrainCache(Snapshot snapshot, int sea, String fingerprint, int[] topArr, int[] floorArr,
+                     int[] smoothTop, int[] smoothFloor, boolean[] isWaterPix, boolean[] contour,
+                     float[] depthMap, int lo, int hi, int rampLo, int rampHi, int contourInterval,
+                     boolean adaptive, int width, int height, int pixelBlocks) {
+            this.snapshot = snapshot;
+            this.sea = sea;
+            this.fingerprint = fingerprint;
+            this.topArr = topArr;
+            this.floorArr = floorArr;
+            this.smoothTop = smoothTop;
+            this.smoothFloor = smoothFloor;
+            this.isWaterPix = isWaterPix;
+            this.contour = contour;
+            this.depthMap = depthMap;
+            this.lo = lo;
+            this.hi = hi;
+            this.rampLo = rampLo;
+            this.rampHi = rampHi;
+            this.contourInterval = contourInterval;
+            this.adaptive = adaptive;
+            this.width = width;
+            this.height = height;
+            this.pixelBlocks = pixelBlocks;
+        }
+    }
+
+    private volatile TerrainCache terrainCache;
+
+    /** Settings that shape the terrain analysis; changing any of them invalidates the cache. */
+    private static String terrainFingerprint() {
+        return VoxyMapConfig.FILL_HOLES.get() + "|" + VoxyMapConfig.DENOISE.get() + "|"
+                + VoxyMapConfig.WATER_BLUR.get() + "|" + VoxyMapConfig.WATER_BLUR_RADIUS.get() + "|"
+                + VoxyMapConfig.WATER_BLUR_PASSES.get() + "|" + VoxyMapConfig.ADAPTIVE_COLOR_RAMP.get() + "|"
+                + VoxyMapConfig.MIN_MAX_RAMP.get() + "|" + VoxyMapConfig.CONTOUR_DENSITY.get() + "|"
+                + VoxyMapConfig.MIN_CONTOUR_AREA.get();
+    }
+
+    private TerrainCache terrainFor(Snapshot s, int sea) {
+        String fp = terrainFingerprint();
+        TerrainCache cached = terrainCache;
+        if (cached != null && cached.snapshot == s && cached.sea == sea && fp.equals(cached.fingerprint)) {
+            return cached;
+        }
         long[] pixels = s.pixels;
         int w = s.width;
         int h = s.height;
@@ -1587,23 +2116,35 @@ public final class MapData {
         int[] topArr = new int[pixels.length];
         int[] floorArr = new int[pixels.length];
         boolean[] isWaterPix = new boolean[pixels.length];
-        for (int i = 0; i < pixels.length; i++) {
-            if (pixels[i] == LONG_EMPTY) {
-                topArr[i] = Integer.MIN_VALUE;
-                floorArr[i] = Integer.MIN_VALUE;
-            } else {
-                int t = (int) ((pixels[i] >>> 24) & 0xFFFF) - 32768;
-                int fl = (int) (pixels[i] & 0xFFFF) - 32768;
-                boolean tw = (pixels[i] & (1L << 52)) != 0;
-                if (t == NO_TOP) {
-                    t = fl != NO_SOLID ? fl : Integer.MIN_VALUE;
-                    tw = false;
+        {
+            final long[] fPixels = pixels;
+            final int[] fTop = topArr;
+            final int[] fFloor = floorArr;
+            final boolean[] fWater = isWaterPix;
+            parallelRows(h, (z0, z1) -> {
+                for (int z = z0; z < z1; z++) {
+                    int rowBase = z * w;
+                    for (int x = 0; x < w; x++) {
+                        int i = rowBase + x;
+                        if (fPixels[i] == LONG_EMPTY) {
+                            fTop[i] = Integer.MIN_VALUE;
+                            fFloor[i] = Integer.MIN_VALUE;
+                        } else {
+                            int tv = (int) ((fPixels[i] >>> 24) & 0xFFFF) - 32768;
+                            int fl = (int) (fPixels[i] & 0xFFFF) - 32768;
+                            boolean tw = (fPixels[i] & (1L << 52)) != 0;
+                            if (tv == NO_TOP) {
+                                tv = fl != NO_SOLID ? fl : Integer.MIN_VALUE;
+                                tw = false;
+                            }
+                            fTop[i] = tv;
+                            fWater[i] = tw;
+                            fFloor[i] = tv == Integer.MIN_VALUE ? Integer.MIN_VALUE
+                                    : ((tw && fl != NO_SOLID && fl < tv) ? fl : tv);
+                        }
+                    }
                 }
-                topArr[i] = t;
-                isWaterPix[i] = tw;
-                floorArr[i] = t == Integer.MIN_VALUE ? Integer.MIN_VALUE
-                        : ((tw && fl != NO_SOLID && fl < t) ? fl : t);
-            }
+            });
         }
 
         progress = 83;
@@ -1687,26 +2228,33 @@ public final class MapData {
         // denoise isolated land-height outliers produced by LOD merging
         if (VoxyMapConfig.DENOISE.get()) {
             int[] den = topArr.clone();
-            for (int z = 1; z < h - 1; z++) {
-                for (int x = 1; x < w - 1; x++) {
-                    int idx = z * w + x;
-                    if (isWaterPix[idx] || topArr[idx] == Integer.MIN_VALUE) continue;
-                    int[] vals = new int[9];
-                    int n = 0;
-                    for (int dz = -1; dz <= 1; dz++) {
-                        for (int dx = -1; dx <= 1; dx++) {
-                            int j = idx + dz * w + dx;
-                            if (!isWaterPix[j] && topArr[j] != Integer.MIN_VALUE) vals[n++] = topArr[j];
+            final int[] fTop = topArr;
+            final boolean[] fWater = isWaterPix;
+            final int fw = w;
+            final int fh = h;
+            parallelRows(h - 2, (z0, z1) -> {
+                int[] vals = new int[9];
+                int[] sorted = new int[9];
+                for (int z = 1 + z0; z < 1 + z1 && z < fh - 1; z++) {
+                    for (int x = 1; x < fw - 1; x++) {
+                        int idx = z * fw + x;
+                        if (fWater[idx] || fTop[idx] == Integer.MIN_VALUE) continue;
+                        int n = 0;
+                        for (int dz = -1; dz <= 1; dz++) {
+                            for (int dx = -1; dx <= 1; dx++) {
+                                int j = idx + dz * fw + dx;
+                                if (!fWater[j] && fTop[j] != Integer.MIN_VALUE) vals[n++] = fTop[j];
+                            }
+                        }
+                        if (n >= 5) {
+                            System.arraycopy(vals, 0, sorted, 0, n);
+                            Arrays.sort(sorted, 0, n);
+                            int medv = sorted[n / 2];
+                            if (Math.abs(fTop[idx] - medv) > 20) den[idx] = medv;
                         }
                     }
-                    if (n >= 5) {
-                        int[] sorted = Arrays.copyOf(vals, n);
-                        Arrays.sort(sorted);
-                        int medv = sorted[n / 2];
-                        if (Math.abs(topArr[idx] - medv) > 20) den[idx] = medv;
-                    }
                 }
-            }
+            });
             topArr = den;
         }
 
@@ -1788,56 +2336,92 @@ public final class MapData {
             float[] cur = depthMap;
             float[] hbuf = new float[w * h];
             float[] vbuf = new float[w * h];
+            final boolean[] fWaterB = isWaterPix;
+            final int fw = w;
+            final int fh = h;
+            final int fR = R;
             for (int pass = 0; pass < passes; pass++) {
-                for (int z = 0; z < h; z++) {
-                    int row = z * w;
-                    float sum = 0;
-                    int cnt = 0;
-                    for (int x = 0; x < w && x <= R; x++) {
-                        if (isWaterPix[row + x]) {
-                            sum += cur[row + x];
-                            cnt++;
+                final float[] fCur = cur;
+                final float[] fHbuf = hbuf;
+                final float[] fVbuf = vbuf;
+                // horizontal pass: every row is independent
+                parallelRows(fh, (z0, z1) -> {
+                    for (int z = z0; z < z1; z++) {
+                        int row = z * fw;
+                        float sum = 0;
+                        int cnt = 0;
+                        for (int x = 0; x < fw && x <= fR; x++) {
+                            if (fWaterB[row + x]) {
+                                sum += fCur[row + x];
+                                cnt++;
+                            }
+                        }
+                        int c = cnt;
+                        float su = sum;
+                        for (int x = 0; x < fw; x++) {
+                            int idx = row + x;
+                            fHbuf[idx] = fWaterB[idx] && c > 0 ? su / c : fCur[idx];
+                            int add = x + fR + 1;
+                            int rem = x - fR;
+                            if (add < fw && fWaterB[row + add]) {
+                                su += fCur[row + add];
+                                c++;
+                            }
+                            if (rem >= 0 && fWaterB[row + rem]) {
+                                su -= fCur[row + rem];
+                                c--;
+                            }
                         }
                     }
-                    for (int x = 0; x < w; x++) {
-                        int idx = row + x;
-                        hbuf[idx] = isWaterPix[idx] && cnt > 0 ? sum / cnt : cur[idx];
-                        int add = x + R + 1;
-                        int rem = x - R;
-                        if (add < w && isWaterPix[row + add]) {
-                            sum += cur[row + add];
-                            cnt++;
+                });
+                // vertical pass: every column is independent -> split by column bands
+                int colThreads = Math.max(1, Math.min(8, Runtime.getRuntime().availableProcessors()));
+                java.util.concurrent.CountDownLatch vLatch = new java.util.concurrent.CountDownLatch(
+                        fw < 64 ? 1 : colThreads);
+                int bands = fw < 64 ? 1 : colThreads;
+                for (int band = 0; band < bands; band++) {
+                    final int x0 = band * fw / bands;
+                    final int x1 = (band + 1) * fw / bands;
+                    Thread th = new Thread(() -> {
+                        try {
+                            for (int x = x0; x < x1; x++) {
+                                float sum = 0;
+                                int cnt = 0;
+                                for (int z = 0; z < fh && z <= fR; z++) {
+                                    int idx = z * fw + x;
+                                    if (fWaterB[idx]) {
+                                        sum += fHbuf[idx];
+                                        cnt++;
+                                    }
+                                }
+                                int c = cnt;
+                                float su = sum;
+                                for (int z = 0; z < fh; z++) {
+                                    int idx = z * fw + x;
+                                    fVbuf[idx] = fWaterB[idx] && c > 0 ? su / c : fHbuf[idx];
+                                    int add = z + fR + 1;
+                                    int rem = z - fR;
+                                    if (add < fh && fWaterB[add * fw + x]) {
+                                        su += fHbuf[add * fw + x];
+                                        c++;
+                                    }
+                                    if (rem >= 0 && fWaterB[rem * fw + x]) {
+                                        su -= fHbuf[rem * fw + x];
+                                        c--;
+                                    }
+                                }
+                            }
+                        } finally {
+                            vLatch.countDown();
                         }
-                        if (rem >= 0 && isWaterPix[row + rem]) {
-                            sum -= cur[row + rem];
-                            cnt--;
-                        }
-                    }
+                    }, "voxymap-blur-" + band);
+                    th.setDaemon(true);
+                    th.start();
                 }
-                for (int x = 0; x < w; x++) {
-                    float sum = 0;
-                    int cnt = 0;
-                    for (int z = 0; z < h && z <= R; z++) {
-                        int idx = z * w + x;
-                        if (isWaterPix[idx]) {
-                            sum += hbuf[idx];
-                            cnt++;
-                        }
-                    }
-                    for (int z = 0; z < h; z++) {
-                        int idx = z * w + x;
-                        vbuf[idx] = isWaterPix[idx] && cnt > 0 ? sum / cnt : hbuf[idx];
-                        int add = z + R + 1;
-                        int rem = z - R;
-                        if (add < h && isWaterPix[add * w + x]) {
-                            sum += hbuf[add * w + x];
-                            cnt++;
-                        }
-                        if (rem >= 0 && isWaterPix[rem * w + x]) {
-                            sum -= hbuf[rem * w + x];
-                            cnt--;
-                        }
-                    }
+                try {
+                    vLatch.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
                 }
                 float[] tmp2 = cur;
                 cur = vbuf;
@@ -1852,15 +2436,38 @@ public final class MapData {
         boolean adaptive = VoxyMapConfig.ADAPTIVE_COLOR_RAMP.get();
         int lo = sea, hi = sea + 820;
         if (adaptive) {
-            int[] landVals = new int[w * h];
+            // histogram of land heights: O(n) instead of sorting 70M+ values, same percentiles
+            final int HISTO_MIN = -64;
+            final int HISTO_MAX = 512;
+            int[] hist = new int[HISTO_MAX - HISTO_MIN + 1];
             int n = 0;
             for (int i = 0; i < w * h; i++) {
-                if (topArr[i] != Integer.MIN_VALUE && !isWaterPix[i]) landVals[n++] = topArr[i];
+                if (topArr[i] != Integer.MIN_VALUE && !isWaterPix[i]) {
+                    int v = Math.max(HISTO_MIN, Math.min(HISTO_MAX, topArr[i]));
+                    hist[v - HISTO_MIN]++;
+                    n++;
+                }
             }
             if (n > 100) {
-                Arrays.sort(landVals, 0, n);
-                lo = landVals[(int) (n * 0.01f)];
-                hi = landVals[Math.min(n - 1, (int) (n * 0.99f))];
+                int lowIdx = (int) (n * 0.01f);
+                int highIdx = Math.min(n - 1, (int) (n * 0.99f));
+                int acc = 0;
+                int loH = HISTO_MIN;
+                int hiH = HISTO_MAX;
+                boolean gotLo = false;
+                for (int k = 0; k < hist.length; k++) {
+                    acc += hist[k];
+                    if (!gotLo && acc > lowIdx) {
+                        loH = HISTO_MIN + k;
+                        gotLo = true;
+                    }
+                    if (acc > highIdx) {
+                        hiH = HISTO_MIN + k;
+                        break;
+                    }
+                }
+                lo = loH;
+                hi = hiH;
                 if (hi - lo < 40) hi = lo + 40;
             }
         }
@@ -1882,93 +2489,68 @@ public final class MapData {
                 rampHi = maxH;
             }
         }
-        boolean drawContours = VoxyMapConfig.DRAW_CONTOURS.get();
-        int minContourArea = VoxyMapConfig.MIN_CONTOUR_AREA.get();
-        boolean[] contourRaw = new boolean[w * h];
-        if (drawContours) {
-            for (int i = 0; i < w * h; i++) {
-                if (topArr[i] == Integer.MIN_VALUE || isWaterPix[i]) continue;
-                int t = smoothTop[i];
-                if (t == Integer.MIN_VALUE) continue;
-                int x = i % w, z = i / w;
-                if (x < w - 1 && smoothTop[i + 1] != Integer.MIN_VALUE && Math.floorDiv(t, contourInterval) != Math.floorDiv(smoothTop[i + 1], contourInterval)) {
-                    contourRaw[i] = true;
-                } else if (z < h - 1 && smoothTop[i + w] != Integer.MIN_VALUE && Math.floorDiv(t, contourInterval) != Math.floorDiv(smoothTop[i + w], contourInterval)) {
-                    contourRaw[i] = true;
-                }
-            }
-        }
-        boolean[] contour = new boolean[w * h];
-        if (drawContours) {
-            boolean[] seen = new boolean[w * h];
-            int[] stack = scratch;
-            for (int start = 0; start < w * h; start++) {
-                if (!contourRaw[start] || seen[start]) continue;
-                int qh = 0, qt = 0;
-                stack[qt++] = start;
-                seen[start] = true;
-                while (qh < qt) {
-                    int idx = stack[qh++];
-                    int x = idx % w, z = idx / w;
-                    for (int dz = -1; dz <= 1; dz++) {
-                        int zz = z + dz;
-                        if (zz < 0 || zz >= h) continue;
-                        for (int dx = -1; dx <= 1; dx++) {
-                            int xx = x + dx;
-                            if (xx < 0 || xx >= w) continue;
-                            int j = zz * w + xx;
-                            if (contourRaw[j] && !seen[j]) {
-                                seen[j] = true;
-                                stack[qt++] = j;
-                            }
-                        }
-                    }
-                }
-                if (qt >= minContourArea) {
-                    for (int k = 0; k < qt; k++) contour[stack[k]] = true;
-                }
-            }
-        }
+        boolean drawContours = contourOverride != null ? contourOverride : VoxyMapConfig.DRAW_CONTOURS.get();
+        boolean[] contour = computeContour(topArr, isWaterPix, smoothTop, lo, hi, w, h, drawContours);
 
+        TerrainCache built = new TerrainCache(s, sea, fp, topArr, floorArr, smoothTop, smoothFloor,
+                isWaterPix, contour, depthMap, lo, hi, rampLo, rampHi, contourInterval,
+                adaptive || VoxyMapConfig.MIN_MAX_RAMP.get(), w, h, pixelBlocks);
+        built.contourEnabled = drawContours;
+        terrainCache = built;
+        return built;
+    }
+
+    private int[] colorize(TerrainCache tc, String style) {
         progress = 93;
-        int[] out = new int[w * h];
+
+        int[] out = new int[tc.width * tc.height];
         final float lx = -0.55f, ly = 0.70f, lz = -0.55f;
         final float ll = (float) Math.sqrt(lx * lx + ly * ly + lz * lz);
-        boolean nautical = "nautical".equals(style);
-        float landStrength = nautical ? 0.06f : 0.18f;
-        boolean drawShade = VoxyMapConfig.DRAW_HILLSHADE.get();
-        boolean drawDepth = VoxyMapConfig.DRAW_WATER_DEPTH.get();
-        float step = 2f * pixelBlocks;
-        for (int z = 0; z < h; z++) {
-            if ((z & 255) == 0) progress = 93 + (int) ((long) z * 2L / h);
-            for (int x = 0; x < w; x++) {
-                int idx = z * w + x;
-                int top = topArr[idx];
+        final boolean nautical = "nautical".equals(style);
+        final float landStrength = nautical ? 0.06f : 0.18f;
+        final boolean drawShade = VoxyMapConfig.DRAW_HILLSHADE.get();
+        final boolean drawDepth = VoxyMapConfig.DRAW_WATER_DEPTH.get();
+        final float step = 2f * tc.pixelBlocks;
+        final int[] fOut = out;
+        final String fStyle = style;
+        final int fw = tc.width;
+        final int fh = tc.height;
+        final int[] fTopArr = tc.topArr;
+        final int[] fSmoothTop = tc.smoothTop;
+        final int[] fSmoothFloor = tc.smoothFloor;
+        final boolean[] fWater = tc.isWaterPix;
+        final boolean[] fContour = tc.contour;
+        final float[] fDepth = tc.depthMap;
+        parallelRows(fh, (z0, z1) -> {
+        for (int z = z0; z < z1; z++) {
+            for (int x = 0; x < fw; x++) {
+                int idx = z * fw + x;
+                int top = fTopArr[idx];
                 if (top == Integer.MIN_VALUE) {
-                    out[idx] = 0;
+                    fOut[idx] = 0;
                     continue;
                 }
-                boolean water = isWaterPix[idx];
+                boolean water = fWater[idx];
                 int rgb;
                 if (water) {
-                    float dep = drawDepth ? depthMap[idx] : 1f;
-                    rgb = MapStyles.waterColor(style, Math.round(dep));
+                    float dep = drawDepth ? fDepth[idx] : 1f;
+                    rgb = MapStyles.waterColor(fStyle, Math.round(dep));
                 } else {
-                    rgb = MapStyles.landColor(style, top, sea, rampLo, rampHi, adaptive || VoxyMapConfig.MIN_MAX_RAMP.get());
+                    rgb = MapStyles.landColor(fStyle, top, tc.sea, tc.rampLo, tc.rampHi, tc.adaptive);
                 }
                 float shade = 1f;
-                if (drawShade && x > 0 && z > 0 && x < w - 1 && z < h - 1) {
+                if (drawShade && x > 0 && z > 0 && x < fw - 1 && z < fh - 1) {
                     int nb0, nb1, nb2, nb3;
                     if (water) {
-                        nb0 = smoothFloor[idx - 1];
-                        nb1 = smoothFloor[idx + 1];
-                        nb2 = smoothFloor[idx - w];
-                        nb3 = smoothFloor[idx + w];
+                        nb0 = fSmoothFloor[idx - 1];
+                        nb1 = fSmoothFloor[idx + 1];
+                        nb2 = fSmoothFloor[idx - fw];
+                        nb3 = fSmoothFloor[idx + fw];
                     } else {
-                        nb0 = smoothTop[idx - 1];
-                        nb1 = smoothTop[idx + 1];
-                        nb2 = smoothTop[idx - w];
-                        nb3 = smoothTop[idx + w];
+                        nb0 = fSmoothTop[idx - 1];
+                        nb1 = fSmoothTop[idx + 1];
+                        nb2 = fSmoothTop[idx - fw];
+                        nb3 = fSmoothTop[idx + fw];
                     }
                     if (nb0 != Integer.MIN_VALUE && nb1 != Integer.MIN_VALUE && nb2 != Integer.MIN_VALUE && nb3 != Integer.MIN_VALUE) {
                         float dzdx = (nb1 - nb0) / step;
@@ -1985,58 +2567,65 @@ public final class MapData {
                 }
                 shade = Math.max(0.78f, Math.min(1.08f, shade));
                 if (!water) {
-                    if (contour[idx]) shade *= nautical ? 0.62f : 0.70f;
-                    boolean coast = (x < w - 1 && isWaterPix[idx + 1]) || (z < h - 1 && isWaterPix[idx + w])
-                            || (x > 0 && isWaterPix[idx - 1]) || (z > 0 && isWaterPix[idx - w]);
+                    if (fContour[idx]) shade *= nautical ? 0.62f : 0.70f;
+                    boolean coast = (x < fw - 1 && fWater[idx + 1]) || (z < fh - 1 && fWater[idx + fw])
+                            || (x > 0 && fWater[idx - 1]) || (z > 0 && fWater[idx - fw]);
                     if (coast) shade *= 0.70f;
                 }
                 int r = Math.max(0, Math.min(255, (int) (((rgb >> 16) & 0xFF) * shade)));
                 int g = Math.max(0, Math.min(255, (int) (((rgb >> 8) & 0xFF) * shade)));
                 int b = Math.max(0, Math.min(255, (int) ((rgb & 0xFF) * shade)));
-                out[idx] = 0xFF000000 | (r << 16) | (g << 8) | b;
+                fOut[idx] = 0xFF000000 | (r << 16) | (g << 8) | b;
             }
         }
-        // labels only: the boundary mask is built asynchronously when the overlay is enabled
-        biomeLabelsFlat = buildBiomeLabels(s);
-        progress = 95;
-
+        });
         return out;
     }
+
 
     private static int[] smooth(int[] arr, int w, int h, int[] tmp) {
         if (tmp == null || tmp.length != arr.length) tmp = new int[arr.length];
         int[] out = new int[arr.length];
-        for (int z = 0; z < h; z++) {
-            int row = z * w;
-            for (int x = 0; x < w; x++) {
-                int sum = 0, cnt = 0;
-                for (int dx = -1; dx <= 1; dx++) {
-                    int xx = x + dx;
-                    if (xx < 0 || xx >= w) continue;
-                    int v = arr[row + xx];
-                    if (v != Integer.MIN_VALUE) {
-                        sum += v;
-                        cnt++;
+        final int[] fArr = arr;
+        final int[] fTmp = tmp;
+        final int[] fOut = out;
+        final int fw = w;
+        final int fh = h;
+        parallelRows(h, (z0, z1) -> {
+            // horizontal pass
+            for (int z = z0; z < z1; z++) {
+                int row = z * fw;
+                for (int x = 0; x < fw; x++) {
+                    int sum = 0, cnt = 0;
+                    for (int dx = -1; dx <= 1; dx++) {
+                        int xx = x + dx;
+                        if (xx < 0 || xx >= fw) continue;
+                        int v = fArr[row + xx];
+                        if (v != Integer.MIN_VALUE) {
+                            sum += v;
+                            cnt++;
+                        }
                     }
+                    fTmp[row + x] = cnt == 0 ? Integer.MIN_VALUE : sum / cnt;
                 }
-                tmp[row + x] = cnt == 0 ? Integer.MIN_VALUE : sum / cnt;
             }
-        }
-        for (int z = 0; z < h; z++) {
-            for (int x = 0; x < w; x++) {
-                int sum = 0, cnt = 0;
-                for (int dz = -1; dz <= 1; dz++) {
-                    int zz = z + dz;
-                    if (zz < 0 || zz >= h) continue;
-                    int v = tmp[zz * w + x];
-                    if (v != Integer.MIN_VALUE) {
-                        sum += v;
-                        cnt++;
+            // vertical pass (reads fTmp, writes fOut: both row-independent)
+            for (int z = z0; z < z1; z++) {
+                for (int x = 0; x < fw; x++) {
+                    int sum = 0, cnt = 0;
+                    for (int dz = -1; dz <= 1; dz++) {
+                        int zz = z + dz;
+                        if (zz < 0 || zz >= fh) continue;
+                        int v = fTmp[zz * fw + x];
+                        if (v != Integer.MIN_VALUE) {
+                            sum += v;
+                            cnt++;
+                        }
                     }
+                    fOut[z * fw + x] = cnt == 0 ? Integer.MIN_VALUE : sum / cnt;
                 }
-                out[z * w + x] = cnt == 0 ? Integer.MIN_VALUE : sum / cnt;
             }
-        }
+        });
         return out;
     }
 }

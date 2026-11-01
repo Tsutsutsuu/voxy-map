@@ -54,6 +54,38 @@ public final class VoxyMapConfig {
     public static final Value<Boolean> REMEMBER_ZOOM = new Value<>("rememberZoom", true);
     public static final Value<Boolean> SHOW_HINT = new Value<>("showHint", true);
 
+    // ---- 3D map view ----
+    public static final Value<Integer> RENDER_SCALE_3D = new Value<>("renderScale3d", 100);
+    public static final Value<Boolean> ANTIALIAS_3D = new Value<>("antialias3d", true);
+    public static final Value<Integer> RENDER_THREADS_3D = new Value<>("renderThreads3d", 8);
+    public static final Value<Double> VERTICAL_SCALE_3D = new Value<>("verticalScale3d", 1.0);
+    public static final Value<Integer> LOD_NEAR_RADIUS = new Value<>("lodNearRadius", 1500);
+    public static final Value<Integer> LOD_MID_RADIUS = new Value<>("lodMidRadius", 6000);
+    public static final Value<Integer> LOD_STEP_NEAR = new Value<>("lodStepNear", 4);
+    public static final Value<Integer> LOD_STEP_MID = new Value<>("lodStepMid", 32);
+    public static final Value<Integer> LOD_STEP_FAR = new Value<>("lodStepFar", 64);
+    public static final Value<Boolean> LOD_HEIGHT_AVG_NEAR = new Value<>("lodHeightAvgNear", true);
+    public static final Value<Boolean> LOD_HEIGHT_AVG_MID = new Value<>("lodHeightAvgMid", false);
+    public static final Value<Boolean> LOD_HEIGHT_AVG_FAR = new Value<>("lodHeightAvgFar", false);
+    public static final Value<Integer> LOD_REBUILD_DISTANCE = new Value<>("lodRebuildDistance", 300);
+    public static final Value<Integer> LOD_ZOOM_REBUILD_PCT = new Value<>("lodZoomRebuildPct", 25);
+    public static final Value<Integer> FOV_3D = new Value<>("fov3d", 55);
+    public static final Value<Integer> PITCH_3D = new Value<>("pitch3d", -50);
+    public static final Value<Integer> MIN_DISTANCE_3D = new Value<>("minDistance3d", 64);
+    public static final Value<Integer> MAX_DISTANCE_3D = new Value<>("maxDistance3d", 8192);
+    public static final Value<Double> ROTATE_SENS_3D = new Value<>("rotateSens3d", 2.0);
+    public static final Value<Double> PAN_SENS_3D = new Value<>("panSens3d", 2.0);
+    public static final Value<Double> ZOOM_SENS_3D = new Value<>("zoomSens3d", 2.0);
+    public static final Value<Boolean> REMEMBER_3D_VIEW = new Value<>("remember3dView", true);
+    public static final Value<Boolean> AUTO_HIDE_CONTOURS_3D = new Value<>("autoHideContours3d", false);
+    public static final Value<Boolean> LOD_DEBUG_COLORS_3D = new Value<>("lodDebugColors3d", false);
+    public static final Value<Double> PLAYER_MARKER_HEIGHT_3D = new Value<>("playerMarkerHeight3d", 50.0);
+    public static final Value<Double> PLAYER_MARKER_SCALE_3D = new Value<>("playerMarkerScale3d", 2.6);
+    /** pixel count above which the map asks before loading (memory guard) */
+    public static final Value<Integer> MAX_MAP_PIXELS = new Value<>("maxMapPixels", 120_000_000);
+    /** horizontal range (blocks) within which 3D biome labels are drawn */
+    public static final Value<Integer> BIOME_LABEL_3D_RANGE = new Value<>("biomeLabel3dRange", 3000);
+
     private VoxyMapConfig() {
     }
 
