@@ -196,6 +196,11 @@ public final class MapData {
     private volatile String gentleStage = "";
     /** gentle lane published colours while the map was closed: refresh the GPU texture on open */
     private volatile boolean gentlePublished;
+    /** wall clock of the last committed snapshot (fast or gentle) */
+    private volatile long lastSnapshotWallMs;
+    /** true while the asynchronous open-map freshness probe is running */
+    private final java.util.concurrent.atomic.AtomicBoolean openProbeActive =
+            new java.util.concurrent.atomic.AtomicBoolean();
     /** the map was opened while a refresh was still finishing */
     private volatile boolean openRefreshPending;
     /** player stillness / teleport tracking for the gentle lane */
@@ -1015,6 +1020,14 @@ public final class MapData {
                 }
                 snap = built;
                 snapStorage = storage;
+                if (!freshlyBuilt) {
+                    // age of a cache loaded from disk (not a fresh build)
+                    try {
+                        lastSnapshotWallMs = Files.getLastModifiedTime(cacheFile(storage)).toMillis();
+                    } catch (Exception ignored) {
+                        lastSnapshotWallMs = 0;
+                    }
+                }
                 final Snapshot target = built;
                 final String renderStyle = style;
                 progress = 82;
@@ -1035,6 +1048,7 @@ public final class MapData {
                 final int[] rgb = cachedRgb;
                 progress = 95;
                 checkJob(jobToken);
+                if (freshlyBuilt) lastSnapshotWallMs = System.currentTimeMillis();
                 handedToMainThread = true;
                 mc.execute(() -> {
                     try {
@@ -1186,8 +1200,7 @@ public final class MapData {
      * GPU, never writes cache files and never triggers a full rebuild. When the cheap path cannot
      * produce a correct result it only marks {@link #needsFast} and stops.
      */
-    private void markNeedsFast(String reason) {
-        needsFast = true;
+    private void markNeedsFast(String reason) {        needsFast = true;
         if (RefreshDebug.enabled()) {
             RefreshDebug.chat("gentle stopped: " + reason + " -> fast refresh on next open",
                     ChatFormatting.YELLOW);
@@ -1310,6 +1323,7 @@ public final class MapData {
                     prevFrame == null ? 1 : prevFrame.epoch + 1);
             lastRenderedStyle = renderStyle;
             gentlePublished = true;
+            lastSnapshotWallMs = System.currentTimeMillis();
             needsFast = false;
             gentleStage = "done";
             Minecraft mc = Minecraft.getInstance();
@@ -1681,6 +1695,7 @@ public final class MapData {
                         });
                     }
                     report.colorMs = (System.nanoTime() - colorStart) / 1_000_000L;
+                    lastSnapshotWallMs = System.currentTimeMillis();
                     Minecraft mc = Minecraft.getInstance();
                     if (mc.player != null) {
                         lastUpdateX = mc.player.getX();
@@ -1869,11 +1884,80 @@ public final class MapData {
             return;
         }
         // fastest available: the incremental path itself falls back to a full rebuild when needed
-        if (!needsFast && canIncrementalRefresh()) {
-            refreshIncrementalAsync(RefreshTrigger.OPEN_MAP);
-        } else {
+        if (needsFast || !canIncrementalRefresh()) {
             updateAsync(true, RefreshTrigger.OPEN_MAP);
+        } else {
+            // do not refresh on every open: cheaply compare the DB sequence with the index; only
+            // start the fast lane when the background/previous refresh is actually behind
+            startOpenProbe();
         }
+    }
+
+    /** True when the committed snapshot is recent enough and the player has not moved far. */
+    private boolean snapshotFreshEnough() {
+        if (lastSnapshotWallMs == 0) return false;
+        if (System.currentTimeMillis() - lastSnapshotWallMs > 5 * 60_000L) return false;
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.player == null) return true;
+        if (Double.isNaN(lastUpdateX)) return true;
+        double dist = VoxyMapConfig.REFRESH_DISTANCE_CHUNKS.get() * 16.0;
+        return Math.hypot(mc.player.getX() - lastUpdateX, mc.player.getZ() - lastUpdateZ) <= dist;
+    }
+
+    /** Opens RocksDB read-only just long enough to read the latest sequence number. */
+    private static long readLatestSequence(Path storage) {
+        if (storage == null || !RocksBridge.available()) return -1L;
+        List<Object> handles = new ArrayList<>();
+        Object db = null;
+        try {
+            db = RocksBridge.openReadOnly(storage.toString(), handles);
+            return RocksBridge.latestSequence(db);
+        } catch (Throwable t) {
+            return -1L;
+        } finally {
+            for (Object h : handles) RocksBridge.close(h);
+            RocksBridge.close(db);
+        }
+    }
+
+    /**
+     * Cheap freshness check on map open: if the RocksDB sequence already matches the committed
+     * section index, the background/previous refresh has caught up and opening must not start any
+     * work. Only a genuinely stale map enters the fast lane.
+     */
+    private void startOpenProbe() {
+        if (!openProbeActive.compareAndSet(false, true)) return;
+        final int epoch = worldEpoch;
+        final long token = refreshToken.get();
+        final Snapshot s = snap;
+        final VoxyIndex idx = sectionIndex;
+        final Path storage = snapStorage;
+        loader.submit(() -> {
+            try {
+                if (!mapOpen || loading || requested.get() || epoch != worldEpoch
+                        || token != refreshToken.get() || s != snap || idx != sectionIndex) return;
+                long seq = readLatestSequence(storage);
+                if (!mapOpen || loading || requested.get() || epoch != worldEpoch
+                        || token != refreshToken.get()) return;
+                if (seq >= 0 && idx != null && seq == idx.dbSequence) {
+                    if (RefreshDebug.verbose()) {
+                        RefreshDebug.chat("open probe: snapshot already fresh (seq=" + seq + ")",
+                                ChatFormatting.DARK_GRAY);
+                    }
+                    return;
+                }
+                if (snapshotFreshEnough()) {
+                    if (RefreshDebug.verbose()) {
+                        RefreshDebug.chat("open probe: recent snapshot is still fresh enough", ChatFormatting.DARK_GRAY);
+                    }
+                    return;
+                }
+                if (canIncrementalRefresh()) refreshIncrementalAsync(RefreshTrigger.OPEN_MAP);
+                else updateAsync(true, RefreshTrigger.OPEN_MAP);
+            } finally {
+                openProbeActive.set(false);
+            }
+        });
     }
 
     /** Called when the map screen is replaced/closed: the fast lane must not keep working. */
