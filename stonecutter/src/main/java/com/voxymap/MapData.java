@@ -2794,15 +2794,97 @@ public final class MapData {
      */
     public int[] renderTileColor(long[] pixels, int width, int height, long minWX, long minWZ, int pixelBlocks) {
         if (pixels == null || width <= 0 || height <= 0) return null;
+        Snapshot base = snap;
+        int sea = seaLevel();
+        if (base != null) {
+            ensureGlobalRamp(base, sea);
+            useRampOverride = true;
+            overrideLo = globalLo;
+            overrideHi = globalHi;
+            overrideRampLo = globalRampLo;
+            overrideRampHi = globalRampHi;
+        }
         Snapshot s = new Snapshot(pixels, width, height, minWX, minWZ, pixelBlocks,
                 java.util.Map.of(), System.nanoTime());
         long savedToken = renderToken;
+        TerrainCache savedCache = terrainCache; // tile analysis must not clobber incremental refresh
         renderToken = 0; // a tile colour job is not part of the cancellable fast refresh
         try {
-            return renderColor(s, style, seaLevel(), false);
+            return renderColor(s, style, sea, false);
         } finally {
+            terrainCache = savedCache;
+            useRampOverride = false;
             renderToken = savedToken;
         }
+    }
+
+    /**
+     * Computes the world-wide adaptive/min-max ramp once per snapshot. Tile colour jobs must use
+     * these values instead of normalising each tile's own min/max (which produced visible ramps
+     * and white patches on large mountains).
+     */
+    private void ensureGlobalRamp(Snapshot s, int sea) {
+        String fp = terrainFingerprint();
+        TerrainCache cached = terrainCache;
+        if (cached != null && cached.snapshot == s && fp.equals(cached.fingerprint)) {
+            globalLo = cached.lo;
+            globalHi = cached.hi;
+            globalRampLo = cached.rampLo;
+            globalRampHi = cached.rampHi;
+            globalRampSnap = s;
+            globalRampFingerprint = fp;
+            return;
+        }
+        if (globalRampSnap == s && fp.equals(globalRampFingerprint)) return;
+        boolean adaptive = VoxyMapConfig.ADAPTIVE_COLOR_RAMP.get();
+        int lo = sea, hi = sea + 820;
+        int minH = Integer.MAX_VALUE, maxH = Integer.MIN_VALUE, n = 0;
+        for (long p : s.pixels) {
+            int top = rawTop(p);
+            if (top == Integer.MIN_VALUE || rawWater(p)) continue;
+            if (top < minH) minH = top;
+            if (top > maxH) maxH = top;
+            n++;
+        }
+        if (adaptive && n > 100 && maxH >= minH) {
+            int bin = Math.max(1, (maxH - minH) / 1024 + 1);
+            int bins = (maxH - minH) / bin + 1;
+            int[] hist = new int[bins];
+            for (long p : s.pixels) {
+                int top = rawTop(p);
+                if (top == Integer.MIN_VALUE || rawWater(p)) continue;
+                hist[(top - minH) / bin]++;
+            }
+            int lowIdx = (int) (n * 0.01f);
+            int highIdx = Math.min(n - 1, (int) (n * 0.99f));
+            int acc = 0, loH = minH, hiH = maxH;
+            boolean gotLo = false;
+            for (int k = 0; k < bins; k++) {
+                acc += hist[k];
+                if (!gotLo && acc > lowIdx) {
+                    loH = minH + k * bin;
+                    gotLo = true;
+                }
+                if (acc > highIdx) {
+                    hiH = minH + k * bin;
+                    break;
+                }
+            }
+            lo = loH;
+            hi = hiH;
+            if (hi - lo < 40) hi = lo + 40;
+        }
+        int rampLo = lo, rampHi = hi;
+        if (VoxyMapConfig.MIN_MAX_RAMP.get() && maxH != Integer.MIN_VALUE && maxH - sea >= 40) {
+            rampLo = sea;
+            rampHi = maxH;
+        }
+        globalLo = lo;
+        globalHi = hi;
+        globalRampLo = rampLo;
+        globalRampHi = rampHi;
+        globalRampSnap = s;
+        globalRampFingerprint = fp;
     }
 
     /** Render the colour grid off the render thread, then upload it on the client thread. */
@@ -3527,6 +3609,14 @@ public final class MapData {
 
     private volatile TerrainCache terrainCache;
 
+    /** Ramp limits shared by every tile so adaptive/min-max ramps cannot shift per tile. */
+    private volatile Snapshot globalRampSnap;
+    private volatile String globalRampFingerprint;
+    private volatile int globalLo = FALLBACK_SEA, globalHi = FALLBACK_SEA + 820;
+    private volatile int globalRampLo = FALLBACK_SEA, globalRampHi = FALLBACK_SEA + 820;
+    private boolean useRampOverride;
+    private int overrideLo, overrideHi, overrideRampLo, overrideRampHi;
+
     /** Settings that shape the terrain analysis; changing any of them invalidates the cache. */
     private static String terrainFingerprint() {
         return VoxyMapConfig.FILL_HOLES.get() + "|" + VoxyMapConfig.DENOISE.get() + "|"
@@ -3886,71 +3976,88 @@ public final class MapData {
 
         progress = 92;
 
-        // adaptive colour ramp: stretch the land ramp to this world's actual height range
+        // adaptive colour ramp: stretch the land ramp to this world's actual height range.
+        // Tile colour jobs override these with the world-wide parameters, otherwise every tile
+        // would normalise its own local min/max and neighbouring tiles would use different ramps.
         boolean adaptive = VoxyMapConfig.ADAPTIVE_COLOR_RAMP.get();
         int lo = sea, hi = sea + 820;
-        if (adaptive) {
-            // histogram of land heights: O(n) instead of sorting 70M+ values. The bin range covers
-            // the real min/max heights (not a fixed [-64, 512] window) so heavily modded or
-            // amplified terrain above y=512 keeps its ramp detail instead of saturating.
-            int minH = Integer.MAX_VALUE, maxH = Integer.MIN_VALUE;
-            int n = 0;
-            for (int i = 0; i < w * h; i++) {
-                if (topArr[i] != Integer.MIN_VALUE && !isWaterPix[i]) {
-                    if (topArr[i] < minH) minH = topArr[i];
-                    if (topArr[i] > maxH) maxH = topArr[i];
-                    n++;
-                }
-            }
-            if (n > 100 && maxH >= minH) {
-                int bin = Math.max(1, (maxH - minH) / 1024 + 1);
-                int bins = (maxH - minH) / bin + 1;
-                int[] hist = new int[bins];
+        int rampLo = lo, rampHi = hi;
+        if (useRampOverride) {
+            lo = overrideLo;
+            hi = overrideHi;
+            rampLo = overrideRampLo;
+            rampHi = overrideRampHi;
+        } else {
+            if (adaptive) {
+                // histogram of land heights: O(n) instead of sorting 70M+ values. The bin range covers
+                // the real min/max heights (not a fixed [-64, 512] window) so heavily modded or
+                // amplified terrain above y=512 keeps its ramp detail instead of saturating.
+                int minH = Integer.MAX_VALUE, maxH = Integer.MIN_VALUE;
+                int n = 0;
                 for (int i = 0; i < w * h; i++) {
                     if (topArr[i] != Integer.MIN_VALUE && !isWaterPix[i]) {
-                        hist[(topArr[i] - minH) / bin]++;
+                        if (topArr[i] < minH) minH = topArr[i];
+                        if (topArr[i] > maxH) maxH = topArr[i];
+                        n++;
                     }
                 }
-                int lowIdx = (int) (n * 0.01f);
-                int highIdx = Math.min(n - 1, (int) (n * 0.99f));
-                int acc = 0;
-                int loH = minH;
-                int hiH = maxH;
-                boolean gotLo = false;
-                for (int k = 0; k < bins; k++) {
-                    acc += hist[k];
-                    if (!gotLo && acc > lowIdx) {
-                        loH = minH + k * bin;
-                        gotLo = true;
+                if (n > 100 && maxH >= minH) {
+                    int bin = Math.max(1, (maxH - minH) / 1024 + 1);
+                    int bins = (maxH - minH) / bin + 1;
+                    int[] hist = new int[bins];
+                    for (int i = 0; i < w * h; i++) {
+                        if (topArr[i] != Integer.MIN_VALUE && !isWaterPix[i]) {
+                            hist[(topArr[i] - minH) / bin]++;
+                        }
                     }
-                    if (acc > highIdx) {
-                        hiH = minH + k * bin;
-                        break;
+                    int lowIdx = (int) (n * 0.01f);
+                    int highIdx = Math.min(n - 1, (int) (n * 0.99f));
+                    int acc = 0;
+                    int loH = minH;
+                    int hiH = maxH;
+                    boolean gotLo = false;
+                    for (int k = 0; k < bins; k++) {
+                        acc += hist[k];
+                        if (!gotLo && acc > lowIdx) {
+                            loH = minH + k * bin;
+                            gotLo = true;
+                        }
+                        if (acc > highIdx) {
+                            hiH = minH + k * bin;
+                            break;
+                        }
                     }
+                    lo = loH;
+                    hi = hiH;
+                    if (hi - lo < 40) hi = lo + 40;
                 }
-                lo = loH;
-                hi = hiH;
-                if (hi - lo < 40) hi = lo + 40;
             }
-        }
 
+            // optional: land ramp from sea level up to the map's highest point (green -> white);
+            // water already spans shallow -> deepest blue by depth, so its deepest point is the lowest floor
+            rampLo = lo;
+            rampHi = hi;
+            if (VoxyMapConfig.MIN_MAX_RAMP.get()) {
+                int maxH = Integer.MIN_VALUE;
+                for (int i = 0; i < w * h; i++) {
+                    int top = topArr[i];
+                    if (top == Integer.MIN_VALUE || isWaterPix[i]) continue;
+                    if (top > maxH) maxH = top;
+                }
+                if (maxH != Integer.MIN_VALUE && maxH - sea >= 40) {
+                    rampLo = sea;
+                    rampHi = maxH;
+                }
+            }
+            globalLo = lo;
+            globalHi = hi;
+            globalRampLo = rampLo;
+            globalRampHi = rampHi;
+            globalRampSnap = s;
+            globalRampFingerprint = fp;
+        }
         // contour mask from the smoothed land height, then drop small fragments by connected-area size
         int contourInterval = Math.max(10, (hi - lo) / Math.max(1, VoxyMapConfig.CONTOUR_DENSITY.get()));
-        // optional: land ramp from sea level up to the map's highest point (green -> white);
-        // water already spans shallow -> deepest blue by depth, so its deepest point is the lowest floor
-        int rampLo = lo, rampHi = hi;
-        if (VoxyMapConfig.MIN_MAX_RAMP.get()) {
-            int maxH = Integer.MIN_VALUE;
-            for (int i = 0; i < w * h; i++) {
-                int top = topArr[i];
-                if (top == Integer.MIN_VALUE || isWaterPix[i]) continue;
-                if (top > maxH) maxH = top;
-            }
-            if (maxH != Integer.MIN_VALUE && maxH - sea >= 40) {
-                rampLo = sea;
-                rampHi = maxH;
-            }
-        }
         boolean drawContours = contourOverride != null ? contourOverride : VoxyMapConfig.DRAW_CONTOURS.get();
         boolean[] contour = computeContour(topArr, isWaterPix, smoothTop, lo, hi, w, h, drawContours, next);
 
