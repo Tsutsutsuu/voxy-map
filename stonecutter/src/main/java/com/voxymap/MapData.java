@@ -173,6 +173,8 @@ public final class MapData {
     public volatile long lastRefreshMs;
     public volatile int lastChangedSections;
     public volatile boolean lastRefreshIncremental;
+    /** successful incremental refreshes since the last full rebuild (periodic calibration) */
+    private volatile int incrementalRefreshCount;
 
     private long sessionStartMs;
     /** debounces automatic refreshes so a failing rebuild cannot restart every tick */
@@ -865,6 +867,7 @@ public final class MapData {
                     if (epoch != worldEpoch) return;
                     saveCache(storage, built);
                     freshlyBuilt = true;
+                    incrementalRefreshCount = 0;
                 }
                 if (epoch != worldEpoch) return;
                 if (built != null) {
@@ -960,6 +963,9 @@ public final class MapData {
     /** True when an automatic refresh may use the section index instead of a full rebuild. */
     public boolean canIncrementalRefresh() {
         if (!VoxyMapConfig.INCREMENTAL_REFRESH.get()) return false;
+        // periodic calibration: incremental merges cannot lower a column, so rebuild fully now and
+        // then instead of letting rare Voxy upserts drift forever
+        if (incrementalRefreshCount >= 20) return false;
         Snapshot s = snap;
         VoxyIndex idx = sectionIndex;
         if (s == null || idx == null || idx.stamp != s.stamp) return false;
@@ -1267,6 +1273,7 @@ public final class MapData {
                     lastRefreshIncremental = true;
                     lastChangedSections = changed;
                     lastRefreshMs = (System.nanoTime() - startedNs) / 1_000_000L;
+                    incrementalRefreshCount++;
                 } finally {
                     for (Object h : handles) RocksBridge.close(h);
                     RocksBridge.close(db);
