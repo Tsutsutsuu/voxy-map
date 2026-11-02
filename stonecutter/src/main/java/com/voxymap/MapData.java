@@ -3002,7 +3002,8 @@ public final class MapData {
             return current;
         }
         if (current != null) current.dispose();
-        LiveTileStore next = new LiveTileStore(s.minWX, s.minWZ, s.pixelBlocks);
+        Path tileCache = snapStorage == null ? null : worldCacheDir(snapStorage).resolve("tiles");
+        LiveTileStore next = new LiveTileStore(s.minWX, s.minWZ, s.pixelBlocks, tileCache);
         ColorFrame f = colorFrame;
         if (f != null && f.width == s.width && f.height == s.height) {
             next.setSeed(s.pixels, f.rgb, s.width, s.height, s.minWX, s.minWZ, s.pixelBlocks, f.epoch);

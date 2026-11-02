@@ -1,13 +1,23 @@
 package com.voxymap;
 
+import com.github.luben.zstd.Zstd;
 import com.mojang.blaze3d.platform.NativeImage;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.texture.DynamicTexture;
 import net.minecraft.resources.Identifier;
 
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -25,6 +35,13 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public final class LiveTileStore {
     public static final int TILE_PIXELS = 256;
+    private static final int CACHE_MAGIC = 0x56585431;
+    private static final int CACHE_VERSION = 1;
+    private static final ExecutorService CACHE_IO = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "voxymap-tile-cache");
+        t.setDaemon(true);
+        return t;
+    });
 
     public static final class LiveTile {
         public final int tx, tz;
@@ -65,6 +82,7 @@ public final class LiveTileStore {
 
     private final long minWX, minWZ;
     private final int pixelBlocks;
+    private final Path cacheDir;
     private volatile long[] seedPixels;
     private volatile int[] seedRgb;
     private volatile int seedWidth, seedHeight;
@@ -80,10 +98,11 @@ public final class LiveTileStore {
     private final AtomicInteger seedTileCount = new AtomicInteger();
     private final AtomicInteger liveOnlyTileCount = new AtomicInteger();
 
-    public LiveTileStore(long minWX, long minWZ, int pixelBlocks) {
+    public LiveTileStore(long minWX, long minWZ, int pixelBlocks, Path cacheDir) {
         this.minWX = minWX;
         this.minWZ = minWZ;
         this.pixelBlocks = pixelBlocks;
+        this.cacheDir = cacheDir;
     }
 
     public boolean matches(long minWX, long minWZ, int pixelBlocks) {
@@ -152,7 +171,14 @@ public final class LiveTileStore {
         seedCreatesThisFrame.incrementAndGet();
         long[] srcPixels = seedPixels;
         int[] srcRgb = seedRgb;
-        if (srcPixels == null || srcRgb == null) return null;
+        if (srcPixels == null || srcRgb == null) {
+            LiveTile cached = loadCached(tx, tz);
+            if (cached != null) {
+                LiveTile previous = tiles.putIfAbsent(key(tx, tz), cached);
+                return previous != null ? previous : cached;
+            }
+            return null;
+        }
         long tileWorldX = tileMinWX(tx);
         long tileWorldZ = tileMinWZ(tz);
         int px0 = (int) Math.floorDiv(tileWorldX - seedMinWX, seedPixelBlocks);
@@ -180,6 +206,64 @@ public final class LiveTileStore {
         LiveTile previous = tiles.putIfAbsent(key(tx, tz), tile);
         if (previous == null) seedTileCount.incrementAndGet();
         return previous != null ? previous : tile;
+    }
+
+    private Path cacheFile(int tx, int tz) {
+        return cacheDir.resolve(tx + "_" + tz + ".vxt");
+    }
+
+    private LiveTile loadCached(int tx, int tz) {
+        if (cacheDir == null) return null;
+        Path file = cacheFile(tx, tz);
+        if (!Files.isRegularFile(file)) return null;
+        try (DataInputStream in = new DataInputStream(
+                new java.io.BufferedInputStream(Files.newInputStream(file)))) {
+            if (in.readInt() != CACHE_MAGIC || in.readInt() != CACHE_VERSION) return null;
+            int ftx = in.readInt(), ftz = in.readInt();
+            long fminX = in.readLong(), fminZ = in.readLong();
+            int fpb = in.readInt();
+            int rawLen = in.readInt();
+            if (ftx != tx || ftz != tz || fpb != pixelBlocks
+                    || fminX != tileMinWX(tx) || fminZ != tileMinWZ(tz)) return null;
+            byte[] comp = in.readAllBytes();
+            byte[] raw = Zstd.decompress(comp, TILE_PIXELS * TILE_PIXELS * Long.BYTES);
+            if (raw == null || raw.length != TILE_PIXELS * TILE_PIXELS * Long.BYTES) return null;
+            ByteBuffer bb = ByteBuffer.wrap(raw).order(ByteOrder.LITTLE_ENDIAN);
+            LiveTile tile = new LiveTile(tx, tz, tileMinWX(tx), tileMinWZ(tz));
+            for (int i = 0; i < tile.pixels.length; i++) tile.pixels[i] = bb.getLong();
+            tile.liveDirty = true; // cached pixels have no colour; let the live pipeline colour them
+            liveOnlyTileCount.incrementAndGet();
+            return tile;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    private void saveCached(LiveTile tile) {
+        if (cacheDir == null || tile.seedEpoch >= 0) return;
+        try {
+            Files.createDirectories(cacheDir);
+            ByteBuffer raw = ByteBuffer.allocate(TILE_PIXELS * TILE_PIXELS * Long.BYTES)
+                    .order(ByteOrder.LITTLE_ENDIAN);
+            for (long v : tile.pixels) raw.putLong(v);
+            byte[] comp = Zstd.compress(raw.array(), 3);
+            Path file = cacheFile(tile.tx, tile.tz);
+            Path tmp = file.resolveSibling(file.getFileName() + ".tmp");
+            try (DataOutputStream out = new DataOutputStream(
+                    new java.io.BufferedOutputStream(Files.newOutputStream(tmp)))) {
+                out.writeInt(CACHE_MAGIC);
+                out.writeInt(CACHE_VERSION);
+                out.writeInt(tile.tx);
+                out.writeInt(tile.tz);
+                out.writeLong(tile.minWX);
+                out.writeLong(tile.minWZ);
+                out.writeInt(pixelBlocks);
+                out.writeInt(raw.capacity());
+                out.write(comp);
+            }
+            Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+        } catch (Throwable ignored) {
+        }
     }
 
     private void refreshSeed(LiveTile tile) {
@@ -457,7 +541,10 @@ public final class LiveTileStore {
     }
 
     public void dispose() {
-        for (LiveTile tile : tiles.values()) tile.dispose();
+        for (LiveTile tile : tiles.values()) {
+            if (tile.seedEpoch < 0) CACHE_IO.submit(() -> saveCached(tile));
+            tile.dispose();
+        }
         tiles.clear();
     }
 }
