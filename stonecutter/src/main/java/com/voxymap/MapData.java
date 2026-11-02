@@ -748,6 +748,9 @@ public final class MapData {
         out.add(ts == null ? "tiles: none"
                 : "tiles: " + ts.createdCount() + " textures, " + ts.emptyCount() + " empty, grid "
                 + ts.tilesX() + "x" + ts.tilesY() + " (" + TileStore.TILE_PIXELS + "px)");
+        LiveTileStore live = liveTiles;
+        out.add(live == null ? "live tiles: none"
+                : "live tiles: " + live.tileCount() + " tiles, " + live.sectionCount() + " sections");
         out.add(VoxyLiveProbe.statsLine());
         out.add("mem: " + (rt.totalMemory() - rt.freeMemory()) / 1048576L + " / " + rt.maxMemory() / 1048576L + " MB");
         return out;
