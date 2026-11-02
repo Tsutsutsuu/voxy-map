@@ -1048,7 +1048,10 @@ public final class MapData {
                 final int[] rgb = cachedRgb;
                 progress = 95;
                 checkJob(jobToken);
-                if (freshlyBuilt) lastSnapshotWallMs = System.currentTimeMillis();
+                if (freshlyBuilt) {
+                    lastSnapshotWallMs = System.currentTimeMillis();
+                    needsFast = false;
+                }
                 handedToMainThread = true;
                 mc.execute(() -> {
                     try {
