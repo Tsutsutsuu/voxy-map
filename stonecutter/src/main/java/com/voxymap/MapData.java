@@ -2783,7 +2783,39 @@ public final class MapData {
 
     // ------------------------------------------------------------- render
 
+    /**
+     * Colours a standalone tile (pixels + optional halo) with the full style pipeline:
+     * hillshade, water blur, contours, adaptive ramp, coast darkening and biome-independent colour.
+     * Must run on the loader thread so the shared analysis scratch buffers stay single-threaded.
+     *
+     * @param pixels packed columns, width*height, top-left at (minWX,minWZ)
+     * @return ARGB colours, same dimensions
+     */
+    public int[] renderTileColor(long[] pixels, int width, int height, long minWX, long minWZ, int pixelBlocks) {
+        if (pixels == null || width <= 0 || height <= 0) return null;
+        Snapshot s = new Snapshot(pixels, width, height, minWX, minWZ, pixelBlocks,
+                java.util.Map.of(), System.nanoTime());
+        long savedToken = renderToken;
+        renderToken = 0; // a tile colour job is not part of the cancellable fast refresh
+        try {
+            return renderColor(s, style, seaLevel(), false);
+        } finally {
+            renderToken = savedToken;
+        }
+    }
+
     /** Render the colour grid off the render thread, then upload it on the client thread. */
+    public void submitTileColor(long[] pixels, int width, int height, long minWX, long minWZ,
+                                int pixelBlocks, java.util.function.Consumer<int[]> done) {
+        loader.submit(() -> {
+            try {
+                int[] rgb = renderTileColor(pixels, width, height, minWX, minWZ, pixelBlocks);
+                Minecraft.getInstance().execute(() -> done.accept(rgb));
+            } catch (Throwable t) {
+                t.printStackTrace();
+            }
+        });
+    }
     /** Writes the most recently rendered map as a PNG. */
     public boolean exportPng(java.nio.file.Path out) {
         ColorFrame f = colorFrame;

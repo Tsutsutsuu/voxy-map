@@ -30,7 +30,12 @@ public final class LiveTileStore {
         public final int tx, tz;
         public final long minWX, minWZ;
         public final long[] pixels = new long[TILE_PIXELS * TILE_PIXELS];
-        volatile boolean dirty = true;
+        volatile int version;
+        volatile int coloredVersion = -1;
+        volatile int colorStyleHash;
+        volatile boolean colorPending;
+        volatile int[] rgb;
+        volatile boolean textureDirty = true;
         Identifier texture;
         DynamicTexture dynamic;
         int textureEpoch = -1;
@@ -60,6 +65,7 @@ public final class LiveTileStore {
     private final Map<Long, LiveTile> tiles = new ConcurrentHashMap<>();
     private final AtomicLong sectionCount = new AtomicLong();
     private final AtomicInteger createdThisFrame = new AtomicInteger();
+    private final AtomicInteger colorRequestsThisFrame = new AtomicInteger();
 
     public LiveTileStore(long minWX, long minWZ, int pixelBlocks) {
         this.minWX = minWX;
@@ -85,6 +91,7 @@ public final class LiveTileStore {
 
     public void beginFrame() {
         createdThisFrame.set(0);
+        colorRequestsThisFrame.set(0);
     }
 
     public LiveTile get(int tx, int tz) {
@@ -122,6 +129,7 @@ public final class LiveTileStore {
         int scale = 1 << lvl;
         int sx = (int) ((key << 36) >> 40);
         int sz = (int) ((key << 12) >> 40);
+        java.util.Set<LiveTile> touched = new java.util.HashSet<>();
         for (int c = 0; c < 1024; c++) {
             long packed = cols[c];
             if (packed == VoxyMerge.LONG_EMPTY) continue;
@@ -150,72 +158,101 @@ public final class LiveTileStore {
                             (int) (packed & 0xFFFF) - 32768,
                             (packed & (1L << 52)) != 0,
                             (int) ((packed >>> 53) & 0x1FF));
-                    tile.dirty = true;
+                    touched.add(tile);
                 }
             }
+        }
+        for (LiveTile t : touched) {
+            t.version++;
+            t.textureDirty = true;
+            t.colorPending = false;
         }
     }
 
     /**
-     * Makes sure a texture exists for this live tile. Called on the render thread; creation is
-     * rate-limited so a burst of new tiles cannot stall the frame.
+     * Makes sure a texture exists for this live tile. Full-style colouring is queued on the
+     * map loader (serialized with global refreshes) and the GPU upload is rate-limited.
      */
     public Identifier textureFor(LiveTile tile, String style, int sea) {
         if (tile == null) return null;
         int styleHash = (style == null ? 0 : style.hashCode()) * 31 + sea;
-        if (tile.texture != null) {
-            if (tile.dirty || tile.textureEpoch != styleHash) {
-                if (createdThisFrame.get() >= 6) return tile.texture;
-                updatedTexture(tile, style, sea, styleHash);
+        if (tile.texture != null && tile.textureEpoch == styleHash && !tile.textureDirty) {
+            return tile.texture;
+        }
+        if (tile.version != tile.coloredVersion || tile.colorStyleHash != styleHash) {
+            if (!tile.colorPending && colorRequestsThisFrame.get() < 4) {
+                requestColor(tile, styleHash);
             }
             return tile.texture;
         }
-        if (createdThisFrame.get() >= 6) return null;
-        updatedTexture(tile, style, sea, styleHash);
+        if (tile.rgb == null) return tile.texture;
+        if (createdThisFrame.get() >= 6) return tile.texture;
+        buildTexture(tile, styleHash);
         return tile.texture;
     }
 
-    private void updatedTexture(LiveTile tile, String style, int sea, int styleHash) {
+    private void requestColor(LiveTile tile, int styleHash) {
+        tile.colorPending = true;
+        colorRequestsThisFrame.incrementAndGet();
+        final int version = tile.version;
+        final int halo = 8;
+        final int hw = TILE_PIXELS + halo * 2;
+        long[] withHalo = new long[hw * hw];
+        int baseX = tile.tx * TILE_PIXELS - halo;
+        int baseZ = tile.tz * TILE_PIXELS - halo;
+        for (int z = 0; z < hw; z++) {
+            int gz = baseZ + z;
+            int tz = Math.floorDiv(gz, TILE_PIXELS);
+            int lz = gz - tz * TILE_PIXELS;
+            for (int x = 0; x < hw; x++) {
+                int gx = baseX + x;
+                int tx = Math.floorDiv(gx, TILE_PIXELS);
+                int lx = gx - tx * TILE_PIXELS;
+                LiveTile src = tiles.get(key(tx, tz));
+                if (src != null) {
+                    withHalo[z * hw + x] = src.pixels[lz * TILE_PIXELS + lx];
+                }
+            }
+        }
+        long minX = tile.minWX - (long) halo * pixelBlocks;
+        long minZ = tile.minWZ - (long) halo * pixelBlocks;
+        MapData.INSTANCE.submitTileColor(withHalo, hw, hw, minX, minZ, pixelBlocks, full -> {
+            tile.colorPending = false;
+            if (full == null || full.length < hw * hw) return;
+            if (tile.version != version) {
+                return; // a newer section update won the race; a later frame requests again
+            }
+            if (tile.coloredVersion == version && tile.colorStyleHash == styleHash) return;
+            int[] cropped = new int[TILE_PIXELS * TILE_PIXELS];
+            for (int z = 0; z < TILE_PIXELS; z++) {
+                System.arraycopy(full, (z + halo) * hw + halo, cropped, z * TILE_PIXELS, TILE_PIXELS);
+            }
+            tile.rgb = cropped;
+            tile.coloredVersion = version;
+            tile.colorStyleHash = styleHash;
+            tile.textureDirty = true;
+        });
+    }
+
+    private void buildTexture(LiveTile tile, int styleHash) {
         createdThisFrame.incrementAndGet();
         NativeImage image = new NativeImage(TILE_PIXELS, TILE_PIXELS, false);
-        boolean any = false;
+        int[] rgb = tile.rgb;
         for (int i = 0; i < TILE_PIXELS * TILE_PIXELS; i++) {
-            int argb = color(tile.pixels[i], style, sea);
-            if ((argb >>> 24) != 0) any = true;
-            int r = (argb >> 16) & 0xFF, g = (argb >> 8) & 0xFF, b = argb & 0xFF;
+            int c = rgb[i];
+            int r = (c >> 16) & 0xFF, g = (c >> 8) & 0xFF, b = c & 0xFF;
             image.setPixelABGR(i % TILE_PIXELS, i / TILE_PIXELS,
-                    ((argb >>> 24) << 24) | (b << 16) | (g << 8) | r);
-        }
-        if (!any) {
-            image.close();
-            tile.dirty = false;
-            return;
+                    ((c >>> 24) << 24) | (b << 16) | (g << 8) | r);
         }
         DynamicTexture dynamic = new DynamicTexture(() -> "voxymap_live_tile", image);
         Identifier id = Identifier.fromNamespaceAndPath("voxymap",
                 "live_" + tile.tx + "_" + tile.tz + "_" + Math.abs(styleHash));
-        if (tile.texture != null) {
-            tile.dispose();
-        }
+        if (tile.texture != null) tile.dispose();
         Minecraft.getInstance().getTextureManager().register(id, dynamic);
         tile.texture = id;
         tile.dynamic = dynamic;
         tile.textureEpoch = styleHash;
-        tile.dirty = false;
-    }
-
-    private static int color(long packed, String style, int sea) {
-        if (packed == VoxyMerge.LONG_EMPTY) return 0;
-        int top = (int) ((packed >>> 24) & 0xFFFF) - 32768;
-        int floor = (int) (packed & 0xFFFF) - 32768;
-        if (top == VoxyMerge.NO_TOP) top = floor;
-        if (top == Integer.MIN_VALUE || top == VoxyMerge.NO_TOP) return 0;
-        boolean water = (packed & (1L << 52)) != 0;
-        int rgb = water
-                ? MapStyles.waterColor(style, Math.max(1, sea - floor))
-                : MapStyles.landColor(style, top, sea, sea - 64, sea + 384, false);
-        int r = (rgb >> 16) & 0xFF, g = (rgb >> 8) & 0xFF, b = rgb & 0xFF;
-        return 0xFF000000 | (r << 16) | (g << 8) | b;
+        tile.textureDirty = false;
     }
 
     public void dispose() {
