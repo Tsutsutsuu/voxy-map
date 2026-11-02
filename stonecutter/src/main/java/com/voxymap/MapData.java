@@ -738,6 +738,7 @@ public final class MapData {
                 + " age=" + String.format(java.util.Locale.ROOT, "%.1f", snapshotAgeMinutes()) + "min"
                 + " still=" + stillSec + "s");
         Runtime rt = Runtime.getRuntime();
+        out.add(VoxyLiveProbe.statsLine());
         out.add("mem: " + (rt.totalMemory() - rt.freeMemory()) / 1048576L + " / " + rt.maxMemory() / 1048576L + " MB");
         return out;
     }

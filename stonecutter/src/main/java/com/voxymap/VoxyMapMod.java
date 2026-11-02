@@ -30,6 +30,7 @@ public final class VoxyMapMod {
     public static void registerTick() {
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             MapData.INSTANCE.tick();
+            VoxyLiveProbe.tick(client);
             if (openKey == null) return;
             // always drain the queue so a close press does not immediately reopen the map
             while (openKey.consumeClick()) {
