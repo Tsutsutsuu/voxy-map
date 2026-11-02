@@ -52,6 +52,8 @@ public final class VoxyLiveProbe {
     private static volatile String lastSample = "";
     private static long lastReportMs;
     private static long lastAttemptMs;
+    private static long lastCallbackCheckMs;
+    private static Method callbackAccept;
 
     private VoxyLiveProbe() {
     }
@@ -78,6 +80,57 @@ public final class VoxyLiveProbe {
             lastReportMs = now;
             report();
         }
+        if (engine != null && now - lastCallbackCheckMs > 100L) {
+            lastCallbackCheckMs = now;
+            ensureCallback();
+        }
+    }
+
+    /**
+     * Voxy's renderer installs its own dirty callback (and clears it on close). If it replaced our
+     * proxy, re-install ours with the current callback chained so both sides keep working.
+     */
+    private static void ensureCallback() {
+        if (engine == null || engineDirtyCallback == null || engineSetDirtyCallback == null) return;
+        try {
+            Object current = engineDirtyCallback.get(engine);
+            if (current == installedCallback) return;
+            previousCallback = current;
+            Object cb = newCallback(previousCallback);
+            engineSetDirtyCallback.invoke(engine, cb);
+            installedCallback = cb;
+            System.out.println("[voxymap-live] re-installed chaining callback "
+                    + (current == null ? "null" : current.getClass().getName()));
+        } catch (Throwable t) {
+            disabled = true;
+            System.out.println("[voxymap-live] could not re-chain callback: " + t);
+        }
+    }
+
+    private static Object newCallback(Object previous) throws Exception {
+        Class<?> callbackClass = findClass(CALLBACK, VoxyLiveProbe.class.getClassLoader());
+        if (callbackClass == null) throw new ClassNotFoundException(CALLBACK);
+        callbackAccept = callbackClass.getMethod("accept", sectionClass, int.class, int.class);
+        InvocationHandler handler = (proxy, method, args) -> {
+            if ("accept".equals(method.getName()) && args != null && args.length >= 3) {
+                // Keep Voxy's own renderer callback latency first; our probe must never delay it
+                // more than the statistics work below.
+                if (previous != null) {
+                    try {
+                        callbackAccept.invoke(previous, args);
+                    } catch (Throwable ignored) {
+                    }
+                }
+                try {
+                    onEvent(args[0], (Integer) args[1], (Integer) args[2]);
+                } catch (Throwable t) {
+                    t.printStackTrace();
+                }
+            }
+            return null;
+        };
+        return Proxy.newProxyInstance(callbackClass.getClassLoader(),
+                new Class<?>[]{callbackClass}, handler);
     }
 
     private static void tryInstall(Minecraft mc, Level level) {
@@ -126,37 +179,24 @@ public final class VoxyLiveProbe {
             } catch (Throwable ignored) {
                 engineDirtyCallback = null;
             }
-            previousCallback = null;
-            if (engineDirtyCallback != null) {
-                try {
-                    previousCallback = engineDirtyCallback.get(found);
-                } catch (Throwable ignored) {
-                }
+            if (engineDirtyCallback == null) {
+                // Never overwrite Voxy's own renderer callback when we cannot inspect/chain it.
+                disabled = true;
+                System.out.println("[voxymap-live] cannot inspect WorldEngine.dirtyCallback; probe disabled");
+                return;
             }
-            final Object previous = previousCallback;
-            InvocationHandler handler = (proxy, method, args) -> {
-                if ("accept".equals(method.getName()) && args != null && args.length >= 3) {
-                    try {
-                        onEvent(args[0], (Integer) args[1], (Integer) args[2]);
-                    } catch (Throwable t) {
-                        t.printStackTrace();
-                    }
-                    if (previous != null) {
-                        try {
-                            method.invoke(previous, args);
-                        } catch (Throwable ignored) {
-                        }
-                    }
-                }
-                return null;
-            };
-            Object callback = Proxy.newProxyInstance(callbackClass.getClassLoader(),
-                    new Class<?>[]{callbackClass}, handler);
+            previousCallback = null;
+            try {
+                previousCallback = engineDirtyCallback.get(found);
+            } catch (Throwable ignored) {
+            }
+            Object callback = newCallback(previousCallback);
             engineSetDirtyCallback.invoke(found, callback);
             engine = found;
             installedCallback = callback;
             installedLevel = level;
             lastAttemptMs = System.currentTimeMillis();
+            lastCallbackCheckMs = System.currentTimeMillis();
             lastEventMs = 0;
             events.set(0);
             samples.set(0);
@@ -166,7 +206,8 @@ public final class VoxyLiveProbe {
             for (int i = 0; i < levelCounts.length(); i++) levelCounts.set(i, 0);
             lastReportMs = System.currentTimeMillis();
             System.out.println("[voxymap-live] installed on " + engineClass.getSimpleName()
-                    + " previousCallback=" + (previous == null ? "null" : previous.getClass().getName()));
+                    + " previousCallback=" + (previousCallback == null ? "null"
+                    : previousCallback.getClass().getName()));
             if (RefreshDebug.enabled()) {
                 RefreshDebug.chat("live probe installed on Voxy WorldEngine", net.minecraft.ChatFormatting.DARK_AQUA);
             }
