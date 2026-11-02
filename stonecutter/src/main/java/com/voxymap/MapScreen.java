@@ -532,6 +532,7 @@ public class MapScreen extends Screen {
 
     /** Draws only the tiles intersecting the viewport, one independent texture per tile. */
     private void drawMapTiles(GuiGraphicsExtractor g, MapData data, TileStore tiles) {
+        tiles.beginFrame();
         int pb = Math.max(1, data.getPixelBlocks());
         double worldPerScreenPx = pb / Math.max(1.0e-6, zoom);
         double left = centerX - (width / 2.0) * worldPerScreenPx;

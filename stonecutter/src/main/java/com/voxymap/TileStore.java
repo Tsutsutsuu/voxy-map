@@ -58,6 +58,8 @@ public final class TileStore {
     private final long epoch;
     private final Map<Long, MapTile> tiles = new HashMap<>();
     private final Set<Long> empty = new HashSet<>();
+    /** limit newly created textures per frame so a far-zoom open never freezes for a second */
+    private int createBudget;
 
     public TileStore(MapData.ColorFrame frame, int width, int height, long minWX, long minWZ,
                      int pixelBlocks, long epoch) {
@@ -138,13 +140,20 @@ public final class TileStore {
                 (long) TILE_PIXELS * pixelBlocks);
     }
 
-    /** Returns the tile, or null when the tile is empty / out of bounds. Main thread only. */
+    /** Main thread: reset the per-frame texture-creation budget before drawing the visible tiles. */
+    public void beginFrame() {
+        createBudget = 12;
+    }
+
+    /** Returns the tile, or null when the tile is empty / out of bounds / deferred this frame. Main thread only. */
     public MapTile getTile(int tx, int tz) {
         if (tx < 0 || tz < 0 || tx >= tilesX || tz >= tilesY) return null;
         long key = ((long) tx << 32) | (tz & 0xFFFFFFFFL);
         MapTile existing = tiles.get(key);
         if (existing != null) return existing;
         if (empty.contains(key)) return null;
+        if (createBudget <= 0) return null;
+        createBudget--;
         int tw = tileWidth(tx), th = tileHeight(tz);
         int[] rgb = frame.rgb;
         int px0 = tx * TILE_PIXELS, pz0 = tz * TILE_PIXELS;
