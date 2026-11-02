@@ -1057,6 +1057,7 @@ public final class MapData {
                     lastUpdateZ = mc.player.getZ();
                 }
             } catch (RefreshCancelled cancelled) {
+                report.cancelled = true;
                 restorePreviousSnapshot(prevSnap, prevSnapStorage);
                 sectionIndex = prevIndex;
             } catch (OutOfMemoryError oom) {
@@ -1296,7 +1297,11 @@ public final class MapData {
                 terrainCache = null;
                 return;
             }
-            if (mapOpen || token != refreshToken.get()) return;
+            if (mapOpen || token != refreshToken.get()) {
+                // the colour patch mutated the analysis arrays; do not leave a half-updated cache
+                terrainCache = null;
+                return;
+            }
             snap = built;
             snapStorage = storage;
             sectionIndex = newIndex;
@@ -1908,6 +1913,15 @@ public final class MapData {
             return;
         }
         overworldActive = true;
+        long nowMs = System.currentTimeMillis();
+        if (sessionStartMs == 0) sessionStartMs = nowMs;
+        int delayMinutes = VoxyMapConfig.INITIAL_REFRESH_DELAY_MINUTES.get();
+        if (!initialRefreshDone) {
+            if (delayMinutes <= 0 || nowMs - sessionStartMs > delayMinutes * 60_000L) {
+                // the SeedGen delay is over; MapScreen.tick will start the first fast build if open
+                initialRefreshDone = true;
+            }
+        }
         updatePlayerStillness(mc);
         if (!VoxyMapConfig.AUTO_REFRESH.get()) return;
         if (mapOpen) {
