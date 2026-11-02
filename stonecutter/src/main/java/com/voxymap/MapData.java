@@ -2842,10 +2842,10 @@ public final class MapData {
         TileStore current = tileStore;
         if (current != null && current.frame() == f) return;
         if (current != null && current.matches(s.width, s.height, s.minWX, s.minWZ, s.pixelBlocks)) {
-            current.updateFrame(f);
+            current.updateFrame(f, s.pixels);
             return;
         }
-        TileStore next = new TileStore(f, s.width, s.height, s.minWX, s.minWZ, s.pixelBlocks,
+        TileStore next = new TileStore(f, s.pixels, s.width, s.height, s.minWX, s.minWZ, s.pixelBlocks,
                 f.epoch);
         tileStore = next;
         if (current != null) current.dispose();

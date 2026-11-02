@@ -27,6 +27,8 @@ public final class TileStore {
         public final long minWX, minWZ;
         public final int width, height;
         public final int frameEpoch;
+        /** Independent pixel slice for this tile (foundation for per-tile map updates). */
+        public final long[] pixels;
         public final Identifier texture;
         public final Identifier textureSmall;
         public final int smallWidth, smallHeight;
@@ -34,7 +36,7 @@ public final class TileStore {
         private final DynamicTexture dynamicSmall;
 
         MapTile(int indexX, int indexZ, long minWX, long minWZ, int width, int height,
-                int frameEpoch, Identifier texture, DynamicTexture dynamic,
+                int frameEpoch, long[] pixels, Identifier texture, DynamicTexture dynamic,
                 Identifier textureSmall, DynamicTexture dynamicSmall,
                 int smallWidth, int smallHeight) {
             this.indexX = indexX;
@@ -44,6 +46,7 @@ public final class TileStore {
             this.width = width;
             this.height = height;
             this.frameEpoch = frameEpoch;
+            this.pixels = pixels;
             this.texture = texture;
             this.dynamic = dynamic;
             this.textureSmall = textureSmall;
@@ -67,6 +70,7 @@ public final class TileStore {
     }
 
     private volatile MapData.ColorFrame frame;
+    private volatile long[] sourcePixels;
     private final int width, height;    private final long minWX, minWZ;
     private final int pixelBlocks;
     private final int tilesX, tilesY;
@@ -76,9 +80,10 @@ public final class TileStore {
     /** limit newly created textures per frame so a far-zoom open never freezes for a second */
     private int createBudget;
 
-    public TileStore(MapData.ColorFrame frame, int width, int height, long minWX, long minWZ,
+    public TileStore(MapData.ColorFrame frame, long[] sourcePixels, int width, int height, long minWX, long minWZ,
                      int pixelBlocks, long epoch) {
         this.frame = frame;
+        this.sourcePixels = sourcePixels;
         this.width = width;
         this.height = height;
         this.minWX = minWX;
@@ -104,9 +109,10 @@ public final class TileStore {
      * re-cuts/upload it from the new colour frame within the per-frame budget, so a refresh does
      * not throw away every visible tile texture at once.
      */
-    public void updateFrame(MapData.ColorFrame next) {
-        if (next == this.frame) return;
+    public void updateFrame(MapData.ColorFrame next, long[] nextPixels) {
+        if (next == this.frame && nextPixels == this.sourcePixels) return;
         this.frame = next;
+        this.sourcePixels = nextPixels;
         empty.clear();
     }
 
@@ -210,12 +216,17 @@ public final class TileStore {
             return null;
         }
         NativeImage image = new NativeImage(tw, th, false);
+        long[] tilePixels = new long[tw * th];
         for (int z = 0; z < th; z++) {
-            int row = (pz0 + z) * width + px0;
+            int row = (pz0 + z) * width;
+            int tileRow = z * tw;
             for (int x = 0; x < tw; x++) {
-                int c = rgb[row + x];
+                int c = rgb[row + px0 + x];
                 int r = (c >> 16) & 0xFF, g = (c >> 8) & 0xFF, b = c & 0xFF;
                 image.setPixelABGR(x, z, 0xFF000000 | (b << 16) | (g << 8) | r);
+                if (sourcePixels != null && row + px0 + x < sourcePixels.length) {
+                    tilePixels[tileRow + x] = sourcePixels[row + px0 + x];
+                }
             }
         }
         int sw = Math.max(1, tw / 4), sh = Math.max(1, th / 4);
@@ -249,8 +260,8 @@ public final class TileStore {
         Identifier idSmall = Identifier.fromNamespaceAndPath("voxymap",
                 "tile_" + epoch + "_" + tx + "_" + tz + "_s");
         Minecraft.getInstance().getTextureManager().register(idSmall, dynamicSmall);
-        MapTile tile = new MapTile(tx, tz, tileMinWX(tx), tileMinWZ(tz), tw, th, frame.epoch, id, dynamic,
-                idSmall, dynamicSmall, sw, sh);
+        MapTile tile = new MapTile(tx, tz, tileMinWX(tx), tileMinWZ(tz), tw, th, frame.epoch, tilePixels,
+                id, dynamic, idSmall, dynamicSmall, sw, sh);
         tiles.put(key, tile);
         return tile;
     }
