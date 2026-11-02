@@ -155,6 +155,7 @@ public class MapConfigScreen extends Screen {
         add(Group.UI, "debugVoxyEvents", VoxyMapConfig.DEBUG_VOXY_EVENTS, 0, 0, null);
         add(Group.UI, "tileRender", VoxyMapConfig.TILE_RENDER, 0, 0, null);
         add(Group.UI, "liveTiles", VoxyMapConfig.LIVE_TILES, 0, 0, null);
+        add(Group.UI, "unifiedTileMap", VoxyMapConfig.UNIFIED_TILES, 0, 0, null);
     }
 
     private void add(Group g, String name, VoxyMapConfig.Value<?> value, int min, int max, String[] options) {

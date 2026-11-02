@@ -68,6 +68,8 @@ public final class VoxyMapConfig {
     public static final Value<Boolean> TILE_RENDER = new Value<>("tileRender", true);
     /** Event-driven 2D overlay for terrain outside the current global snapshot. */
     public static final Value<Boolean> LIVE_TILES = new Value<>("liveTiles", false);
+    /** Migration switch: use the live store as the single 2D map (seeded from the base snapshot). */
+    public static final Value<Boolean> UNIFIED_TILES = new Value<>("unifiedTileMap", false);
     public static final Value<Boolean> SKIP_WORLD_RENDER = new Value<>("skipWorldRender", true);
     public static final Value<Integer> CACHE_KEEP_COUNT = new Value<>("cacheKeepCount", 5);
     public static final Value<Integer> MIN_CONTOUR_AREA = new Value<>("minContourArea", 40);

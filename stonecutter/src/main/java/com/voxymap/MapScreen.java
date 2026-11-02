@@ -492,6 +492,11 @@ public class MapScreen extends Screen {
     /** Layer 1: the map texture (nearest neighbour when zoomed in, the pre-filtered copy far out). */
     private void drawMap(GuiGraphicsExtractor g, MapData data, double uiScale) {
         TileStore tiles = data.getTileStore();
+        if (VoxyMapConfig.TILE_RENDER.get() && VoxyMapConfig.UNIFIED_TILES.get()) {
+            drawTilePreview(g, data);
+            drawUnifiedTiles(g, data, uiScale);
+            return;
+        }
         if (VoxyMapConfig.TILE_RENDER.get() && tiles != null) {
             // Show the pre-filtered whole-map copy first, then let tiles replace it. Without this
             // the per-frame tile budget makes a freshly opened map visibly fill from top to bottom.
@@ -532,6 +537,46 @@ public class MapScreen extends Screen {
         g.blit(RenderPipelines.GUI_TEXTURED_PREMULTIPLIED_ALPHA, tex, (int) Math.round(x0), (int) Math.round(y0),
                 0f, 0f, Math.max(1, (int) Math.round(w)), Math.max(1, (int) Math.round(h)),
                 srcW, srcH, srcW, srcH);
+    }
+
+    /** Migration path: one store renders both the seeded base tiles and live-updated tiles. */
+    private void drawUnifiedTiles(GuiGraphicsExtractor g, MapData data, double uiScale) {
+        LiveTileStore live = data.getLiveTiles();
+        if (live == null) return;
+        live.beginFrame();
+        int pb = Math.max(1, data.getPixelBlocks());
+        double worldPerScreenPx = pb / Math.max(1.0e-6, zoom);
+        double left = centerX - (width / 2.0) * worldPerScreenPx;
+        double right = centerX + (width / 2.0) * worldPerScreenPx;
+        double top = centerZ - (height / 2.0) * worldPerScreenPx;
+        double bottom = centerZ + (height / 2.0) * worldPerScreenPx;
+        int tx0 = live.tileIndexX(left), tx1 = live.tileIndexX(right);
+        int tz0 = live.tileIndexZ(top), tz1 = live.tileIndexZ(bottom);
+        String style = data.getStyle();
+        int sea = data.seaLevel();
+        for (int tz = tz0; tz <= tz1; tz++) {
+            for (int tx = tx0; tx <= tx1; tx++) {
+                LiveTileStore.LiveTile tile = live.get(tx, tz);
+                if (tile == null) tile = live.getOrCreateSeed(tx, tz);
+                if (tile == null) continue;
+                Identifier tex = live.textureFor(tile, style, sea);
+                if (tex == null) continue;
+                double sx = width / 2.0 + (tile.minWX - centerX) * zoom / pb;
+                double sy = height / 2.0 + (tile.minWZ - centerZ) * zoom / pb;
+                double sw = LiveTileStore.TILE_PIXELS * zoom;
+                double sh = LiveTileStore.TILE_PIXELS * zoom;
+                if (sx + sw < 0 || sy + sh < 0 || sx > width || sy > height) continue;
+                var pose = g.pose();
+                pose.pushMatrix();
+                pose.translate((float) sx, (float) sy);
+                pose.scale((float) zoom, (float) zoom);
+                g.blit(RenderPipelines.GUI_TEXTURED_PREMULTIPLIED_ALPHA, tex,
+                        0, 0, 0f, 0f, LiveTileStore.TILE_PIXELS, LiveTileStore.TILE_PIXELS,
+                        LiveTileStore.TILE_PIXELS, LiveTileStore.TILE_PIXELS,
+                        LiveTileStore.TILE_PIXELS, LiveTileStore.TILE_PIXELS);
+                pose.popMatrix();
+            }
+        }
     }
 
     /** Event-fed tiles outside the base snapshot; the base tile always wins where it has data. */

@@ -2907,9 +2907,19 @@ public final class MapData {
         Snapshot s = snap;
         if (s == null) return null;
         LiveTileStore current = liveTiles;
-        if (current != null && current.matches(s.minWX, s.minWZ, s.pixelBlocks)) return current;
+        if (current != null && current.matches(s.minWX, s.minWZ, s.pixelBlocks)) {
+            ColorFrame cf = colorFrame;
+            if (cf != null && cf.width == s.width && cf.height == s.height) {
+                current.setSeed(s.pixels, cf.rgb, s.width, s.height, s.minWX, s.minWZ, s.pixelBlocks, cf.epoch);
+            }
+            return current;
+        }
         if (current != null) current.dispose();
         LiveTileStore next = new LiveTileStore(s.minWX, s.minWZ, s.pixelBlocks);
+        ColorFrame f = colorFrame;
+        if (f != null && f.width == s.width && f.height == s.height) {
+            next.setSeed(s.pixels, f.rgb, s.width, s.height, s.minWX, s.minWZ, s.pixelBlocks, f.epoch);
+        }
         liveTiles = next;
         return next;
     }

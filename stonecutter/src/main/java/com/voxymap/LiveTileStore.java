@@ -34,6 +34,9 @@ public final class LiveTileStore {
         volatile int coloredVersion = -1;
         volatile int colorStyleHash;
         volatile boolean colorPending;
+        volatile boolean liveDirty;
+        volatile int seedEpoch = -1;
+        volatile int textureSeedEpoch = -1;
         volatile int[] rgb;
         volatile boolean textureDirty = true;
         Identifier texture;
@@ -62,10 +65,17 @@ public final class LiveTileStore {
 
     private final long minWX, minWZ;
     private final int pixelBlocks;
+    private volatile long[] seedPixels;
+    private volatile int[] seedRgb;
+    private volatile int seedWidth, seedHeight;
+    private volatile long seedMinWX, seedMinWZ;
+    private volatile int seedPixelBlocks = 1;
+    private volatile int seedEpoch;
     private final Map<Long, LiveTile> tiles = new ConcurrentHashMap<>();
     private final AtomicLong sectionCount = new AtomicLong();
     private final AtomicInteger createdThisFrame = new AtomicInteger();
     private final AtomicInteger colorRequestsThisFrame = new AtomicInteger();
+    private final AtomicInteger seedCreatesThisFrame = new AtomicInteger();
 
     public LiveTileStore(long minWX, long minWZ, int pixelBlocks) {
         this.minWX = minWX;
@@ -92,10 +102,91 @@ public final class LiveTileStore {
     public void beginFrame() {
         createdThisFrame.set(0);
         colorRequestsThisFrame.set(0);
+        seedCreatesThisFrame.set(0);
     }
 
     public LiveTile get(int tx, int tz) {
         return tiles.get(key(tx, tz));
+    }
+
+    /** Sets the base snapshot used to lazily seed unmodified tiles. */
+    public void setSeed(long[] pixels, int[] rgb, int width, int height, long minWX, long minWZ,
+                        int pixelBlocks, int epoch) {
+        if (this.seedPixels == pixels && this.seedRgb == rgb && this.seedEpoch == epoch) return;
+        this.seedPixels = pixels;
+        this.seedRgb = rgb;
+        this.seedWidth = width;
+        this.seedHeight = height;
+        this.seedMinWX = minWX;
+        this.seedMinWZ = minWZ;
+        this.seedPixelBlocks = Math.max(1, pixelBlocks);
+        this.seedEpoch = epoch;
+    }
+
+    /**
+     * Lazily creates a tile from the base snapshot. Returns null for empty/out-of-seed tiles so the
+     * unified renderer does not allocate tiles for the empty margin.
+     */
+    public LiveTile getOrCreateSeed(int tx, int tz) {
+        LiveTile existing = tiles.get(key(tx, tz));
+        if (existing != null) return existing;
+        if (seedCreatesThisFrame.get() >= 16) return null;
+        seedCreatesThisFrame.incrementAndGet();
+        long[] srcPixels = seedPixels;
+        int[] srcRgb = seedRgb;
+        if (srcPixels == null || srcRgb == null) return null;
+        long tileWorldX = tileMinWX(tx);
+        long tileWorldZ = tileMinWZ(tz);
+        int px0 = (int) Math.floorDiv(tileWorldX - seedMinWX, seedPixelBlocks);
+        int pz0 = (int) Math.floorDiv(tileWorldZ - seedMinWZ, seedPixelBlocks);
+        int step = Math.max(1, seedPixelBlocks / pixelBlocks);
+        LiveTile tile = new LiveTile(tx, tz, tileWorldX, tileWorldZ);
+        tile.seedEpoch = seedEpoch;
+        boolean any = false;
+        for (int z = 0; z < TILE_PIXELS; z++) {
+            int sz = pz0 + z;
+            if (sz < 0 || sz >= seedHeight) continue;
+            for (int x = 0; x < TILE_PIXELS; x++) {
+                int sx = px0 + x;
+                if (sx < 0 || sx >= seedWidth) continue;
+                int si = sz * seedWidth + sx;
+                if (si >= srcPixels.length || si >= srcRgb.length) continue;
+                tile.pixels[z * TILE_PIXELS + x] = srcPixels[si];
+                int c = srcRgb[si];
+                if (tile.rgb == null) tile.rgb = new int[TILE_PIXELS * TILE_PIXELS];
+                tile.rgb[z * TILE_PIXELS + x] = c;
+                if ((c >>> 24) != 0) any = true;
+            }
+        }
+        if (!any) return null;
+        LiveTile previous = tiles.putIfAbsent(key(tx, tz), tile);
+        return previous != null ? previous : tile;
+    }
+
+    private void refreshSeed(LiveTile tile) {
+        if (tile.liveDirty) return;
+        long[] srcPixels = seedPixels;
+        int[] srcRgb = seedRgb;
+        if (srcPixels == null || srcRgb == null) return;
+        int px0 = (int) Math.floorDiv(tile.minWX - seedMinWX, seedPixelBlocks);
+        int pz0 = (int) Math.floorDiv(tile.minWZ - seedMinWZ, seedPixelBlocks);
+        if (tile.rgb == null) tile.rgb = new int[TILE_PIXELS * TILE_PIXELS];
+        for (int z = 0; z < TILE_PIXELS; z++) {
+            int sz = pz0 + z;
+            if (sz < 0 || sz >= seedHeight) continue;
+            for (int x = 0; x < TILE_PIXELS; x++) {
+                int sx = px0 + x;
+                if (sx < 0 || sx >= seedWidth) continue;
+                int si = sz * seedWidth + sx;
+                if (si >= srcPixels.length || si >= srcRgb.length) continue;
+                tile.pixels[z * TILE_PIXELS + x] = srcPixels[si];
+                int c = srcRgb[si];
+                if (tile.rgb == null) tile.rgb = new int[TILE_PIXELS * TILE_PIXELS];
+                tile.rgb[z * TILE_PIXELS + x] = c;
+            }
+        }
+        tile.seedEpoch = seedEpoch;
+        tile.textureDirty = true;
     }
 
     public int tileIndexX(double worldX) {
@@ -163,6 +254,7 @@ public final class LiveTileStore {
             }
         }
         for (LiveTile t : touched) {
+            t.liveDirty = true;
             t.version++;
             t.textureDirty = true;
             t.colorPending = false;
@@ -176,6 +268,15 @@ public final class LiveTileStore {
     public Identifier textureFor(LiveTile tile, String style, int sea) {
         if (tile == null) return null;
         int styleHash = (style == null ? 0 : style.hashCode()) * 31 + sea;
+        if (!tile.liveDirty) {
+            if (tile.seedEpoch != seedEpoch) refreshSeed(tile);
+            if (tile.rgb == null) return tile.texture;
+            if (tile.texture == null || tile.textureDirty || tile.textureEpoch != styleHash) {
+                if (createdThisFrame.get() >= 6) return tile.texture;
+                buildTexture(tile, styleHash);
+            }
+            return tile.texture;
+        }
         if (tile.texture != null && tile.textureEpoch == styleHash && !tile.textureDirty) {
             return tile.texture;
         }
