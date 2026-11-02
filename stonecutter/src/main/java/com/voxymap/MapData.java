@@ -194,6 +194,11 @@ public final class MapData {
     private volatile boolean needsFast;
     private volatile long lastGentleStartMs;
     private volatile String gentleStage = "";
+    /** nearest unexplored cells / time-fallback state */
+    private volatile boolean frontierNear;
+    private long lastFrontierProbeMs;
+    private long frontierBackoffUntil;
+    private int frontierStall;
     /** gentle lane published colours while the map was closed: refresh the GPU texture on open */
     private volatile boolean gentlePublished;
     /** wall clock of the last committed snapshot (fast or gentle) */
@@ -724,6 +729,8 @@ public final class MapData {
         long stillSec = stillSinceMs == 0 ? 0 : (System.currentTimeMillis() - stillSinceMs) / 1000L;
         out.add("auto: mode=" + VoxyMapConfig.AUTO_REFRESH_MODE.get() + " mapOpen=" + mapOpen
                 + " gentle=" + (gentleActive ? gentleStage : "idle") + " needsFast=" + needsFast
+                + " frontier=" + (frontierNear ? "near" : "far")
+                + " age=" + String.format(java.util.Locale.ROOT, "%.1f", snapshotAgeMinutes()) + "min"
                 + " still=" + stillSec + "s");
         Runtime rt = Runtime.getRuntime();
         out.add("mem: " + (rt.totalMemory() - rt.freeMemory()) / 1048576L + " / " + rt.maxMemory() / 1048576L + " MB");
@@ -1210,7 +1217,7 @@ public final class MapData {
         }
     }
 
-    private void gentleRefresh(long token) {
+    private void gentleRefresh(long token, boolean moving) {
         Snapshot prevSnap = snap;
         Path prevStorage = snapStorage;
         VoxyIndex prevIndex = sectionIndex;
@@ -1235,6 +1242,7 @@ public final class MapData {
                 return;
             }
             int sleepMs = Math.max(4, VoxyMapConfig.GENTLE_BUDGET_MS_PER_10S.get() / 5);
+            if (moving) sleepMs = Math.max(8, VoxyMapConfig.GENTLE_BUDGET_MS_PER_10S.get() / 2);
             db = RocksBridge.openReadOnly(storage.toString(), handles);
             Object sections = handles.get(1);
             Object mappings = handles.get(2);
@@ -1345,6 +1353,7 @@ public final class MapData {
                 RefreshDebug.chat("gentle applied: changed=" + changed + " dirty=" + dx0 + "," + dz0
                         + ".." + dx1 + "," + dz1, ChatFormatting.DARK_GRAY);
             }
+            Minecraft.getInstance().execute(this::postGentleFrontierCheck);
         } catch (RefreshCancelled ignored) {
             // map opened, world changed or another refresh took over
         } catch (Throwable t) {
@@ -1896,19 +1905,56 @@ public final class MapData {
         } else {
             // do not refresh on every open: cheaply compare the DB sequence with the index; only
             // start the fast lane when the background/previous refresh is actually behind
-            startOpenProbe();
+            startOpenProbe(hasUnexploredNear());
         }
     }
 
-    /** True when the committed snapshot is recent enough and the player has not moved far. */
-    private boolean snapshotFreshEnough() {
-        if (lastSnapshotWallMs == 0) return false;
-        if (System.currentTimeMillis() - lastSnapshotWallMs > 5 * 60_000L) return false;
+    private double snapshotAgeMinutes() {
+        if (lastSnapshotWallMs == 0) return Double.POSITIVE_INFINITY;
+        return (System.currentTimeMillis() - lastSnapshotWallMs) / 60_000.0;
+    }
+
+    /**
+     * Cheap frontier test: does the player have unexplored map cells within
+     * {@code frontierDistanceChunks}? Cells are 32x32 blocks and are sampled with 3x3 pixels;
+     * a cell counts as unknown when fewer than 5/9 samples contain terrain. Cells outside the
+     * snapshot rectangle are unexplored by definition.
+     */
+    private boolean hasUnexploredNear() {
+        Snapshot s = snap;
         Minecraft mc = Minecraft.getInstance();
-        if (mc.player == null) return true;
-        if (Double.isNaN(lastUpdateX)) return true;
-        double dist = VoxyMapConfig.REFRESH_DISTANCE_CHUNKS.get() * 16.0;
-        return Math.hypot(mc.player.getX() - lastUpdateX, mc.player.getZ() - lastUpdateZ) <= dist;
+        if (s == null || mc.player == null) return false;
+        final int cellBlocks = 32;
+        int cellPx = Math.max(1, cellBlocks / s.pixelBlocks);
+        int radiusCells = Math.max(1,
+                (VoxyMapConfig.FRONTIER_DISTANCE_CHUNKS.get() * 16 + cellBlocks - 1) / cellBlocks);
+        int w = s.width, h = s.height;
+        long px = Math.floorDiv((long) mc.player.getX() - s.minWX, s.pixelBlocks);
+        long pz = Math.floorDiv((long) mc.player.getZ() - s.minWZ, s.pixelBlocks);
+        int ccx = (int) Math.floorDiv(px, cellPx);
+        int ccz = (int) Math.floorDiv(pz, cellPx);
+        int rr = radiusCells * radiusCells;
+        for (int dz = -radiusCells; dz <= radiusCells; dz++) {
+            for (int dx = -radiusCells; dx <= radiusCells; dx++) {
+                if (dx * dx + dz * dz > rr) continue;
+                int cx = ccx + dx, cz = ccz + dz;
+                long x0 = (long) cx * cellPx, z0 = (long) cz * cellPx;
+                if (cx < 0 || cz < 0 || x0 >= w || z0 >= h) return true; // outside map = unexplored
+                int valid = 0, total = 0;
+                for (int sy = 0; sy < 3; sy++) {
+                    int zz = (int) z0 + (cellPx <= 1 ? 0 : sy * (cellPx - 1) / 2);
+                    if (zz < 0 || zz >= h) continue;
+                    for (int sx = 0; sx < 3; sx++) {
+                        int xx = (int) x0 + (cellPx <= 1 ? 0 : sx * (cellPx - 1) / 2);
+                        if (xx < 0 || xx >= w) continue;
+                        total++;
+                        if (rawTop(s.pixels[zz * w + xx]) != Integer.MIN_VALUE) valid++;
+                    }
+                }
+                if (total == 0 || valid * 9 <= total * 4) return true; // <=4/9 known -> unknown
+            }
+        }
+        return false;
     }
 
     /** Opens RocksDB read-only just long enough to read the latest sequence number. */
@@ -1932,7 +1978,7 @@ public final class MapData {
      * section index, the background/previous refresh has caught up and opening must not start any
      * work. Only a genuinely stale map enters the fast lane.
      */
-    private void startOpenProbe() {
+    private void startOpenProbe(boolean frontierAtOpen) {
         if (!openProbeActive.compareAndSet(false, true)) return;
         final int epoch = worldEpoch;
         final long token = refreshToken.get();
@@ -1953,11 +1999,19 @@ public final class MapData {
                     }
                     return;
                 }
-                if (snapshotFreshEnough()) {
+                boolean frontier = frontierAtOpen || hasUnexploredNear();
+                double age = snapshotAgeMinutes();
+                if (!frontier && age < VoxyMapConfig.OPEN_TIME_FALLBACK_MINUTES.get()) {
                     if (RefreshDebug.verbose()) {
-                        RefreshDebug.chat("open probe: recent snapshot is still fresh enough", ChatFormatting.DARK_GRAY);
+                        RefreshDebug.chat("open probe: frontier far, age=" + String.format(java.util.Locale.ROOT, "%.1f", age)
+                                + "min < fallback", ChatFormatting.DARK_GRAY);
                     }
                     return;
+                }
+                if (RefreshDebug.verbose()) {
+                    RefreshDebug.chat("open probe: refresh (" + (frontier ? "frontier near" : "time fallback")
+                            + ", age=" + String.format(java.util.Locale.ROOT, "%.1f", age) + "min)",
+                            ChatFormatting.DARK_GRAY);
                 }
                 if (canIncrementalRefresh()) refreshIncrementalAsync(RefreshTrigger.OPEN_MAP);
                 else updateAsync(true, RefreshTrigger.OPEN_MAP);
@@ -2020,6 +2074,15 @@ public final class MapData {
             return; // fast lane is driven by the screen itself
         }
         if (!GENTLE.equalsIgnoreCase(VoxyMapConfig.AUTO_REFRESH_MODE.get())) return;
+        long now = System.currentTimeMillis();
+        if (now - lastFrontierProbeMs >= 1000L) {
+            lastFrontierProbeMs = now;
+            frontierNear = hasUnexploredNear();
+            if (!frontierNear) {
+                frontierStall = 0;
+                frontierBackoffUntil = 0;
+            }
+        }
         maybeStartGentle(mc);
     }
 
@@ -2048,29 +2111,59 @@ public final class MapData {
     private void maybeStartGentle(Minecraft mc) {
         if (gentleActive || loading || needsFast) return;
         if (oversizePixels > 0 || outOfMemory) return;
-        if (stillSinceMs == 0) return;
         long now = System.currentTimeMillis();
+        if (now < teleportUntilMs || now < frontierBackoffUntil) return;
         int idleSeconds = Math.max(1, VoxyMapConfig.GENTLE_IDLE_SECONDS.get());
-        if (now - stillSinceMs < idleSeconds * 1000L) return;
-        if (now < teleportUntilMs) return;
-        if (now - lastGentleStartMs < 10_000L) return;
+        boolean still = stillSinceMs != 0 && now - stillSinceMs >= idleSeconds * 1000L;
+        boolean near = frontierNear;
+        boolean timeFallback = false;
+        if (!near) {
+            // time fallback only while standing still; it is not worth any risk of a hitch
+            if (!still) return;
+            if (snapshotAgeMinutes() < VoxyMapConfig.IDLE_TIME_FALLBACK_MINUTES.get()) return;
+            timeFallback = true;
+        }
+        long cooldownMs = Math.max(3, VoxyMapConfig.FRONTIER_COOLDOWN_SECONDS.get()) * 1000L;
+        if (now - lastGentleStartMs < cooldownMs) return;
         Runtime rt = Runtime.getRuntime();
         if (rt.totalMemory() > 0 && (rt.totalMemory() - rt.freeMemory()) * 100L / rt.maxMemory() > 85L) return;
         Snapshot s = snap;
         if (s == null) return;
         if (!canIncrementalRefresh()) {
-            needsFast = true;
+            markNeedsFast("index unavailable");
             return;
         }
         gentleActive = true;
         lastGentleStartMs = now;
         final long token = refreshToken.incrementAndGet();
+        final boolean moving = !still;
         if (RefreshDebug.verbose()) {
-            RefreshDebug.chat("gentle start: budget=" + VoxyMapConfig.GENTLE_BUDGET_MS_PER_10S.get()
-                    + "ms/10s idle=" + VoxyMapConfig.GENTLE_IDLE_SECONDS.get() + "s",
+            RefreshDebug.chat("gentle start: " + (near ? "frontier near" : "time fallback")
+                    + (moving ? " (moving)" : "")
+                    + " budget=" + VoxyMapConfig.GENTLE_BUDGET_MS_PER_10S.get() + "ms/10s",
                     ChatFormatting.DARK_GRAY);
         }
-        loader.submit(() -> gentleRefresh(token));
+        loader.submit(() -> gentleRefresh(token, moving));
+    }
+
+    /** After a committed gentle refresh: back off when the frontier did not move away. */
+    private void postGentleFrontierCheck() {
+        if (mapOpen) return;
+        boolean nearNow = hasUnexploredNear();
+        if (nearNow) {
+            frontierStall++;
+            if (frontierStall >= 2) {
+                frontierStall = 0;
+                frontierBackoffUntil = System.currentTimeMillis()
+                        + Math.max(5, VoxyMapConfig.FRONTIER_BACKOFF_SECONDS.get()) * 1000L;
+                if (RefreshDebug.verbose()) {
+                    RefreshDebug.chat("gentle backoff: frontier did not move away", ChatFormatting.DARK_GRAY);
+                }
+            }
+        } else {
+            frontierStall = 0;
+            frontierBackoffUntil = 0;
+        }
     }
 
     // ------------------------------------------------------------ disk cache

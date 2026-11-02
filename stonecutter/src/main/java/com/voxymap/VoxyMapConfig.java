@@ -26,6 +26,14 @@ public final class VoxyMapConfig {
     public static final Value<Integer> GENTLE_BUDGET_MS_PER_10S = new Value<>("gentleBudgetMsPer10s", 100);
     /** Seconds the player must stand still before the gentle lane may run. */
     public static final Value<Integer> GENTLE_IDLE_SECONDS = new Value<>("gentleIdleSeconds", 2);
+    /** How close unexplored map cells must be for a frontier refresh. */
+    public static final Value<Integer> FRONTIER_DISTANCE_CHUNKS = new Value<>("frontierDistanceChunks", 16);
+    /** Open-map time fallback when the DB changed but the frontier is far. */
+    public static final Value<Integer> OPEN_TIME_FALLBACK_MINUTES = new Value<>("openTimeFallbackMinutes", 5);
+    /** Background time fallback (only while standing still). */
+    public static final Value<Integer> IDLE_TIME_FALLBACK_MINUTES = new Value<>("idleTimeFallbackMinutes", 30);
+    public static final Value<Integer> FRONTIER_COOLDOWN_SECONDS = new Value<>("frontierCooldownSeconds", 15);
+    public static final Value<Integer> FRONTIER_BACKOFF_SECONDS = new Value<>("frontierBackoffSeconds", 60);
     /** Above this many changed sections the incremental merge gives up and a full rebuild is used. */
     public static final Value<Integer> INCREMENTAL_MAX_CHANGED_PERCENT = new Value<>("incrementalMaxChangedPercent", 60);
     /** Automatic refreshes only read/decode changed Voxy sections and patch the map. */

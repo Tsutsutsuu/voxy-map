@@ -82,9 +82,13 @@ public class MapConfigScreen extends Screen {
                 new String[]{"gentle", "fast", "off"}, true);
         add(Group.REFRESH, "gentleBudgetMsPer10s", VoxyMapConfig.GENTLE_BUDGET_MS_PER_10S, 10, 2000, null);
         add(Group.REFRESH, "gentleIdleSeconds", VoxyMapConfig.GENTLE_IDLE_SECONDS, 1, 60, null);
+        add(Group.REFRESH, "frontierDistanceChunks", VoxyMapConfig.FRONTIER_DISTANCE_CHUNKS, 1, 256, null);
+        add(Group.REFRESH, "openTimeFallbackMinutes", VoxyMapConfig.OPEN_TIME_FALLBACK_MINUTES, 1, 120, null);
+        add(Group.REFRESH, "idleTimeFallbackMinutes", VoxyMapConfig.IDLE_TIME_FALLBACK_MINUTES, 1, 240, null);
+        add(Group.REFRESH, "frontierCooldownSeconds", VoxyMapConfig.FRONTIER_COOLDOWN_SECONDS, 1, 300, null);
+        add(Group.REFRESH, "frontierBackoffSeconds", VoxyMapConfig.FRONTIER_BACKOFF_SECONDS, 1, 600, null);
         add(Group.REFRESH, "incrementalMaxChangedPercent", VoxyMapConfig.INCREMENTAL_MAX_CHANGED_PERCENT, 10, 90, null);
         add(Group.REFRESH, "incrementalRefresh", VoxyMapConfig.INCREMENTAL_REFRESH, 0, 0, null, true);
-        add(Group.REFRESH, "refreshDistanceChunks", VoxyMapConfig.REFRESH_DISTANCE_CHUNKS, 16, 1024, null);
         add(Group.REFRESH, "initialRefreshDelayMinutes", VoxyMapConfig.INITIAL_REFRESH_DELAY_MINUTES, 0, 60, null);
         add(Group.DATA, "mapScale", VoxyMapConfig.MAP_SCALE, 1, 8, null, true);
         add(Group.DATA, "maxLodLevel", VoxyMapConfig.MAX_LOD_LEVEL, 0, 4, null);
