@@ -76,6 +76,7 @@ public final class LiveTileStore {
     private final AtomicInteger createdThisFrame = new AtomicInteger();
     private final AtomicInteger colorRequestsThisFrame = new AtomicInteger();
     private final AtomicInteger seedCreatesThisFrame = new AtomicInteger();
+    private final AtomicInteger seedRefreshesThisFrame = new AtomicInteger();
     private final AtomicInteger seedTileCount = new AtomicInteger();
     private final AtomicInteger liveOnlyTileCount = new AtomicInteger();
 
@@ -113,6 +114,7 @@ public final class LiveTileStore {
         createdThisFrame.set(0);
         colorRequestsThisFrame.set(0);
         seedCreatesThisFrame.set(0);
+        seedRefreshesThisFrame.set(0);
     }
 
     public LiveTile get(int tx, int tz) {
@@ -140,7 +142,10 @@ public final class LiveTileStore {
     public LiveTile getOrCreateSeed(int tx, int tz) {
         LiveTile existing = tiles.get(key(tx, tz));
         if (existing != null) {
-            if (existing.seedEpoch < 0) seedExisting(existing);
+            if (existing.seedEpoch < 0 && seedCreatesThisFrame.get() < 16) {
+                seedCreatesThisFrame.incrementAndGet();
+                seedExisting(existing);
+            }
             return existing;
         }
         if (seedCreatesThisFrame.get() >= 16) return null;
@@ -310,13 +315,16 @@ public final class LiveTileStore {
      * Makes sure a texture exists for this live tile. Full-style colouring is queued on the
      * map loader (serialized with global refreshes) and the GPU upload is rate-limited.
      */
-    public Identifier textureFor(LiveTile tile, String style, int sea) {
+    public Identifier textureFor(LiveTile tile, String style, int sea, int colorEpoch) {
         if (tile == null) return null;
-        int styleHash = (style == null ? 0 : style.hashCode()) * 31 + sea;
+        int styleHash = ((style == null ? 0 : style.hashCode()) * 31 + sea) * 31 + colorEpoch;
         if (tile.seedEpoch >= 0) {
             // Tiles covered by the base snapshot keep the proven base colour pipeline. Live
             // colouring is currently only used for genuinely new tiles outside the snapshot.
-            if (tile.seedEpoch != seedEpoch) refreshSeed(tile);
+            if (tile.seedEpoch != seedEpoch && seedRefreshesThisFrame.get() < 10) {
+                seedRefreshesThisFrame.incrementAndGet();
+                refreshSeed(tile);
+            }
             if (tile.rgb == null) return tile.texture;
             if (tile.texture == null || tile.textureDirty || tile.textureEpoch != styleHash) {
                 if (createdThisFrame.get() >= 6) return tile.texture;

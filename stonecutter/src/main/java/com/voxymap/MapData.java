@@ -3012,8 +3012,11 @@ public final class MapData {
         if (!VoxyMapConfig.LIVE_TILES.get() || !VoxyMapConfig.TILE_RENDER.get()) return;
         Snapshot s = snap;
         if (s == null) return;
-        LiveTileStore store = getLiveTiles();
-        if (store != null) store.applySection(key, raw, waterIdsCache);
+        LiveTileStore store = liveTiles;
+        // Never create/dispose stores (and their GPU textures) from the Voxy worker thread.
+        // The render thread owns store creation; until it has caught up, new sections are dropped.
+        if (store == null || !store.matches(s.minWX, s.minWZ, s.pixelBlocks)) return;
+        store.applySection(key, raw, waterIdsCache);
     }
 
     private void releaseLiveTiles() {

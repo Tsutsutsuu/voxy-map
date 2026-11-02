@@ -557,9 +557,13 @@ public class MapScreen extends Screen {
         for (int tz = tz0; tz <= tz1; tz++) {
             for (int tx = tx0; tx <= tx1; tx++) {
                 LiveTileStore.LiveTile tile = live.get(tx, tz);
-                if (tile == null) tile = live.getOrCreateSeed(tx, tz);
+                if (tile == null || tile.seedEpoch < 0) {
+                    // Event-created tiles exist before the first seed pass; make sure they are
+                    // upgraded to the base snapshot instead of staying as coarse live-only patches.
+                    tile = live.getOrCreateSeed(tx, tz);
+                }
                 if (tile == null) continue;
-                Identifier tex = live.textureFor(tile, style, sea);
+                Identifier tex = live.textureFor(tile, style, sea, data.getColorEpoch());
                 if (tex == null) continue;
                 double sx = width / 2.0 + (tile.minWX - centerX) * zoom / pb;
                 double sy = height / 2.0 + (tile.minWZ - centerZ) * zoom / pb;
@@ -598,7 +602,7 @@ public class MapScreen extends Screen {
                 if (base != null && base.hasData(tx, tz)) continue;
                 LiveTileStore.LiveTile tile = live.get(tx, tz);
                 if (tile == null) continue;
-                Identifier tex = live.textureFor(tile, data.getStyle(), data.seaLevel());
+                Identifier tex = live.textureFor(tile, data.getStyle(), data.seaLevel(), data.getColorEpoch());
                 if (tex == null) continue;
                 double sx = width / 2.0 + (tile.minWX - centerX) * zoom / pb;
                 double sy = height / 2.0 + (tile.minWZ - centerZ) * zoom / pb;
