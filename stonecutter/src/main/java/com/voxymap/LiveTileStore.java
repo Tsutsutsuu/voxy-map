@@ -76,6 +76,8 @@ public final class LiveTileStore {
     private final AtomicInteger createdThisFrame = new AtomicInteger();
     private final AtomicInteger colorRequestsThisFrame = new AtomicInteger();
     private final AtomicInteger seedCreatesThisFrame = new AtomicInteger();
+    private final AtomicInteger seedTileCount = new AtomicInteger();
+    private final AtomicInteger liveOnlyTileCount = new AtomicInteger();
 
     public LiveTileStore(long minWX, long minWZ, int pixelBlocks) {
         this.minWX = minWX;
@@ -93,6 +95,14 @@ public final class LiveTileStore {
 
     public int tileCount() {
         return tiles.size();
+    }
+
+    public int seedTileCount() {
+        return seedTileCount.get();
+    }
+
+    public int liveOnlyTileCount() {
+        return liveOnlyTileCount.get();
     }
 
     public long sectionCount() {
@@ -160,11 +170,11 @@ public final class LiveTileStore {
         }
         if (!any) return null;
         LiveTile previous = tiles.putIfAbsent(key(tx, tz), tile);
+        if (previous == null) seedTileCount.incrementAndGet();
         return previous != null ? previous : tile;
     }
 
     private void refreshSeed(LiveTile tile) {
-        if (tile.liveDirty) return;
         long[] srcPixels = seedPixels;
         int[] srcRgb = seedRgb;
         if (srcPixels == null || srcRgb == null) return;
@@ -240,7 +250,10 @@ public final class LiveTileStore {
                     if (tile == null) {
                         LiveTile created = new LiveTile(tx, tz, tileMinWX(tx), tileMinWZ(tz));
                         tile = tiles.putIfAbsent(key(tx, tz), created);
-                        if (tile == null) tile = created;
+                        if (tile == null) {
+                            tile = created;
+                            liveOnlyTileCount.incrementAndGet();
+                        }
                     }
                     int idx = localZ * TILE_PIXELS + localX;
                     long prev = tile.pixels[idx];
@@ -268,6 +281,17 @@ public final class LiveTileStore {
     public Identifier textureFor(LiveTile tile, String style, int sea) {
         if (tile == null) return null;
         int styleHash = (style == null ? 0 : style.hashCode()) * 31 + sea;
+        if (tile.seedEpoch >= 0) {
+            // Tiles covered by the base snapshot keep the proven base colour pipeline. Live
+            // colouring is currently only used for genuinely new tiles outside the snapshot.
+            if (tile.seedEpoch != seedEpoch) refreshSeed(tile);
+            if (tile.rgb == null) return tile.texture;
+            if (tile.texture == null || tile.textureDirty || tile.textureEpoch != styleHash) {
+                if (createdThisFrame.get() >= 6) return tile.texture;
+                buildTexture(tile, styleHash);
+            }
+            return tile.texture;
+        }
         if (!tile.liveDirty) {
             if (tile.seedEpoch != seedEpoch) refreshSeed(tile);
             if (tile.rgb == null) return tile.texture;
