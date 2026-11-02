@@ -93,6 +93,10 @@ public final class MapData {
     private final AtomicBoolean requested = new AtomicBoolean();
 
     private volatile Snapshot snap;
+    /** per-section value hashes paired with {@link #snap}; null = incremental refresh unavailable */
+    private volatile VoxyIndex sectionIndex;
+    /** index produced by the current buildPixels() call, moved into sectionIndex on success */
+    private volatile VoxyIndex pendingBuiltIndex;
     private volatile NativeImage biomeImage;
     private volatile Identifier biomeTextureId;
     private volatile int[] biomeLabelsFlat = new int[0];
@@ -745,6 +749,8 @@ public final class MapData {
         if (snap == null && colorFrame == null) return;
         snap = null;
         snapStorage = null;
+        sectionIndex = null;
+        pendingBuiltIndex = null;
         colorFrame = null;
         lastRenderedStyle = null;
         biomeLabelsFlat = new int[0];
@@ -786,10 +792,13 @@ public final class MapData {
             boolean handedToMainThread = false;
             Snapshot prevSnap = null;
             Path prevSnapStorage = null;
+            VoxyIndex prevIndex = null;
             Snapshot built = null;
+            boolean freshlyBuilt = false;
             try {
                 prevSnap = snap;
                 prevSnapStorage = snapStorage;
+                prevIndex = sectionIndex;
                 // the world changed after this request was queued: drop it instead of uploading the
                 // previous world's map into the new one
                 if (epoch != worldEpoch) return;
@@ -843,8 +852,16 @@ public final class MapData {
                     }
                     if (epoch != worldEpoch) return;
                     saveCache(storage, built);
+                    freshlyBuilt = true;
                 }
                 if (epoch != worldEpoch) return;
+                if (built != null) {
+                    VoxyIndex idx = pendingBuiltIndex;
+                    pendingBuiltIndex = null;
+                    if (idx == null) idx = loadSectionIndex(storage, built);
+                    sectionIndex = idx;
+                    if (freshlyBuilt) saveSectionIndex(storage, built, idx);
+                }
                 snap = built;
                 snapStorage = storage;
                 final Snapshot target = built;
@@ -881,6 +898,7 @@ public final class MapData {
                 // shows new terrain with the old colour buffer (that is what produced the black
                 // patches), then offer the safe scaling like any other too-large map.
                 restorePreviousSnapshot(prevSnap, prevSnapStorage);
+                sectionIndex = prevIndex;
                 outOfMemory = true;
                 error = "OutOfMemoryError";
                 if (built != null && !allowOversize) {
@@ -904,7 +922,9 @@ public final class MapData {
                 error = t.getClass().getSimpleName() + ": " + t.getMessage();
                 // a failed build/render must not leave a half-updated snapshot behind either
                 restorePreviousSnapshot(prevSnap, prevSnapStorage);
+                sectionIndex = prevIndex;
             } finally {
+                pendingBuiltIndex = null;
                 if (!handedToMainThread) {
                     loading = false;
                     progress = -1;
@@ -1108,6 +1128,36 @@ public final class MapData {
         return worldCacheDir(storage).resolve("color.vxc");
     }
 
+    /** Per-section value hashes for incremental refreshes (see {@link VoxyIndex}). */
+    private static Path indexFile(Path storage) {
+        return worldCacheDir(storage).resolve("index.vxi");
+    }
+
+    /**
+     * Loads the index only when it belongs to this exact snapshot. Anything else (missing file, old
+     * version, different map geometry or stamp) disables incremental refresh until the next full
+     * rebuild rewrites it.
+     */
+    private static VoxyIndex loadSectionIndex(Path storage, Snapshot s) {
+        VoxyIndex idx = VoxyIndex.load(indexFile(storage));
+        if (idx == null) return null;
+        if (idx.stamp != s.stamp || idx.width != s.width || idx.height != s.height
+                || idx.pixelBlocks != s.pixelBlocks || idx.minWX != s.minWX || idx.minWZ != s.minWZ) {
+            return null;
+        }
+        return idx;
+    }
+
+    private static void saveSectionIndex(Path storage, Snapshot s, VoxyIndex idx) {
+        if (idx == null || s == null || idx.stamp != s.stamp) return;
+        try {
+            Files.createDirectories(worldCacheDir(storage));
+            idx.save(indexFile(storage));
+        } catch (Throwable t) {
+            t.printStackTrace();
+        }
+    }
+
     private static final int COLOR_CACHE_MAGIC = 0x56584331;
     /**
      * 3: the colour cache now records the snapshot stamp, so a cached colour buffer can never be
@@ -1229,8 +1279,8 @@ public final class MapData {
                 for (Path p : (Iterable<Path>) stream::iterator) {
                     if (!Files.isRegularFile(p)) continue;
                     String name = p.getFileName().toString();
-                    if (name.endsWith(".vxm") || name.endsWith(".vxc") || name.endsWith(".state")
-                            || name.endsWith(".tmp")) {
+                    if (name.endsWith(".vxm") || name.endsWith(".vxc") || name.endsWith(".vxi")
+                            || name.endsWith(".state") || name.endsWith(".tmp")) {
                         try {
                             Files.deleteIfExists(p);
                         } catch (Exception ignored) {
@@ -1335,6 +1385,7 @@ public final class MapData {
     }
 
     private Snapshot buildPixels(Path storage) throws Exception {
+        pendingBuiltIndex = null;
         int pixelBlocks = effectivePixelBlocks();
         int maxLodLevel = Math.max(0, Math.min(4, VoxyMapConfig.MAX_LOD_LEVEL.get()));
         if (!RocksBridge.available()) {
@@ -1342,6 +1393,9 @@ public final class MapData {
         }
         List<Object> handles = new ArrayList<>();
         Object db = RocksBridge.openReadOnly(storage.toString(), handles);
+        // latest sequence at scan start: the incremental refresh can skip the whole scan when the
+        // DB has not been written to since this scan (see VoxyIndex.dbSequence)
+        long dbSequence = RocksBridge.latestSequence(db);
         try {
             Object sections = handles.get(1);
             Object mappings = handles.get(2);
@@ -1402,6 +1456,11 @@ public final class MapData {
             }
             long[] pix = new long[gw * gh];
             Arrays.fill(pix, LONG_EMPTY);
+            // Parallel arrays for the per-section value-hash index (see VoxyIndex). Sized from the
+            // pre-pass so no reallocation happens during the scan.
+            long[] idxKeys = new long[Math.max(8, totalSections)];
+            long[] idxHashes = new long[Math.max(8, totalSections)];
+            int idxN = 0;
 
             int processedSections = 0;
             List<Future<Decoded>> futures = new ArrayList<>(BATCH);
@@ -1417,6 +1476,11 @@ public final class MapData {
                             processedSections++;
                             byte[] val = RocksBridge.value(it2);
                             if (val != null && val.length > 16) {
+                                if (idxN < idxKeys.length) {
+                                    idxKeys[idxN] = key;
+                                    idxHashes[idxN] = VoxyIndex.hashValue(val);
+                                    idxN++;
+                                }
                                 final long fkey = key;
                                 final byte[] fval = val;
                                 futures.add(pool.submit(() -> decodeSection(fkey, fval, waterIds)));
@@ -1434,7 +1498,14 @@ public final class MapData {
                 RocksBridge.close(it2);
             }
             flush(futures, pix, gw, gh, minWXv, minWZv, pixelBlocks);
-            return new Snapshot(pix, gw, gh, minWXv, minWZv, pixelBlocks, biomeNames, System.nanoTime());
+            Snapshot result = new Snapshot(pix, gw, gh, minWXv, minWZv, pixelBlocks, biomeNames, System.nanoTime());
+            // publish the index that belongs to this exact snapshot (see updateAsync)
+            pendingBuiltIndex = idxN > 0
+                    ? new VoxyIndex(result.stamp, dbSequence, result.minWX, result.minWZ,
+                            result.width, result.height, result.pixelBlocks,
+                            Arrays.copyOf(idxKeys, idxN), Arrays.copyOf(idxHashes, idxN))
+                    : null;
+            return result;
         } finally {
             for (Object h : handles) RocksBridge.close(h);
             RocksBridge.close(db);
@@ -1475,71 +1546,7 @@ public final class MapData {
                 for (int px = px0; px <= px1; px++) {
                     if (px < 0 || px >= w) continue;
                     int idx = row + px;
-                    long prev = pixels[idx];
-                    int solidHere = floor != NO_SOLID ? floor : Integer.MIN_VALUE;
-                    int curTop;
-                    boolean curWater;
-                    int curLvl;
-                    int curFloor;
-                    int curBiome;
-                    if (prev == LONG_EMPTY) {
-                        curTop = top;
-                        curWater = topFluid;
-                        curLvl = lvl;
-                        // keep the decoded solid height: a buried slice's ceiling is the only height
-                        // information available when no section above holds the real surface
-                        curFloor = floor;
-                        curBiome = biomeHere;
-                    } else {
-                        curTop = (int) ((prev >>> 24) & 0xFFFF) - 32768;
-                        curWater = (prev & (1L << 52)) != 0;
-                        curLvl = (int) ((prev >>> 48) & 0xF);
-                        curFloor = (int) (prev & 0xFFFF) - 32768;
-                        curBiome = (int) ((prev >>> 53) & 0x1FF);
-                        if (top != NO_TOP) {
-                            boolean accept = (curTop == NO_TOP && (curFloor == NO_SOLID || top >= curFloor))
-                                    || lvl < curLvl
-                                    || (lvl == curLvl && top > curTop)
-                                    // a much higher coarse-level top means the fine level only has
-                                    // buried slices here: take the coarse surface instead
-                                    || (lvl > curLvl && curTop < 0 && top > curTop + 32);
-                            if (accept) {
-                                curTop = top;
-                                curWater = topFluid;
-                                curLvl = lvl;
-                                curBiome = biomeHere;
-                            }
-                        }
-                    }
-                    // same-level highest solid above the current top: the top is a cave/underground
-                    // ceiling, so the real surface is the top of that solid
-                    if (curTop != NO_TOP && solidHere != Integer.MIN_VALUE && solidHere > curTop && lvl == curLvl) {
-                        curTop = solidHere;
-                        curWater = false;
-                        curLvl = lvl;
-                        curBiome = biomeHere;
-                    }
-                    // A "buried slice" (solid up to the section ceiling) still knows a lower bound for
-                    // the surface. Keep the highest such solid: when the surface happens to lie in the
-                    // section's top row and no section above has data, dropping the column produced the
-                    // black ring of holes on high mountains.
-                    if (curTop == NO_TOP && solidHere != Integer.MIN_VALUE
-                            && (curFloor == NO_SOLID || solidHere > curFloor)) {
-                        curFloor = solidHere;
-                    }
-                    // floor: highest solid anywhere in the column (sea floor for water)
-                    if (curTop != NO_TOP && solidHere != Integer.MIN_VALUE && solidHere < curTop) {
-                        int prevF = curFloor == NO_SOLID ? Integer.MIN_VALUE : curFloor;
-                        if (prevF == Integer.MIN_VALUE || solidHere > prevF) curFloor = solidHere;
-                    }
-                    if (curTop != NO_TOP && !curWater) curFloor = curTop;
-                    if (curFloor == Integer.MIN_VALUE) curFloor = NO_SOLID;
-                    long out = ((long) (curTop + 32768)) << 24 | ((curFloor + 32768) & 0xFFFF);
-                    if (curWater) out |= (1L << 52);
-                    out |= ((long) curBiome) << 53;
-                    // the merge above compares LOD levels; the level must be stored for later sections
-                    out |= ((long) curLvl) << 48;
-                    pixels[idx] = out;
+                    pixels[idx] = VoxyMerge.mergeColumn(pixels[idx], lvl, top, floor, topFluid, biomeHere);
                 }
             }
         }
