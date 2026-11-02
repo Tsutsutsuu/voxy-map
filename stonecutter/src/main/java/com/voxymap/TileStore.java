@@ -1,0 +1,189 @@
+package com.voxymap;
+
+import com.mojang.blaze3d.platform.NativeImage;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.renderer.texture.DynamicTexture;
+import net.minecraft.resources.Identifier;
+
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
+
+/**
+ * Lazy 2D tile view of the current colour frame.
+ *
+ * <p>Milestone 1 of the tiled map: the screen no longer draws one huge map texture. Tiles are cut
+ * from the current colour buffer on demand, uploaded independently and cached until the colour
+ * frame changes. This validates tile coordinates, culling, partial texture upload and the tile
+ * renderer without changing the data source yet. Phase 2 replaces the colour frame with real
+ * per-tile data.</p>
+ */
+public final class TileStore {
+    public static final int TILE_PIXELS = 256;
+
+    public static final class MapTile {
+        public final int indexX, indexZ;
+        public final long minWX, minWZ;
+        public final int width, height;
+        public final Identifier texture;
+        private final DynamicTexture dynamic;
+
+        MapTile(int indexX, int indexZ, long minWX, long minWZ, int width, int height,
+                Identifier texture, DynamicTexture dynamic) {
+            this.indexX = indexX;
+            this.indexZ = indexZ;
+            this.minWX = minWX;
+            this.minWZ = minWZ;
+            this.width = width;
+            this.height = height;
+            this.texture = texture;
+            this.dynamic = dynamic;
+        }
+
+        void dispose() {
+            try {
+                dynamic.close();
+                Minecraft.getInstance().getTextureManager().release(texture);
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
+    private final MapData.ColorFrame frame;
+    private final int width, height;
+    private final long minWX, minWZ;
+    private final int pixelBlocks;
+    private final int tilesX, tilesY;
+    private final long epoch;
+    private final Map<Long, MapTile> tiles = new HashMap<>();
+    private final Set<Long> empty = new HashSet<>();
+
+    public TileStore(MapData.ColorFrame frame, int width, int height, long minWX, long minWZ,
+                     int pixelBlocks, long epoch) {
+        this.frame = frame;
+        this.width = width;
+        this.height = height;
+        this.minWX = minWX;
+        this.minWZ = minWZ;
+        this.pixelBlocks = pixelBlocks;
+        this.tilesX = (width + TILE_PIXELS - 1) / TILE_PIXELS;
+        this.tilesY = (height + TILE_PIXELS - 1) / TILE_PIXELS;
+        this.epoch = epoch;
+    }
+
+    public MapData.ColorFrame frame() {
+        return frame;
+    }
+
+    public int tilesX() {
+        return tilesX;
+    }
+
+    public int tilesY() {
+        return tilesY;
+    }
+
+    public int pixelBlocks() {
+        return pixelBlocks;
+    }
+
+    public long minWX() {
+        return minWX;
+    }
+
+    public long minWZ() {
+        return minWZ;
+    }
+
+    public int width() {
+        return width;
+    }
+
+    public int height() {
+        return height;
+    }
+
+    public int createdCount() {
+        return tiles.size();
+    }
+
+    public int emptyCount() {
+        return empty.size();
+    }
+
+    public long tileMinWX(int tx) {
+        return minWX + (long) tx * TILE_PIXELS * pixelBlocks;
+    }
+
+    public long tileMinWZ(int tz) {
+        return minWZ + (long) tz * TILE_PIXELS * pixelBlocks;
+    }
+
+    public int tileWidth(int tx) {
+        return Math.min(TILE_PIXELS, width - tx * TILE_PIXELS);
+    }
+
+    public int tileHeight(int tz) {
+        return Math.min(TILE_PIXELS, height - tz * TILE_PIXELS);
+    }
+
+    public int tileIndexFromWorldX(double worldX) {
+        return (int) Math.floorDiv((long) Math.floor(worldX) - minWX,
+                (long) TILE_PIXELS * pixelBlocks);
+    }
+
+    public int tileIndexFromWorldZ(double worldZ) {
+        return (int) Math.floorDiv((long) Math.floor(worldZ) - minWZ,
+                (long) TILE_PIXELS * pixelBlocks);
+    }
+
+    /** Returns the tile, or null when the tile is empty / out of bounds. Main thread only. */
+    public MapTile getTile(int tx, int tz) {
+        if (tx < 0 || tz < 0 || tx >= tilesX || tz >= tilesY) return null;
+        long key = ((long) tx << 32) | (tz & 0xFFFFFFFFL);
+        MapTile existing = tiles.get(key);
+        if (existing != null) return existing;
+        if (empty.contains(key)) return null;
+        int tw = tileWidth(tx), th = tileHeight(tz);
+        int[] rgb = frame.rgb;
+        int px0 = tx * TILE_PIXELS, pz0 = tz * TILE_PIXELS;
+        boolean any = false;
+        for (int z = 0; z < th && !any; z++) {
+            int row = (pz0 + z) * width + px0;
+            for (int x = 0; x < tw; x++) {
+                if ((rgb[row + x] >>> 24) != 0) {
+                    any = true;
+                    break;
+                }
+            }
+        }
+        if (!any) {
+            empty.add(key);
+            return null;
+        }
+        NativeImage image = new NativeImage(tw, th, false);
+        for (int z = 0; z < th; z++) {
+            int row = (pz0 + z) * width + px0;
+            for (int x = 0; x < tw; x++) {
+                int c = rgb[row + x];
+                int r = (c >> 16) & 0xFF, g = (c >> 8) & 0xFF, b = c & 0xFF;
+                image.setPixelABGR(x, z, 0xFF000000 | (b << 16) | (g << 8) | r);
+            }
+        }
+        DynamicTexture dynamic = new DynamicTexture(() -> "voxymap_tile", image);
+        Identifier id = Identifier.fromNamespaceAndPath("voxymap",
+                "tile_" + epoch + "_" + tx + "_" + tz);
+        Minecraft.getInstance().getTextureManager().register(id, dynamic);
+        MapTile tile = new MapTile(tx, tz, tileMinWX(tx), tileMinWZ(tz), tw, th, id, dynamic);
+        tiles.put(key, tile);
+        return tile;
+    }
+
+    /** Releases all created tile textures. Main thread only. */
+    public void dispose() {
+        for (MapTile tile : tiles.values()) tile.dispose();
+        tiles.clear();
+        empty.clear();
+    }
+}

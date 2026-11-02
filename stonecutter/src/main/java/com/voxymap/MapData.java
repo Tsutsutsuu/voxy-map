@@ -118,6 +118,8 @@ public final class MapData {
     private volatile double zoom = 0.5;
     private volatile Identifier textureId;
     private volatile Identifier textureIdSmall;
+    /** Lazy 2D tile view of {@link #colorFrame}; null when no colour frame exists yet. */
+    private volatile TileStore tileStore;
     /** live textures, kept so incremental refreshes can patch only the changed rows */
     private volatile DynamicTexture bigTex;
     private volatile DynamicTexture smallTex;
@@ -738,6 +740,10 @@ public final class MapData {
                 + " age=" + String.format(java.util.Locale.ROOT, "%.1f", snapshotAgeMinutes()) + "min"
                 + " still=" + stillSec + "s");
         Runtime rt = Runtime.getRuntime();
+        TileStore ts = tileStore;
+        out.add(ts == null ? "tiles: none"
+                : "tiles: " + ts.createdCount() + " textures, " + ts.emptyCount() + " empty, grid "
+                + ts.tilesX() + "x" + ts.tilesY() + " (" + TileStore.TILE_PIXELS + "px)");
         out.add(VoxyLiveProbe.statsLine());
         out.add("mem: " + (rt.totalMemory() - rt.freeMemory()) / 1048576L + " / " + rt.maxMemory() / 1048576L + " MB");
         return out;
@@ -2787,6 +2793,9 @@ public final class MapData {
     /** Release all map textures (frees ~560 MB of VRAM when the map is closed). */
     public void releaseTextures() {
         Minecraft mc = Minecraft.getInstance();
+        TileStore ts = tileStore;
+        tileStore = null;
+        if (ts != null) ts.dispose();
         // the 1/4 texture is kept on purpose: ~5 MB of VRAM, and reopening shows it instantly
         releaseOne(mc, textureId);
         textureId = null;
@@ -2815,10 +2824,32 @@ public final class MapData {
 
     /** Re-upload the main textures from the last rendered grid (background, used when reopening). */
     public void ensureMainTextures() {
+        ensureTileStore();
         if (textureId != null) return;
         ColorFrame f = colorFrame;
         if (snap == null || f == null) return;
         buildTexturesAsync(f.width, f.height, f.rgb);
+    }
+
+    /**
+     * Publishes a tile view for the current colour frame. Creating the store is cheap; individual
+     * tile images/textures are cut lazily by {@link TileStore#getTile(int, int)}.
+     */
+    public void ensureTileStore() {
+        ColorFrame f = colorFrame;
+        Snapshot s = snap;
+        if (f == null || s == null) return;
+        TileStore current = tileStore;
+        if (current != null && current.frame() == f) return;
+        TileStore next = new TileStore(f, s.width, s.height, s.minWX, s.minWZ, s.pixelBlocks,
+                f.epoch);
+        tileStore = next;
+        if (current != null) current.dispose();
+    }
+
+    public TileStore getTileStore() {
+        ensureTileStore();
+        return tileStore;
     }
 
     /** Build the 1-bit biome boundary mask + labels on the loader thread (overlay only). */
@@ -2868,6 +2899,7 @@ public final class MapData {
     private void uploadTexture(Snapshot s, int[] rgb) {
         ColorFrame prev = colorFrame;
         colorFrame = new ColorFrame(rgb, s.width, s.height, prev == null ? 1 : prev.epoch + 1);
+        ensureTileStore();
         texEpoch++;
         Minecraft mc = Minecraft.getInstance();
         // a rebuilt grid invalidates the biome overlay: drop it so ensureBiomeTexture regenerates it

@@ -491,6 +491,11 @@ public class MapScreen extends Screen {
 
     /** Layer 1: the map texture (nearest neighbour when zoomed in, the pre-filtered copy far out). */
     private void drawMap(GuiGraphicsExtractor g, MapData data, double uiScale) {
+        TileStore tiles = data.getTileStore();
+        if (VoxyMapConfig.TILE_RENDER.get() && tiles != null) {
+            drawMapTiles(g, data, tiles);
+            return;
+        }
         boolean mainReady = data.getTexture() != null;
         // zoomed far out (or while the big texture is rebuilt) use the pre-filtered 1/4 copy
         boolean useSmall = !mainReady || zoom * uiScale < 0.5;
@@ -523,6 +528,35 @@ public class MapScreen extends Screen {
         g.blit(RenderPipelines.GUI_TEXTURED_PREMULTIPLIED_ALPHA, tex, (int) Math.round(x0), (int) Math.round(y0),
                 0f, 0f, Math.max(1, (int) Math.round(w)), Math.max(1, (int) Math.round(h)),
                 srcW, srcH, srcW, srcH);
+    }
+
+    /** Draws only the tiles intersecting the viewport, one independent texture per tile. */
+    private void drawMapTiles(GuiGraphicsExtractor g, MapData data, TileStore tiles) {
+        int pb = Math.max(1, data.getPixelBlocks());
+        double worldPerScreenPx = pb / Math.max(1.0e-6, zoom);
+        double left = centerX - (width / 2.0) * worldPerScreenPx;
+        double right = centerX + (width / 2.0) * worldPerScreenPx;
+        double top = centerZ - (height / 2.0) * worldPerScreenPx;
+        double bottom = centerZ + (height / 2.0) * worldPerScreenPx;
+        int tx0 = Math.max(0, tiles.tileIndexFromWorldX(left));
+        int tx1 = Math.min(tiles.tilesX() - 1, tiles.tileIndexFromWorldX(right));
+        int tz0 = Math.max(0, tiles.tileIndexFromWorldZ(top));
+        int tz1 = Math.min(tiles.tilesY() - 1, tiles.tileIndexFromWorldZ(bottom));
+        for (int tz = tz0; tz <= tz1; tz++) {
+            for (int tx = tx0; tx <= tx1; tx++) {
+                TileStore.MapTile tile = tiles.getTile(tx, tz);
+                if (tile == null) continue;
+                double sx = width / 2.0 + (tile.minWX - centerX) * zoom / pb;
+                double sy = height / 2.0 + (tile.minWZ - centerZ) * zoom / pb;
+                int dx = (int) Math.round(sx);
+                int dy = (int) Math.round(sy);
+                int dw = Math.max(1, (int) Math.round(tile.width * zoom));
+                int dh = Math.max(1, (int) Math.round(tile.height * zoom));
+                if (dx + dw < 0 || dy + dh < 0 || dx > width || dy > height) continue;
+                g.blit(RenderPipelines.GUI_TEXTURED_PREMULTIPLIED_ALPHA, tile.texture,
+                        dx, dy, 0f, 0f, dw, dh, tile.width, tile.height, tile.width, tile.height);
+            }
+        }
     }
 
     /** Layer 2: things drawn on top of the map - biome boundaries, player marker, render-distance box. */
