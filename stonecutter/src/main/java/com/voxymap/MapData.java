@@ -2062,6 +2062,11 @@ public final class MapData {
         gentleActive = true;
         lastGentleStartMs = now;
         final long token = refreshToken.incrementAndGet();
+        if (RefreshDebug.verbose()) {
+            RefreshDebug.chat("gentle start: budget=" + VoxyMapConfig.GENTLE_BUDGET_MS_PER_10S.get()
+                    + "ms/10s idle=" + VoxyMapConfig.GENTLE_IDLE_SECONDS.get() + "s",
+                    ChatFormatting.DARK_GRAY);
+        }
         loader.submit(() -> gentleRefresh(token));
     }
 
