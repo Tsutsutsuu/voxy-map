@@ -1253,6 +1253,10 @@ public final class MapData {
                         prevIndex.maxLodLevel, scan.keys, scan.hashes);
                 return;
             }
+            if (RefreshDebug.verbose()) {
+                RefreshDebug.chat("gentle scan: changed=" + scan.changedKeys.length
+                        + " / " + prevIndex.count() + " sections", ChatFormatting.DARK_GRAY);
+            }
             gentleStage = "decode";
             Map<Integer, String> biomeNames = new HashMap<>(prevSnap.biomeNames);
             Set<Long> waterIds = loadWaterIds(db, mappings, biomeNames);
@@ -2046,7 +2050,7 @@ public final class MapData {
         int idleSeconds = Math.max(1, VoxyMapConfig.GENTLE_IDLE_SECONDS.get());
         if (now - stillSinceMs < idleSeconds * 1000L) return;
         if (now < teleportUntilMs) return;
-        if (now - lastGentleStartMs < 3000L) return;
+        if (now - lastGentleStartMs < 10_000L) return;
         Runtime rt = Runtime.getRuntime();
         if (rt.totalMemory() > 0 && (rt.totalMemory() - rt.freeMemory()) * 100L / rt.maxMemory() > 85L) return;
         Snapshot s = snap;
@@ -2058,10 +2062,6 @@ public final class MapData {
         gentleActive = true;
         lastGentleStartMs = now;
         final long token = refreshToken.incrementAndGet();
-        if (RefreshDebug.verbose()) {
-            RefreshDebug.chat("gentle start: budget=" + VoxyMapConfig.GENTLE_BUDGET_MS_PER_10S.get()
-                    + "ms/10s idle=" + idleSeconds + "s", ChatFormatting.DARK_GRAY);
-        }
         loader.submit(() -> gentleRefresh(token));
     }
 
