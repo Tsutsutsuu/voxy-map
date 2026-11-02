@@ -18,6 +18,8 @@ stonecutter parameters {
         string(current.parsed < "26.2") {
             replace("client.gui.screen()", "client.screen")
             replace("Minecraft.getInstance().gui.screen()", "Minecraft.getInstance().screen")
+            // 26.2 moved the chat component from Gui to Gui.hud
+            replace("Minecraft.getInstance().gui.hud.getChat()", "Minecraft.getInstance().gui.getChat()")
         }
     }
 }

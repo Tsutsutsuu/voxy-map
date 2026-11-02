@@ -141,6 +141,8 @@ public class MapConfigScreen extends Screen {
         add(Group.UI, "showHint", VoxyMapConfig.SHOW_HINT, 0, 0, null);
         add(Group.UI, "teleportEnabled", VoxyMapConfig.TELEPORT_ENABLED, 0, 0, null, true);
         add(Group.UI, "debugEnabled", VoxyMapConfig.DEBUG_ENABLED, 0, 0, null);
+        add(Group.UI, "debugRefreshChat", VoxyMapConfig.DEBUG_REFRESH_CHAT, 0, 0, null);
+        add(Group.UI, "debugRefreshVerbose", VoxyMapConfig.DEBUG_REFRESH_VERBOSE, 0, 0, null);
     }
 
     private void add(Group g, String name, VoxyMapConfig.Value<?> value, int min, int max, String[] options) {

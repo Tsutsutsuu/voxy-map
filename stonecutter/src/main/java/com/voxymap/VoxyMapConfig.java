@@ -42,6 +42,10 @@ public final class VoxyMapConfig {
     public static final Value<Boolean> SHOW_COORDINATES = new Value<>("showCoordinates", true);
     public static final Value<Boolean> TELEPORT_ENABLED = new Value<>("teleportEnabled", true);
     public static final Value<Boolean> DEBUG_ENABLED = new Value<>("debugEnabled", true);
+    /** Test aid: print a compact refresh report to the chat. */
+    public static final Value<Boolean> DEBUG_REFRESH_CHAT = new Value<>("debugRefreshChat", false);
+    /** Test aid: also print per-stage timings to the chat. */
+    public static final Value<Boolean> DEBUG_REFRESH_VERBOSE = new Value<>("debugRefreshVerbose", false);
     public static final Value<Boolean> SKIP_WORLD_RENDER = new Value<>("skipWorldRender", true);
     public static final Value<Integer> CACHE_KEEP_COUNT = new Value<>("cacheKeepCount", 5);
     public static final Value<Integer> MIN_CONTOUR_AREA = new Value<>("minContourArea", 40);

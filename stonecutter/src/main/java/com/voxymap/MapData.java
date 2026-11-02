@@ -2,6 +2,7 @@ package com.voxymap;
 
 import com.github.luben.zstd.Zstd;
 import com.mojang.blaze3d.platform.NativeImage;
+import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.texture.DynamicTexture;
 import net.minecraft.resources.Identifier;
@@ -200,6 +201,87 @@ public final class MapData {
     }
 
     // ------------------------------------------------------------- state
+
+    /** What started a refresh; used by the optional chat report only. */
+    public enum RefreshTrigger {
+        AUTO_DISTANCE, OPEN_AFTER_TRAVEL, MANUAL_BUTTON, MANUAL_DIALOG,
+        RETRY_SAFE, RETRY_FORCE, INITIAL_TIMER, INTERNAL
+    }
+
+    /** Aggregated data for one optional chat report (debugRefreshChat). */
+    private static final class RefreshReport {
+        final RefreshTrigger trigger;
+        String fallbackNote;
+        String mode = "full";
+        boolean noChange;
+        boolean fullFallback;
+        String error = "";
+        int totalSections;
+        int changed;
+        int removed;
+        int dirtyW, dirtyH;
+        int contourDiff;
+        long scanMs, mergeMs, colorMs;
+        long cacheVxmMs, cacheVxcMs, cacheVxiMs;
+        long totalMs;
+        String colorMode = "-";
+        String colorFallback = "";
+
+        RefreshReport(RefreshTrigger trigger, String fallbackNote) {
+            this.trigger = trigger;
+            this.fallbackNote = fallbackNote == null ? "" : fallbackNote;
+        }
+
+        void emit() {
+            if (!RefreshDebug.enabled()) return;
+            String trig = trigger.name().toLowerCase(java.util.Locale.ROOT);
+            Runtime rt = Runtime.getRuntime();
+            long usedMb = (rt.totalMemory() - rt.freeMemory()) / 1048576L;
+            long maxMb = rt.maxMemory() / 1048576L;
+            if (!error.isEmpty()) {
+                RefreshDebug.chat(trig + "/" + mode + " failed: " + error, ChatFormatting.RED);
+                return;
+            }
+            if (noChange) {
+                RefreshDebug.chat(trig + "/incremental skipped: no DB writes since last scan ("
+                        + scanMs + "ms)", ChatFormatting.GRAY);
+                return;
+            }
+            if (mode.equals("incremental")) {
+                if (fullFallback) {
+                    RefreshDebug.chat(trig + "/incremental aborted: "
+                            + (fallbackNote.isEmpty() ? "not suitable" : fallbackNote) + " -> full rebuild",
+                            ChatFormatting.YELLOW);
+                    return;
+                }
+                double pct = totalSections > 0 ? changed * 100.0 / totalSections : 0;
+                String color = colorMode + (colorFallback.isEmpty() ? "" : " (" + colorFallback + ")");
+                RefreshDebug.chat(String.format(java.util.Locale.ROOT,
+                                "%s/incremental | changed=%d/%d (%.1f%%) | dirty=%dx%d | color=%s | total=%dms | heap=%d/%dMB",
+                                trig, changed, totalSections, pct, dirtyW, dirtyH, color, totalMs, usedMb, maxMb),
+                        ChatFormatting.GRAY);
+                if (RefreshDebug.verbose()) {
+                    RefreshDebug.chat("scan: sections=" + totalSections + " changed=" + changed
+                            + " removed=" + removed + " scan=" + scanMs + "ms", ChatFormatting.DARK_GRAY);
+                    RefreshDebug.chat("merge: decoded=" + changed + " merge=" + mergeMs + "ms",
+                            ChatFormatting.DARK_GRAY);
+                    RefreshDebug.chat("color: mode=" + color + " contourDiff=" + contourDiff
+                            + " color=" + colorMs + "ms", ChatFormatting.DARK_GRAY);
+                    RefreshDebug.chat("caches: vxm=" + cacheVxmMs + "ms vxc=" + cacheVxcMs
+                            + "ms vxi=" + cacheVxiMs + "ms", ChatFormatting.DARK_GRAY);
+                }
+            } else {
+                String suffix = fallbackNote.isEmpty() ? "" : " (after fallback: " + fallbackNote + ")";
+                RefreshDebug.chat(String.format(java.util.Locale.ROOT,
+                                "%s/%s | sections=%d%s | total=%dms | heap=%d/%dMB",
+                                trig, mode, totalSections, suffix, totalMs, usedMb, maxMb), ChatFormatting.GRAY);
+                if (RefreshDebug.verbose()) {
+                    RefreshDebug.chat("caches: vxm=" + cacheVxmMs + "ms vxc=" + cacheVxcMs
+                            + "ms vxi=" + cacheVxiMs + "ms", ChatFormatting.DARK_GRAY);
+                }
+            }
+        }
+    }
 
     public boolean isLoading() {
         return loading;
@@ -775,13 +857,28 @@ public final class MapData {
     // ------------------------------------------------------------- update
 
     public void updateAsync() {
-        updateAsync(false);
+        updateAsync(false, RefreshTrigger.INTERNAL, "");
     }
 
     /**
      * @param forceReload when true the disk cache is ignored and the Voxy storage is re-read
      */
     public void updateAsync(boolean forceReload) {
+        updateAsync(forceReload, RefreshTrigger.INTERNAL, "");
+    }
+
+    public void updateAsync(boolean forceReload, RefreshTrigger trigger) {
+        updateAsync(forceReload, trigger, "");
+    }
+
+    /**
+     * @param forceReload  when true the disk cache is ignored and the Voxy storage is re-read
+     * @param trigger      what started this refresh (for the optional chat report)
+     * @param fallbackNote why an incremental refresh fell back to this full rebuild ("" = none)
+     */
+    public void updateAsync(boolean forceReload, RefreshTrigger trigger, String fallbackNote) {
+        final long reportStart = System.nanoTime();
+        final RefreshReport report = new RefreshReport(trigger, fallbackNote);
         ensureDefaultStyle();
         if (!isOverworld()) {
             // only the overworld LOD storage is supported; do not build anything elsewhere
@@ -865,7 +962,9 @@ public final class MapData {
                         return;
                     }
                     if (epoch != worldEpoch) return;
+                    long t = System.nanoTime();
                     saveCache(storage, built);
+                    report.cacheVxmMs = (System.nanoTime() - t) / 1_000_000L;
                     freshlyBuilt = true;
                     incrementalRefreshCount = 0;
                 }
@@ -875,7 +974,11 @@ public final class MapData {
                     pendingBuiltIndex = null;
                     if (idx == null) idx = loadSectionIndex(storage, built);
                     sectionIndex = idx;
-                    if (freshlyBuilt) saveSectionIndex(storage, built, idx);
+                    if (freshlyBuilt) {
+                        long t = System.nanoTime();
+                        saveSectionIndex(storage, built, idx);
+                        report.cacheVxiMs = (System.nanoTime() - t) / 1_000_000L;
+                    }
                 }
                 snap = built;
                 snapStorage = storage;
@@ -886,7 +989,9 @@ public final class MapData {
                 int[] cachedRgb = forceReload ? null : loadColorCache(storage, target, renderStyle, sea);
                 if (cachedRgb == null) {
                     cachedRgb = renderColor(target, renderStyle, sea);
+                    long t = System.nanoTime();
                     saveColorCache(storage, target, renderStyle, sea, cachedRgb);
+                    report.cacheVxcMs = (System.nanoTime() - t) / 1_000_000L;
                 }
                 final int[] rgb = cachedRgb;
                 progress = 95;
@@ -945,6 +1050,11 @@ public final class MapData {
                     progress = -1;
                     requested.set(false);
                 }
+                report.mode = "full";
+                report.totalSections = sectionIndex != null ? sectionIndex.count() : 0;
+                report.error = error;
+                report.totalMs = (System.nanoTime() - reportStart) / 1_000_000L;
+                report.emit();
             }
         });
     }
@@ -1088,12 +1198,16 @@ public final class MapData {
      * Falls back to the normal full rebuild whenever a correct fast path cannot be guaranteed.
      */
     public void refreshIncrementalAsync() {
+        refreshIncrementalAsync(RefreshTrigger.INTERNAL);
+    }
+
+    public void refreshIncrementalAsync(RefreshTrigger trigger) {
         if (!isOverworld()) {
-            updateAsync(true);
+            updateAsync(true, trigger);
             return;
         }
         if (!canIncrementalRefresh()) {
-            updateAsync(true);
+            updateAsync(true, trigger);
             return;
         }
         if (requested.getAndSet(true)) return;
@@ -1104,6 +1218,8 @@ public final class MapData {
         oversizePixels = 0;
         oversizeLimit = 0;
         oversizeSafePixelBlocks = 0;
+        final long reportStart = System.nanoTime();
+        final RefreshReport report = new RefreshReport(trigger, "");
         final int epoch = worldEpoch;
         final int sea = seaLevel();
         final long startedNs = System.nanoTime();
@@ -1130,8 +1246,10 @@ public final class MapData {
                         || prevSnap.pixelBlocks != effectivePixelBlocks()
                         || prevIndex.maxLodLevel != lodCap()) {
                     fallback = true;
+                    report.fallbackNote = "index or geometry changed";
                     return;
                 }
+                long stageStart = System.nanoTime();
                 List<Object> handles = new ArrayList<>();
                 Object db = null;
                 try {
@@ -1140,8 +1258,11 @@ public final class MapData {
                     Object mappings = handles.get(2);
                     long seq = RocksBridge.latestSequence(db);
                     progress = 3;
+                    report.totalSections = prevIndex.count();
                     if (seq >= 0 && seq == prevIndex.dbSequence) {
                         // no write at all since the snapshot: nothing to scan or render
+                        report.noChange = true;
+                        report.scanMs = (System.nanoTime() - stageStart) / 1_000_000L;
                         lastRefreshIncremental = true;
                         lastChangedSections = 0;
                         lastRefreshMs = 0;
@@ -1150,9 +1271,25 @@ public final class MapData {
                         return;
                     }
                     progress = 5;
+                    stageStart = System.nanoTime();
                     IncrementalScan scan = scanIncremental(db, sections, prevIndex);
-                    if (scan.tooMany || scan.removed > 0 || scan.boundsChanged) {
+                    report.scanMs = (System.nanoTime() - stageStart) / 1_000_000L;
+                    report.totalSections = prevIndex.count();
+                    report.changed = scan.changedKeys.length;
+                    report.removed = scan.removed;
+                    if (scan.tooMany) {
                         fallback = true;
+                        report.fallbackNote = "too many changed sections";
+                        return;
+                    }
+                    if (scan.removed > 0) {
+                        fallback = true;
+                        report.fallbackNote = scan.removed + " section(s) removed";
+                        return;
+                    }
+                    if (scan.boundsChanged) {
+                        fallback = true;
+                        report.fallbackNote = "map bounds grew";
                         return;
                     }
                     if (scan.changedKeys.length == 0) {
@@ -1162,6 +1299,7 @@ public final class MapData {
                                 prevIndex.maxLodLevel, scan.keys, scan.hashes);
                         sectionIndex = refreshed;
                         saveSectionIndex(storage, prevSnap, refreshed);
+                        report.noChange = true;
                         lastRefreshIncremental = true;
                         lastChangedSections = 0;
                         lastRefreshMs = 0;
@@ -1194,6 +1332,9 @@ public final class MapData {
                     dz0 = Math.max(0, dz0);
                     dx1 = Math.min(prevSnap.width - 1, dx1);
                     dz1 = Math.min(prevSnap.height - 1, dz1);
+                    report.dirtyW = dx1 >= dx0 ? dx1 - dx0 + 1 : 0;
+                    report.dirtyH = dz1 >= dz0 ? dz1 - dz0 + 1 : 0;
+                    long mergeStart = System.nanoTime();
                     long[] pixels = prevSnap.pixels.clone();
                     List<Future<Decoded>> futures = new ArrayList<>(BATCH);
                     for (int i = 0; i < changed; i++) {
@@ -1209,6 +1350,7 @@ public final class MapData {
                     }
                     flush(futures, pixels, prevSnap.width, prevSnap.height,
                             prevSnap.minWX, prevSnap.minWZ, prevSnap.pixelBlocks);
+                    report.mergeMs = (System.nanoTime() - mergeStart) / 1_000_000L;
                     if (epoch != worldEpoch) return;
                     Snapshot built = new Snapshot(pixels, prevSnap.width, prevSnap.height,
                             prevSnap.minWX, prevSnap.minWZ, prevSnap.pixelBlocks, biomeNames,
@@ -1221,10 +1363,13 @@ public final class MapData {
                     sectionIndex = newIndex;
                     progress = 70;
                     // fast path: only the changed part of the analysis/colours
+                    long colorStart = System.nanoTime();
                     ColorPatch patch = incrementalColorPatch(built, prevSnap, terrainCache, renderStyle, sea,
-                            dx0, dz0, dx1, dz1);
+                            dx0, dz0, dx1, dz1, report);
                     int[] rgb;
                     if (patch != null) {
+                        report.colorMode = "patch";
+                        report.contourDiff = patch.contourDiff;
                         ColorFrame prevFrame = colorFrame;
                         colorFrame = new ColorFrame(patch.rgb, built.width, built.height,
                                 prevFrame == null ? 1 : prevFrame.epoch + 1);
@@ -1232,9 +1377,15 @@ public final class MapData {
                         lastRenderedStyle = renderStyle;
                         rgb = patch.rgb;
                         progress = 95;
+                        long t = System.nanoTime();
                         saveCache(storage, built);
+                        report.cacheVxmMs = (System.nanoTime() - t) / 1_000_000L;
+                        t = System.nanoTime();
                         saveColorCache(storage, built, renderStyle, sea, rgb);
+                        report.cacheVxcMs = (System.nanoTime() - t) / 1_000_000L;
+                        t = System.nanoTime();
                         saveSectionIndex(storage, built, newIndex);
+                        report.cacheVxiMs = (System.nanoTime() - t) / 1_000_000L;
                         patchTexturesAsync(patch.x0, patch.z0, patch.x1, patch.z1, rgb, built.width, built.height);
                         handed = true;
                         Minecraft.getInstance().execute(() -> {
@@ -1247,11 +1398,18 @@ public final class MapData {
                             }
                         });
                     } else {
+                        report.colorMode = "full";
                         rgb = renderColor(built, renderStyle, sea);
                         progress = 95;
+                        long t = System.nanoTime();
                         saveCache(storage, built);
+                        report.cacheVxmMs = (System.nanoTime() - t) / 1_000_000L;
+                        t = System.nanoTime();
                         saveColorCache(storage, built, renderStyle, sea, rgb);
+                        report.cacheVxcMs = (System.nanoTime() - t) / 1_000_000L;
+                        t = System.nanoTime();
                         saveSectionIndex(storage, built, newIndex);
+                        report.cacheVxiMs = (System.nanoTime() - t) / 1_000_000L;
                         handed = true;
                         Minecraft.getInstance().execute(() -> {
                             try {
@@ -1265,6 +1423,7 @@ public final class MapData {
                             }
                         });
                     }
+                    report.colorMs = (System.nanoTime() - colorStart) / 1_000_000L;
                     Minecraft mc = Minecraft.getInstance();
                     if (mc.player != null) {
                         lastUpdateX = mc.player.getX();
@@ -1295,10 +1454,15 @@ public final class MapData {
                     requested.set(false);
                     progress = -1;
                     lastRefreshIncremental = false;
-                    if (fallback && epoch == worldEpoch) {
-                        // full rebuild path: it re-acquires the flags and resets them when done
-                        updateAsync(true);
-                    }
+                }
+                report.mode = "incremental";
+                report.fullFallback = fallback;
+                report.totalMs = (System.nanoTime() - reportStart) / 1_000_000L;
+                report.error = error;
+                report.emit();
+                if (fallback && epoch == worldEpoch) {
+                    // full rebuild path: it re-acquires the flags and resets them when done
+                    updateAsync(true, trigger, report.fallbackNote);
                 }
             }
         });
@@ -1329,7 +1493,7 @@ public final class MapData {
         // drop the previous (oversized) snapshot first: keeping it alive while the coarser grid is
         // being built doubles the peak, which is exactly what the safe mode is trying to avoid
         dropSnapshotForWorldChange();
-        updateAsync(true);
+        updateAsync(true, RefreshTrigger.RETRY_SAFE);
     }
 
     /** Reload anyway, accepting the risk of running out of memory. */
@@ -1338,7 +1502,7 @@ public final class MapData {
         allowOversize = true;
         oversizePixels = 0;
         dropSnapshotForWorldChange();
-        updateAsync(true);
+        updateAsync(true, RefreshTrigger.RETRY_FORCE);
     }
 
     public boolean isInitialRefreshPending() {
@@ -1455,10 +1619,10 @@ public final class MapData {
             // refresh only reuses the disk cache so joining a world does not re-read everything.
             // An automatic movement refresh prefers the incremental path when its index is valid.
             if (movementRefresh) {
-                if (canIncrementalRefresh()) refreshIncrementalAsync();
-                else updateAsync(true);
+                if (canIncrementalRefresh()) refreshIncrementalAsync(RefreshTrigger.AUTO_DISTANCE);
+                else updateAsync(true, RefreshTrigger.AUTO_DISTANCE);
             } else {
-                updateAsync(false);
+                updateAsync(false, RefreshTrigger.INITIAL_TIMER);
             }
         }
     }
@@ -1478,8 +1642,8 @@ public final class MapData {
         if (isInitialRefreshPending()) return;
         lastUpdateX = mc.player.getX();
         lastUpdateZ = mc.player.getZ();
-        if (canIncrementalRefresh()) refreshIncrementalAsync();
-        else updateAsync(true);
+        if (canIncrementalRefresh()) refreshIncrementalAsync(RefreshTrigger.OPEN_AFTER_TRAVEL);
+        else updateAsync(true, RefreshTrigger.OPEN_AFTER_TRAVEL);
     }
 
     // ------------------------------------------------------------ disk cache
@@ -3246,13 +3410,15 @@ public final class MapData {
     private static final class ColorPatch {
         final int[] rgb;
         final int x0, z0, x1, z1;
+        final int contourDiff;
 
-        ColorPatch(int[] rgb, int x0, int z0, int x1, int z1) {
+        ColorPatch(int[] rgb, int x0, int z0, int x1, int z1, int contourDiff) {
             this.rgb = rgb;
             this.x0 = x0;
             this.z0 = z0;
             this.x1 = x1;
             this.z1 = z1;
+            this.contourDiff = contourDiff;
         }
     }
 
@@ -3262,26 +3428,53 @@ public final class MapData {
      * ramp change, style change, huge dirty area); the caller then runs the normal full render.
      */
     private ColorPatch incrementalColorPatch(Snapshot built, Snapshot prevSnap, TerrainCache tc, String style,
-                                             int sea, int dx0, int dz0, int dx1, int dz1) {
-        if (tc == null || tc.snapshot != prevSnap || tc.width != built.width || tc.height != built.height) return null;
-        if (!terrainFingerprint().equals(tc.fingerprint)) return null;
-        if (VoxyMapConfig.FILL_HOLES.get() || VoxyMapConfig.DENOISE.get()) return null;
-        if (!style.equals(lastRenderedStyle)) return null;
+                                             int sea, int dx0, int dz0, int dx1, int dz1, RefreshReport report) {
+        if (tc == null || tc.snapshot != prevSnap || tc.width != built.width || tc.height != built.height) {
+            report.colorFallback = "no cached terrain analysis";
+            return null;
+        }
+        if (!terrainFingerprint().equals(tc.fingerprint)) {
+            report.colorFallback = "terrain settings changed";
+            return null;
+        }
+        if (VoxyMapConfig.FILL_HOLES.get() || VoxyMapConfig.DENOISE.get()) {
+            report.colorFallback = VoxyMapConfig.FILL_HOLES.get() ? "fillHoles enabled" : "denoise enabled";
+            return null;
+        }
+        if (!style.equals(lastRenderedStyle)) {
+            report.colorFallback = "style changed";
+            return null;
+        }
         ColorFrame cf = colorFrame;
-        if (cf == null || cf.width != built.width || cf.height != built.height) return null;
+        if (cf == null || cf.width != built.width || cf.height != built.height) {
+            report.colorFallback = "no colour buffer";
+            return null;
+        }
         int w = built.width, h = built.height;
-        if (dx1 < dx0 || dz1 < dz0) return null;
+        if (dx1 < dx0 || dz1 < dz0) {
+            report.colorFallback = "empty dirty area";
+            return null;
+        }
         long area = (long) (dx1 - dx0 + 1) * (dz1 - dz0 + 1);
-        if (area > Math.max(4_000_000L, (long) w * h / 3)) return null;
+        if (area > Math.max(4_000_000L, (long) w * h / 3)) {
+            report.colorFallback = "dirty area too large";
+            return null;
+        }
         boolean contours = contourOverride != null ? contourOverride : VoxyMapConfig.DRAW_CONTOURS.get();
-        if (contours != tc.contourEnabled) return null;
+        if (contours != tc.contourEnabled) {
+            report.colorFallback = "contour mode changed";
+            return null;
+        }
         // any water in the changed neighbourhood needs the water-depth/blur rebuild
         int mx0 = Math.max(0, dx0 - 3), mz0 = Math.max(0, dz0 - 3);
         int mx1 = Math.min(w - 1, dx1 + 3), mz1 = Math.min(h - 1, dz1 + 3);
         for (int z = mz0; z <= mz1; z++) {
             for (int x = mx0; x <= mx1; x++) {
                 int i = z * w + x;
-                if (rawWater(built.pixels[i]) || rawWater(prevSnap.pixels[i])) return null;
+                if (rawWater(built.pixels[i]) || rawWater(prevSnap.pixels[i])) {
+                    report.colorFallback = "water in changed area";
+                    return null;
+                }
             }
         }
         // raw heights / water flag for the changed rectangle
@@ -3305,7 +3498,10 @@ public final class MapData {
         }
         // any ramp change recolours the whole map, so it must be rejected before touching colours
         int[] ramp = rampParams(tc.topArr, tc.isWaterPix, sea, w, h);
-        if (ramp[0] != tc.lo || ramp[1] != tc.hi || ramp[2] != tc.rampLo || ramp[3] != tc.rampHi) return null;
+        if (ramp[0] != tc.lo || ramp[1] != tc.hi || ramp[2] != tc.rampLo || ramp[3] != tc.rampHi) {
+            report.colorFallback = "colour ramp changed";
+            return null;
+        }
         boolean[] oldContour = tc.contour;
         boolean[] newContour = computeContour(tc.topArr, tc.isWaterPix, tc.smoothTop, tc.lo, tc.hi, w, h, contours, null);
         // contour fragments are filtered by connected area, so a local edit can toggle a whole
@@ -3329,7 +3525,10 @@ public final class MapData {
         } else {
             contourDiff = Integer.MAX_VALUE;
         }
-        if (contourDiff > 500_000) return null;
+        if (contourDiff > 500_000) {
+            report.colorFallback = "contour diff too large";
+            return null;
+        }
         tc.contour = newContour;
         TerrainCache updated = new TerrainCache(built, sea, tc.fingerprint, tc.topArr, tc.smoothTop,
                 tc.smoothFloor, tc.isWaterPix, tc.contour, tc.depthMap, tc.lo, tc.hi, tc.rampLo, tc.rampHi,
@@ -3346,7 +3545,10 @@ public final class MapData {
             cz1 = Math.max(cz1, iz1);
         }
         long patchArea = (long) (cx1 - cx0 + 1) * (cz1 - cz0 + 1);
-        if (patchArea > Math.max(8_000_000L, (long) w * h / 2)) return null;
+        if (patchArea > Math.max(8_000_000L, (long) w * h / 2)) {
+            report.colorFallback = "colour patch too large";
+            return null;
+        }
         int[] out = cf.rgb.clone();
         for (int z = cz0; z <= cz1; z++) {
             for (int x = cx0; x <= cx1; x++) {
@@ -3354,7 +3556,8 @@ public final class MapData {
                 out[i] = colorAt(updated, style, i, x, z);
             }
         }
-        return new ColorPatch(out, cx0, cz0, cx1, cz1);
+        report.contourDiff = contourDiff;
+        return new ColorPatch(out, cx0, cz0, cx1, cz1, contourDiff);
     }
 
     private int[] colorize(TerrainCache tc, String style) {
