@@ -55,8 +55,13 @@ public final class MapData {
     private static final int NO_SOLID = -32768;
     private static final int NO_TOP = -32767;
     private static final int BATCH = 2000;
-    /** 7: buried-slice columns now keep their solid-height fallback instead of becoming empty. */
-    private static final int CACHE_VERSION = 7;
+    /**
+     * World blocks of empty margin kept around a freshly built snapshot. Newly explored sections
+     * landing inside this margin can be merged incrementally instead of forcing a full rebuild.
+     */
+    private static final long GROW_MARGIN_BLOCKS = 512L;
+    /** 8: snapshots keep a 512-block empty margin so edge exploration can stay incremental. */
+    private static final int CACHE_VERSION = 8;
     private static final int FALLBACK_SEA = 63;
 
     private static final class Snapshot {
@@ -2498,6 +2503,18 @@ public final class MapData {
             // player decide between the safe grid and forcing the load.
             final long limit = mapPixelLimit();
             int pb = pixelBlocks;
+            long pad = GROW_MARGIN_BLOCKS;
+            if (pad > 0) {
+                long pw = (maxWXv - minWXv + 2 * pad + pb - 1) / pb;
+                long ph = (maxWZv - minWZv + 2 * pad + pb - 1) / pb;
+                if (pw * ph > limit) pad = 0; // padding would itself trip the memory guard
+            }
+            if (pad > 0) {
+                minWXv -= pad;
+                minWZv -= pad;
+                maxWXv += pad;
+                maxWZv += pad;
+            }
             int gw = (int) ((maxWXv - minWXv + pb - 1) / pb);
             int gh = (int) ((maxWZv - minWZv + pb - 1) / pb);
             long pixelsEstimate = (long) gw * gh;
