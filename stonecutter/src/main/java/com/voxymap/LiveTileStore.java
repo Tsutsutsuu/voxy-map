@@ -428,6 +428,34 @@ public final class LiveTileStore {
         }
     }
 
+    /**
+     * Bounds the resident seeded tiles. Seeded tiles are reconstructible from the base snapshot,
+     * so far ones can be dropped safely; live-only tiles are kept (they have no other source).
+     */
+    public void evictFar(int centerTx, int centerTz, int keepRadius, int maxTiles) {
+        if (tiles.size() <= maxTiles) return;
+        java.util.List<LiveTile> candidates = new java.util.ArrayList<>();
+        for (LiveTile tile : tiles.values()) {
+            if (tile.seedEpoch < 0) continue; // keep live-only data
+            int dx = tile.tx - centerTx;
+            int dz = tile.tz - centerTz;
+            if (Math.max(Math.abs(dx), Math.abs(dz)) > keepRadius) candidates.add(tile);
+        }
+        candidates.sort((a, b) -> {
+            int da = Math.max(Math.abs(a.tx - centerTx), Math.abs(a.tz - centerTz));
+            int db = Math.max(Math.abs(b.tx - centerTx), Math.abs(b.tz - centerTz));
+            return Integer.compare(db, da);
+        });
+        int excess = tiles.size() - maxTiles;
+        for (LiveTile tile : candidates) {
+            if (excess-- <= 0) break;
+            if (tiles.remove(key(tile.tx, tile.tz), tile)) {
+                tile.dispose();
+                seedTileCount.decrementAndGet();
+            }
+        }
+    }
+
     public void dispose() {
         for (LiveTile tile : tiles.values()) tile.dispose();
         tiles.clear();

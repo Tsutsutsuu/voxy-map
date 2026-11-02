@@ -581,6 +581,8 @@ public class MapScreen extends Screen {
                 pose.popMatrix();
             }
         }
+        int viewRadius = Math.max(tx1 - tx0, tz1 - tz0) / 2 + 4;
+        live.evictFar(live.tileIndexX(centerX), live.tileIndexZ(centerZ), viewRadius, 512);
     }
 
     /** Event-fed tiles outside the base snapshot; the base tile always wins where it has data. */
