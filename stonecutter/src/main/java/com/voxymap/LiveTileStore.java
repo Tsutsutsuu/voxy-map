@@ -139,7 +139,10 @@ public final class LiveTileStore {
      */
     public LiveTile getOrCreateSeed(int tx, int tz) {
         LiveTile existing = tiles.get(key(tx, tz));
-        if (existing != null) return existing;
+        if (existing != null) {
+            if (existing.seedEpoch < 0) seedExisting(existing);
+            return existing;
+        }
         if (seedCreatesThisFrame.get() >= 16) return null;
         seedCreatesThisFrame.incrementAndGet();
         long[] srcPixels = seedPixels;
@@ -193,6 +196,35 @@ public final class LiveTileStore {
                 int c = srcRgb[si];
                 if (tile.rgb == null) tile.rgb = new int[TILE_PIXELS * TILE_PIXELS];
                 tile.rgb[z * TILE_PIXELS + x] = c;
+            }
+        }
+        tile.seedEpoch = seedEpoch;
+        tile.textureDirty = true;
+    }
+
+    /**
+     * A tile may be created by the event worker before the first frame has seeded it (very common
+     * after a map-scale change). Fill it from the base snapshot so it cannot stay as a coarse,
+     * live-only patch surrounded by fine seeded tiles.
+     */
+    private void seedExisting(LiveTile tile) {
+        long[] srcPixels = seedPixels;
+        int[] srcRgb = seedRgb;
+        if (srcPixels == null || srcRgb == null) return;
+        int px0 = (int) Math.floorDiv(tile.minWX - seedMinWX, seedPixelBlocks);
+        int pz0 = (int) Math.floorDiv(tile.minWZ - seedMinWZ, seedPixelBlocks);
+        if (tile.rgb == null) tile.rgb = new int[TILE_PIXELS * TILE_PIXELS];
+        for (int z = 0; z < TILE_PIXELS; z++) {
+            int sz = pz0 + z;
+            if (sz < 0 || sz >= seedHeight) continue;
+            for (int x = 0; x < TILE_PIXELS; x++) {
+                int sx = px0 + x;
+                if (sx < 0 || sx >= seedWidth) continue;
+                int si = sz * seedWidth + sx;
+                if (si >= srcPixels.length || si >= srcRgb.length) continue;
+                int di = z * TILE_PIXELS + x;
+                if (tile.pixels[di] == VoxyMerge.LONG_EMPTY) tile.pixels[di] = srcPixels[si];
+                tile.rgb[di] = srcRgb[si];
             }
         }
         tile.seedEpoch = seedEpoch;
