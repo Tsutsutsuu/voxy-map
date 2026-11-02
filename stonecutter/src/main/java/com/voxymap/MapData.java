@@ -2922,6 +2922,8 @@ public final class MapData {
         TileStore ts = tileStore;
         tileStore = null;
         if (ts != null) ts.dispose();
+        LiveTileStore live = liveTiles;
+        if (live != null) live.disposeTextures();
         // the 1/4 texture is kept on purpose: ~5 MB of VRAM, and reopening shows it instantly
         releaseOne(mc, textureId);
         textureId = null;
@@ -2950,8 +2952,10 @@ public final class MapData {
 
     /** Re-upload the main textures from the last rendered grid (background, used when reopening). */
     public void ensureMainTextures() {
-        ensureTileStore();
-        if (textureId != null) return;
+        boolean tile2d = VoxyMapConfig.TILE_RENDER.get() && VoxyMapConfig.UNIFIED_TILES.get();
+        if (!tile2d) ensureTileStore();
+        if (tile2d && textureIdSmall != null) return;
+        if (!tile2d && textureId != null) return;
         ColorFrame f = colorFrame;
         if (snap == null || f == null) return;
         buildTexturesAsync(f.width, f.height, f.rgb);
@@ -3072,7 +3076,9 @@ public final class MapData {
     private void uploadTexture(Snapshot s, int[] rgb) {
         ColorFrame prev = colorFrame;
         colorFrame = new ColorFrame(rgb, s.width, s.height, prev == null ? 1 : prev.epoch + 1);
-        ensureTileStore();
+        if (!(VoxyMapConfig.TILE_RENDER.get() && VoxyMapConfig.UNIFIED_TILES.get())) {
+            ensureTileStore();
+        }
         texEpoch++;
         Minecraft mc = Minecraft.getInstance();
         // a rebuilt grid invalidates the biome overlay: drop it so ensureBiomeTexture regenerates it
@@ -3094,14 +3100,15 @@ public final class MapData {
         final int worldEpochAtStart = worldEpoch;
         loader.submit(() -> {
             try {
-                NativeImage big = buildImage(rgb, w, h);
+                boolean needBig = !(VoxyMapConfig.TILE_RENDER.get() && VoxyMapConfig.UNIFIED_TILES.get());
+                NativeImage big = needBig ? buildImage(rgb, w, h) : null;
                 NativeImage small = buildSmall(rgb, w, h);
                 Minecraft.getInstance().execute(() -> {
                     try {
                         if (epoch == texEpoch && worldEpochAtStart == worldEpoch) {
                             registerTextures(big, small);
                         } else {
-                            big.close();
+                            if (big != null) big.close();
                             small.close();
                         }
                     } finally {
@@ -3111,7 +3118,8 @@ public final class MapData {
                         textureBuildPending = false;
                         // only rebuild when this build was stale (a newer colour arrived) or no
                         // texture exists yet; otherwise the finished build is already the newest
-                        if (epoch != texEpoch || textureId == null) {
+                        boolean hasNeeded = needBig ? textureId != null : textureIdSmall != null;
+                        if (epoch != texEpoch || !hasNeeded) {
                             ColorFrame f = colorFrame;
                             if (f != null && snap != null) {
                                 buildTexturesAsync(f.width, f.height, f.rgb);

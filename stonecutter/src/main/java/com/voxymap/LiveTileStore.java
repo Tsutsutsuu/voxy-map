@@ -420,6 +420,14 @@ public final class LiveTileStore {
         tile.textureDirty = false;
     }
 
+    /** Frees GPU textures but keeps tile pixels/rgb so reopening can re-upload cheaply. */
+    public void disposeTextures() {
+        for (LiveTile tile : tiles.values()) {
+            tile.dispose();
+            tile.textureDirty = true;
+        }
+    }
+
     public void dispose() {
         for (LiveTile tile : tiles.values()) tile.dispose();
         tiles.clear();

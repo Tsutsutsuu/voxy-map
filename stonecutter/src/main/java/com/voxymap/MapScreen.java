@@ -491,12 +491,12 @@ public class MapScreen extends Screen {
 
     /** Layer 1: the map texture (nearest neighbour when zoomed in, the pre-filtered copy far out). */
     private void drawMap(GuiGraphicsExtractor g, MapData data, double uiScale) {
-        TileStore tiles = data.getTileStore();
         if (VoxyMapConfig.TILE_RENDER.get() && VoxyMapConfig.UNIFIED_TILES.get()) {
             drawTilePreview(g, data);
             drawUnifiedTiles(g, data, uiScale);
             return;
         }
+        TileStore tiles = data.getTileStore();
         if (VoxyMapConfig.TILE_RENDER.get() && tiles != null) {
             // Show the pre-filtered whole-map copy first, then let tiles replace it. Without this
             // the per-frame tile budget makes a freshly opened map visibly fill from top to bottom.
