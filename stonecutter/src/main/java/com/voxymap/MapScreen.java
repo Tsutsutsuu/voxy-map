@@ -547,15 +547,22 @@ public class MapScreen extends Screen {
             for (int tx = tx0; tx <= tx1; tx++) {
                 TileStore.MapTile tile = tiles.getTile(tx, tz);
                 if (tile == null) continue;
+                // Keep the tile's exact double position and scale through the pose matrix instead
+                // of rounding every tile independently: independent rounding leaves 1px seams and
+                // makes panning jump in GUI-pixel steps (very visible at GUI scale 4).
                 double sx = width / 2.0 + (tile.minWX - centerX) * zoom / pb;
                 double sy = height / 2.0 + (tile.minWZ - centerZ) * zoom / pb;
-                int dx = (int) Math.round(sx);
-                int dy = (int) Math.round(sy);
-                int dw = Math.max(1, (int) Math.round(tile.width * zoom));
-                int dh = Math.max(1, (int) Math.round(tile.height * zoom));
-                if (dx + dw < 0 || dy + dh < 0 || dx > width || dy > height) continue;
+                double sw = tile.width * zoom;
+                double sh = tile.height * zoom;
+                if (sx + sw < 0 || sy + sh < 0 || sx > width || sy > height) continue;
+                var pose = g.pose();
+                pose.pushMatrix();
+                pose.translate((float) sx, (float) sy);
+                pose.scale((float) zoom, (float) zoom);
                 g.blit(RenderPipelines.GUI_TEXTURED_PREMULTIPLIED_ALPHA, tile.texture,
-                        dx, dy, 0f, 0f, dw, dh, tile.width, tile.height, tile.width, tile.height);
+                        0, 0, 0f, 0f, tile.width, tile.height,
+                        tile.width, tile.height, tile.width, tile.height);
+                pose.popMatrix();
             }
         }
     }
