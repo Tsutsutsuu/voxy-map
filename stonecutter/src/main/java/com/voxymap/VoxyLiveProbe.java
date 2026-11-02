@@ -5,22 +5,23 @@ import net.minecraft.world.level.Level;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationHandler;
-import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicIntegerArray;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Proof-of-concept for the event-driven map: observe Voxy's live section dirty callbacks instead
- * of polling RocksDB.
+ * Event-driven map PoC: coalesce Voxy's live section dirty callbacks by key, then let a low-priority
+ * worker fetch the latest section with the official {@code WorldEngine.acquireIfExists(key)} API.
  *
- * <p>Entirely reflective: the mod does not compile against Voxy, and if the classes/methods are
- * missing this probe disables itself (the normal refresh pipeline keeps working). It only logs
- * statistics and copies a small sample of section data; it never modifies the map.</p>
+ * <p>The callback only records (level, key, flags); it never copies voxel data. This measures the
+ * real work an event-driven map would have to do after duplicate dirty events are merged.</p>
+ *
+ * <p>Purely reflective and read-only. If Voxy classes or the private dirtyCallback field are not
+ * available the probe disables itself; the normal refresh pipeline is never touched.</p>
  */
 public final class VoxyLiveProbe {
     private static final String IDENTIFIER = "me.cortex.voxy.commonImpl.WorldIdentifier";
@@ -28,6 +29,9 @@ public final class VoxyLiveProbe {
     private static final String CALLBACK = ENGINE + "$ISectionChangeCallback";
     private static final String SECTION = "me.cortex.voxy.common.world.WorldSection";
     private static final String MAPPER = "me.cortex.voxy.common.world.other.Mapper";
+
+    private static final int DIRTY_CAP = 50_000;
+    private static final long ACQUIRE_SAMPLE_MASK = 63L;
 
     private static boolean disabled;
     private static boolean missingLogged;
@@ -37,20 +41,33 @@ public final class VoxyLiveProbe {
     private static Object previousCallback;
     private static Class<?> sectionClass;
     private static Method sectionCopyData;
-    private static Method sectionIsAir;
-    private static Field sectionLvl, sectionX, sectionY, sectionZ, sectionKey;
+    private static Method sectionRelease;
+    private static Field sectionLvlField;
+    private static Field sectionKeyField;
+    private static Method engineAcquireIfExists;
+    private static Method engineAcquire;
     private static Field engineDirtyCallback;
     private static Method engineSetDirtyCallback;
+    private static volatile boolean running;
+    private static Thread worker;
 
     private static final AtomicLong events = new AtomicLong();
-    private static final AtomicLong samples = new AtomicLong();
+    private static final AtomicLong coalescedAdds = new AtomicLong();
+    private static final AtomicLong dropped = new AtomicLong();
+    private static final AtomicLong processed = new AtomicLong();
+    private static final AtomicLong acquireNull = new AtomicLong();
+    private static final AtomicLong acquireFails = new AtomicLong();
     private static final AtomicLong copyFails = new AtomicLong();
-    private static final AtomicIntegerArray levelCounts = new AtomicIntegerArray(8);
-    private static final Map<Long, Boolean> uniqueKeys = new ConcurrentHashMap<>();
-    private static final Set<Long> uniqueEver = ConcurrentHashMap.newKeySet();
+    private static final AtomicLong copySamples = new AtomicLong();
+    private static final AtomicLong acquireNanos = new AtomicLong();
+    private static final AtomicLong copyNanos = new AtomicLong();
+    private static final AtomicIntegerArray levelEvents = new AtomicIntegerArray(8);
+    private static final Map<Long, Dirty> dirty = new ConcurrentHashMap<>();
+    private static final ConcurrentLinkedQueue<Long> dirtyQueue = new ConcurrentLinkedQueue<>();
+    private static final Map<Long, Boolean> uniqueWindow = new ConcurrentHashMap<>();
+    private static final Map<Long, Boolean> uniqueEver = new ConcurrentHashMap<>();
     private static final Map<Thread, AtomicLong> threadCounts = new ConcurrentHashMap<>();
     private static final Map<Integer, AtomicLong> flagCounts = new ConcurrentHashMap<>();
-    private static final Set<String> threads = ConcurrentHashMap.newKeySet();
     private static volatile long lastEventMs;
     private static volatile String lastSample = "";
     private static long lastReportMs;
@@ -59,6 +76,16 @@ public final class VoxyLiveProbe {
     private static long lastAttemptMs;
     private static long lastCallbackCheckMs;
     private static Method callbackAccept;
+
+    private static final class Dirty {
+        final int lvl;
+        final int flags;
+
+        Dirty(int lvl, int flags) {
+            this.lvl = lvl;
+            this.flags = flags;
+        }
+    }
 
     private VoxyLiveProbe() {
     }
@@ -118,8 +145,7 @@ public final class VoxyLiveProbe {
         callbackAccept = callbackClass.getMethod("accept", sectionClass, int.class, int.class);
         InvocationHandler handler = (proxy, method, args) -> {
             if ("accept".equals(method.getName()) && args != null && args.length >= 3) {
-                // Keep Voxy's own renderer callback latency first; our probe must never delay it
-                // more than the statistics work below.
+                // Keep Voxy's own renderer callback latency first; our probe must never delay it.
                 if (previous != null) {
                     try {
                         callbackAccept.invoke(previous, args);
@@ -146,7 +172,6 @@ public final class VoxyLiveProbe {
             Class<?> engineClass = findClass(ENGINE, loader);
             Class<?> callbackClass = findClass(CALLBACK, loader);
             sectionClass = findClass(SECTION, loader);
-            Class<?> mapperClass = findClass(MAPPER, loader);
             if (identifier == null || engineClass == null || callbackClass == null || sectionClass == null) {
                 if (!missingLogged) {
                     missingLogged = true;
@@ -165,17 +190,18 @@ public final class VoxyLiveProbe {
                 return;
             }
             sectionCopyData = sectionClass.getMethod("copyData");
-            sectionLvl = sectionClass.getField("lvl");
-            sectionX = sectionClass.getField("x");
-            sectionY = sectionClass.getField("y");
-            sectionZ = sectionClass.getField("z");
-            sectionKey = sectionClass.getField("key");
-            if (mapperClass != null) {
-                try {
-                    sectionIsAir = mapperClass.getMethod("isAir", long.class);
-                } catch (Throwable ignored) {
-                    sectionIsAir = null;
-                }
+            sectionRelease = sectionClass.getMethod("release");
+            sectionLvlField = sectionClass.getField("lvl");
+            sectionKeyField = sectionClass.getField("key");
+            try {
+                engineAcquireIfExists = engineClass.getMethod("acquireIfExists", long.class);
+            } catch (Throwable ignored) {
+                engineAcquireIfExists = null;
+            }
+            try {
+                engineAcquire = engineClass.getMethod("acquire", long.class);
+            } catch (Throwable ignored) {
+                engineAcquire = null;
             }
             engineSetDirtyCallback = engineClass.getMethod("setDirtyCallback", callbackClass);
             try {
@@ -200,26 +226,18 @@ public final class VoxyLiveProbe {
             engine = found;
             installedCallback = callback;
             installedLevel = level;
+            resetStats();
+            startWorker();
             lastAttemptMs = System.currentTimeMillis();
-            lastCallbackCheckMs = System.currentTimeMillis();
-            lastEventMs = 0;
-            events.set(0);
-            samples.set(0);
-            copyFails.set(0);
-            uniqueKeys.clear();
-            uniqueEver.clear();
-            threads.clear();
-            threadCounts.clear();
-            flagCounts.clear();
-            for (int i = 0; i < levelCounts.length(); i++) levelCounts.set(i, 0);
-            lastReportMs = System.currentTimeMillis();
-            lastReportAtMs = lastReportMs;
+            lastCallbackCheckMs = lastAttemptMs;
+            lastReportMs = lastAttemptMs;
+            lastReportAtMs = lastAttemptMs;
             lastReportEvents = 0;
-            System.out.println("[voxymap-live] installed on " + engineClass.getSimpleName()
-                    + " previousCallback=" + (previousCallback == null ? "null"
-                    : previousCallback.getClass().getName()));
+            System.out.println("[voxymap-live] installed coalescing probe on "
+                    + engineClass.getSimpleName() + " previousCallback="
+                    + (previousCallback == null ? "null" : previousCallback.getClass().getName()));
             if (RefreshDebug.enabled()) {
-                RefreshDebug.chat("live probe installed on Voxy WorldEngine", net.minecraft.ChatFormatting.DARK_AQUA);
+                RefreshDebug.chat("coalescing live probe installed", net.minecraft.ChatFormatting.DARK_AQUA);
             }
         } catch (Throwable t) {
             disabled = true;
@@ -228,41 +246,141 @@ public final class VoxyLiveProbe {
         }
     }
 
+    private static void resetStats() {
+        events.set(0);
+        coalescedAdds.set(0);
+        dropped.set(0);
+        processed.set(0);
+        acquireNull.set(0);
+        acquireFails.set(0);
+        copyFails.set(0);
+        copySamples.set(0);
+        acquireNanos.set(0);
+        copyNanos.set(0);
+        for (int i = 0; i < levelEvents.length(); i++) levelEvents.set(i, 0);
+        dirty.clear();
+        dirtyQueue.clear();
+        uniqueWindow.clear();
+        uniqueEver.clear();
+        threadCounts.clear();
+        flagCounts.clear();
+        lastEventMs = 0;
+        lastSample = "";
+    }
+
+    private static void startWorker() {
+        if (worker != null) return;
+        running = true;
+        worker = new Thread(() -> {
+            while (running) {
+                try {
+                    Long key = dirtyQueue.poll();
+                    if (key == null) {
+                        Thread.sleep(2L);
+                        continue;
+                    }
+                    Dirty d = dirty.remove(key);
+                    if (d == null) continue; // superseded by a newer event? no, another consumer
+                    processKey(key, d);
+                    if ((processed.get() & 63L) == 0L) Thread.sleep(1L);
+                } catch (InterruptedException ignored) {
+                    Thread.currentThread().interrupt();
+                    return;
+                } catch (Throwable t) {
+                    acquireFails.incrementAndGet();
+                }
+            }
+        }, "voxymap-live-coalesce");
+        worker.setDaemon(true);
+        worker.setPriority(Thread.MIN_PRIORITY);
+        worker.start();
+    }
+
+    private static void processKey(long key, Dirty d) {
+        if (engine == null) return;
+        Object section = null;
+        long t0 = System.nanoTime();
+        try {
+            if (engineAcquireIfExists != null) {
+                section = engineAcquireIfExists.invoke(engine, key);
+            } else if (engineAcquire != null) {
+                section = engineAcquire.invoke(engine, key);
+            }
+        } catch (Throwable t) {
+            acquireFails.incrementAndGet();
+        } finally {
+            acquireNanos.addAndGet(System.nanoTime() - t0);
+        }
+        if (section == null) {
+            acquireNull.incrementAndGet();
+            return;
+        }
+        try {
+            long t1 = System.nanoTime();
+            long n = processed.incrementAndGet();
+            // Copy only a sample: the real map would decode here, but the probe only needs to
+            // measure acquire cost and confirm that the worker can fetch current data.
+            if ((n & ACQUIRE_SAMPLE_MASK) == 0L) {
+                try {
+                    long[] data = (long[]) sectionCopyData.invoke(section);
+                    if (data == null || data.length < 32768) {
+                        copyFails.incrementAndGet();
+                    } else {
+                        int nonZero = 0;
+                        long xor = 0;
+                        for (long v : data) {
+                            xor ^= v;
+                            if (v != 0) nonZero++;
+                        }
+                        lastSample = "key=" + key + " lvl=" + d.lvl
+                                + " flags=" + d.flags + " data=" + data.length
+                                + " nonZero=" + nonZero + " xor=" + xor;
+                        copySamples.incrementAndGet();
+                    }
+                } catch (Throwable t) {
+                    copyFails.incrementAndGet();
+                } finally {
+                    copyNanos.addAndGet(System.nanoTime() - t1);
+                }
+            } else {
+                copyNanos.addAndGet(System.nanoTime() - t1);
+            }
+        } finally {
+            try {
+                sectionRelease.invoke(section);
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
     private static void onEvent(Object section, int updateFlags, int neighborMask) throws Exception {
         if (section == null) return;
         long now = System.currentTimeMillis();
         lastEventMs = now;
         events.incrementAndGet();
-        threads.add(Thread.currentThread().getName());
-        int lvl = sectionLvl == null ? -1 : sectionLvl.getInt(section);
-        if (lvl >= 0 && lvl < levelCounts.length()) levelCounts.incrementAndGet(lvl);
-        long key = sectionKey == null ? 0 : sectionKey.getLong(section);
-        if (uniqueKeys.size() < 100_000) uniqueKeys.put(key, Boolean.TRUE);
-        if (uniqueEver.size() < 200_000) uniqueEver.add(key);
+        int lvl = -1;
+        long key = 0L;
+        try {
+            lvl = sectionLvlField.getInt(section);
+            key = sectionKeyField.getLong(section);
+        } catch (Throwable ignored) {
+        }
+        if (lvl >= 0 && lvl < levelEvents.length()) levelEvents.incrementAndGet(lvl);
+        if (uniqueWindow.size() < 100_000) uniqueWindow.put(key, Boolean.TRUE);
+        if (uniqueEver.size() < 200_000) uniqueEver.put(key, Boolean.TRUE);
         threadCounts.computeIfAbsent(Thread.currentThread(), t -> new AtomicLong()).incrementAndGet();
         flagCounts.computeIfAbsent(updateFlags, f -> new AtomicLong()).incrementAndGet();
-        long count = events.get();
-        if ((count & 511L) == 0L && sectionCopyData != null) {
-            samples.incrementAndGet();
-            try {
-                long[] data = (long[]) sectionCopyData.invoke(section);
-                if (data == null || data.length < 32768) {
-                    copyFails.incrementAndGet();
-                } else {
-                    int nonZero = 0;
-                    long xor = 0;
-                    for (long v : data) {
-                        xor ^= v;
-                        if (v != 0) nonZero++;
-                    }
-                    lastSample = "key=" + key + " lvl=" + lvl
-                            + " xyz=" + sectionX.getInt(section) + "," + sectionY.getInt(section) + "," + sectionZ.getInt(section)
-                            + " data=" + data.length + " nonZero=" + nonZero + " xor=" + xor;
-                }
-            } catch (Throwable t) {
-                copyFails.incrementAndGet();
-            }
+        if (dirty.size() >= DIRTY_CAP) {
+            dropped.incrementAndGet();
+            return;
         }
+        Dirty fresh = new Dirty(lvl, updateFlags);
+        Dirty old = dirty.putIfAbsent(key, fresh);
+        if (old == null) {
+            coalescedAdds.incrementAndGet();
+            dirtyQueue.add(key);
+        }
+        // no copyData here: the worker reads the current section later
     }
 
     private static void report() {
@@ -270,12 +388,28 @@ public final class VoxyLiveProbe {
         long now = System.currentTimeMillis();
         long elapsed = Math.max(1L, lastReportAtMs == 0 ? 10_000L : now - lastReportAtMs);
         long delta = Math.max(0L, count - lastReportEvents);
+        long proc = processed.get();
+        long acquires = proc + acquireNull.get() + acquireFails.get();
+        long avgAcquireUs = acquires == 0 ? 0 : acquireNanos.get() / acquires / 1000L;
+        long copies = copySamples.get() + copyFails.get();
+        long avgCopyUs = copies == 0 ? 0 : copyNanos.get() / copies / 1000L;
         StringBuilder levels = new StringBuilder();
-        for (int i = 0; i < levelCounts.length(); i++) {
-            int c = levelCounts.get(i);
+        for (int i = 0; i < levelEvents.length(); i++) {
+            int c = levelEvents.get(i);
             if (c > 0) {
                 if (levels.length() > 0) levels.append('/');
                 levels.append(i).append(':').append(c);
+            }
+        }
+        StringBuilder pendingLevels = new StringBuilder();
+        int[] pl = new int[levelEvents.length()];
+        for (Dirty d : dirty.values()) {
+            if (d.lvl >= 0 && d.lvl < pl.length) pl[d.lvl]++;
+        }
+        for (int i = 0; i < pl.length; i++) {
+            if (pl[i] > 0) {
+                if (pendingLevels.length() > 0) pendingLevels.append('/');
+                pendingLevels.append(i).append(':').append(pl[i]);
             }
         }
         StringBuilder threadList = new StringBuilder();
@@ -295,18 +429,20 @@ public final class VoxyLiveProbe {
                     flagList.append(e.getKey()).append(':').append(e.getValue().get());
                 });
         String text = "events=" + count + " (+" + (delta * 1000L / elapsed) + "/s)"
-                + " uniqueWindow=" + uniqueKeys.size() + " uniqueTotal=" + uniqueEver.size()
+                + " uniqueWindow=" + uniqueWindow.size() + " uniqueTotal=" + uniqueEver.size()
                 + " levels=" + (levels.length() == 0 ? "-" : levels)
-                + " threads=[" + threadList + "]"
-                + " flags=" + (flagList.length() == 0 ? "-" : flagList)
-                + " copySamples=" + samples.get() + " copyFails=" + copyFails.get()
+                + " pending=" + dirty.size() + (pendingLevels.length() == 0 ? "" : " pendingLevels=" + pendingLevels)
+                + " dropped=" + dropped.get()
+                + " processed=" + proc + " acquireNull=" + acquireNull.get() + " acquireFails=" + acquireFails.get()
+                + " avgAcquire=" + avgAcquireUs + "us avgCopy=" + avgCopyUs + "us"
+                + " copyFails=" + copyFails.get() + " copySamples=" + copySamples.get()
+                + " threads=[" + threadList + "] flags=" + (flagList.length() == 0 ? "-" : flagList)
                 + (lastSample.isEmpty() ? "" : " sample[" + lastSample + "]");
         System.out.println("[voxymap-live] " + text);
         if (RefreshDebug.enabled()) {
             RefreshDebug.chat("live: " + text, net.minecraft.ChatFormatting.DARK_GRAY);
         }
-        uniqueKeys.clear();
-        threads.clear();
+        uniqueWindow.clear();
         threadCounts.clear();
         flagCounts.clear();
         lastReportEvents = count;
@@ -317,15 +453,26 @@ public final class VoxyLiveProbe {
         if (!VoxyMapConfig.DEBUG_VOXY_EVENTS.get()) return "live: off";
         if (engine == null) return "live: not installed";
         long age = lastEventMs == 0 ? -1 : System.currentTimeMillis() - lastEventMs;
-        return "live: events=" + events.get() + " unique=" + uniqueKeys.size()
-                + " lastEvent=" + (age < 0 ? "never" : age + "ms")
-                + " copyFails=" + copyFails.get();
+        return "live: events=" + events.get() + " pending=" + dirty.size()
+                + " processed=" + processed.get()
+                + " acquireNull=" + acquireNull.get() + " acquireFails=" + acquireFails.get()
+                + " lastEvent=" + (age < 0 ? "never" : age + "ms");
     }
 
     private static void uninstall() {
-        if (engine == null) return;
+        if (engine == null && worker == null) return;
+        running = false;
+        Thread w = worker;
+        worker = null;
+        if (w != null) {
+            try {
+                w.interrupt();
+                w.join(200L);
+            } catch (Throwable ignored) {
+            }
+        }
         try {
-            if (engineDirtyCallback != null && engineSetDirtyCallback != null) {
+            if (engine != null && engineDirtyCallback != null && engineSetDirtyCallback != null) {
                 Object current = engineDirtyCallback.get(engine);
                 if (current == installedCallback) {
                     engineSetDirtyCallback.invoke(engine, previousCallback);
@@ -338,6 +485,8 @@ public final class VoxyLiveProbe {
         installedCallback = null;
         previousCallback = null;
         installedLevel = null;
+        dirty.clear();
+        dirtyQueue.clear();
     }
 
     private static Class<?> findClass(String name, ClassLoader preferred) {
