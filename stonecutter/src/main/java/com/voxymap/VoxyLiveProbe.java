@@ -33,6 +33,17 @@ public final class VoxyLiveProbe {
     private static final int DIRTY_CAP = 50_000;
     private static final long ACQUIRE_SAMPLE_MASK = 63L;
 
+    /** Receives live section data when the tile overlay is enabled. */
+    public interface SectionConsumer {
+        void accept(long key, long[] raw);
+    }
+
+    private static volatile SectionConsumer consumer;
+
+    public static void setSectionConsumer(SectionConsumer next) {
+        consumer = next;
+    }
+
     private static boolean disabled;
     private static boolean missingLogged;
     private static Level installedLevel;
@@ -92,7 +103,7 @@ public final class VoxyLiveProbe {
 
     /** Called every client tick. Cheap when the probe is disabled. */
     public static void tick(Minecraft mc) {
-        if (!VoxyMapConfig.DEBUG_VOXY_EVENTS.get()) {
+        if (!VoxyMapConfig.DEBUG_VOXY_EVENTS.get() && !VoxyMapConfig.LIVE_TILES.get()) {
             uninstall();
             return;
         }
@@ -110,7 +121,7 @@ public final class VoxyLiveProbe {
             }
         } else if (now - lastReportMs > 10_000L) {
             lastReportMs = now;
-            report();
+            if (VoxyMapConfig.DEBUG_VOXY_EVENTS.get() || RefreshDebug.enabled()) report();
         }
         if (engine != null && now - lastCallbackCheckMs > 100L) {
             lastCallbackCheckMs = now;
@@ -318,6 +329,25 @@ public final class VoxyLiveProbe {
         try {
             long t1 = System.nanoTime();
             long n = processed.incrementAndGet();
+            SectionConsumer sink = consumer;
+            if (sink != null) {
+                // The live tile overlay needs the current voxels, so the consumer path always
+                // copies; the geometric map work is coalesced by the dirty queue already.
+                try {
+                    long[] data = (long[]) sectionCopyData.invoke(section);
+                    if (data != null && data.length >= 32768) {
+                        sink.accept(key, data);
+                        copySamples.incrementAndGet();
+                    } else {
+                        copyFails.incrementAndGet();
+                    }
+                } catch (Throwable t) {
+                    copyFails.incrementAndGet();
+                } finally {
+                    copyNanos.addAndGet(System.nanoTime() - t1);
+                }
+                return;
+            }
             // Copy only a sample: the real map would decode here, but the probe only needs to
             // measure acquire cost and confirm that the worker can fetch current data.
             if ((n & ACQUIRE_SAMPLE_MASK) == 0L) {

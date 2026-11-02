@@ -28,6 +28,7 @@ public final class VoxyMapMod {
     }
 
     public static void registerTick() {
+        VoxyLiveProbe.setSectionConsumer((key, raw) -> MapData.INSTANCE.onLiveSection(key, raw));
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             MapData.INSTANCE.tick();
             VoxyLiveProbe.tick(client);

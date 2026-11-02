@@ -120,6 +120,10 @@ public final class MapData {
     private volatile Identifier textureIdSmall;
     /** Lazy 2D tile view of {@link #colorFrame}; null when no colour frame exists yet. */
     private volatile TileStore tileStore;
+    /** Event-driven overlay tiles for areas the global snapshot does not cover yet. */
+    private volatile LiveTileStore liveTiles;
+    /** water block ids from the last mapping scan, shared with the live section decoder */
+    private volatile Set<Long> waterIdsCache = Set.of();
     /** live textures, kept so incremental refreshes can patch only the changed rows */
     private volatile DynamicTexture bigTex;
     private volatile DynamicTexture smallTex;
@@ -907,6 +911,7 @@ public final class MapData {
         lastRenderedStyle = null;
         biomeLabelsFlat = new int[0];
         dropAnalysisCaches();
+        releaseLiveTiles();
         releaseAllTextures();
     }
 
@@ -1283,6 +1288,7 @@ public final class MapData {
             gentleStage = "decode";
             Map<Integer, String> biomeNames = new HashMap<>(prevSnap.biomeNames);
             Set<Long> waterIds = loadWaterIds(db, mappings, biomeNames);
+            waterIdsCache = waterIds;
             int changed = scan.changedKeys.length;
             int dx0 = Integer.MAX_VALUE, dz0 = Integer.MAX_VALUE;
             int dx1 = Integer.MIN_VALUE, dz1 = Integer.MIN_VALUE;
@@ -1591,6 +1597,7 @@ public final class MapData {
                     progress = 30;
                     Map<Integer, String> biomeNames = new HashMap<>(prevSnap.biomeNames);
                     Set<Long> waterIds = loadWaterIds(db, mappings, biomeNames);
+            waterIdsCache = waterIds;
                     int changed = scan.changedKeys.length;
                     // union of the changed sections' pixel footprints (used by the colour patch)
                     int dx0 = Integer.MAX_VALUE, dz0 = Integer.MAX_VALUE;
@@ -2471,6 +2478,7 @@ public final class MapData {
             Object mappings = handles.get(2);
             Map<Integer, String> biomeNames = new HashMap<>();
             Set<Long> waterIds = loadWaterIds(db, mappings, biomeNames);
+            waterIdsCache = waterIds;
 
             int totalSections = 0;
             int seen = 0;
@@ -2854,6 +2862,36 @@ public final class MapData {
     public TileStore getTileStore() {
         ensureTileStore();
         return tileStore;
+    }
+
+    /**
+     * Live overlay store. It shares the base snapshot's origin/pixel scale so tile indices line up;
+     * if the base geometry changes the overlay is discarded (the next base build covers the area).
+     */
+    public LiveTileStore getLiveTiles() {
+        Snapshot s = snap;
+        if (s == null) return null;
+        LiveTileStore current = liveTiles;
+        if (current != null && current.matches(s.minWX, s.minWZ, s.pixelBlocks)) return current;
+        if (current != null) current.dispose();
+        LiveTileStore next = new LiveTileStore(s.minWX, s.minWZ, s.pixelBlocks);
+        liveTiles = next;
+        return next;
+    }
+
+    /** Consumer for the Voxy live-section bridge (called on its worker thread). */
+    public void onLiveSection(long key, long[] raw) {
+        if (!VoxyMapConfig.LIVE_TILES.get() || !VoxyMapConfig.TILE_RENDER.get()) return;
+        Snapshot s = snap;
+        if (s == null) return;
+        LiveTileStore store = getLiveTiles();
+        if (store != null) store.applySection(key, raw, waterIdsCache);
+    }
+
+    private void releaseLiveTiles() {
+        LiveTileStore current = liveTiles;
+        liveTiles = null;
+        if (current != null) current.dispose();
     }
 
     /** Build the 1-bit biome boundary mask + labels on the loader thread (overlay only). */
