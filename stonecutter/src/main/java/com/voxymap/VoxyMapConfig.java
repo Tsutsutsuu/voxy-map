@@ -20,6 +20,8 @@ public final class VoxyMapConfig {
     private static final String FILE_NAME = "voxymap-client.json";
 
     public static final Value<Boolean> AUTO_REFRESH = new Value<>("autoRefresh", true);
+    /** Automatic refreshes only read/decode changed Voxy sections and patch the map. */
+    public static final Value<Boolean> INCREMENTAL_REFRESH = new Value<>("incrementalRefresh", true);
     public static final Value<Integer> REFRESH_DISTANCE_CHUNKS = new Value<>("refreshDistanceChunks", 128);
     public static final Value<Integer> INITIAL_REFRESH_DELAY_MINUTES = new Value<>("initialRefreshDelayMinutes", 3);
     public static final Value<String> DEFAULT_STYLE = new Value<>("defaultStyle", "current");

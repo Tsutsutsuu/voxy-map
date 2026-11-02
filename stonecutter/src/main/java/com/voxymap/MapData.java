@@ -112,6 +112,9 @@ public final class MapData {
     private volatile double zoom = 0.5;
     private volatile Identifier textureId;
     private volatile Identifier textureIdSmall;
+    /** live textures, kept so incremental refreshes can patch only the changed rows */
+    private volatile DynamicTexture bigTex;
+    private volatile DynamicTexture smallTex;
     /**
      * Immutable rendered colour buffer. The pixels, their dimensions and the epoch are published as
      * one volatile reference: readers (LOD build, 3D rasteriser) never see a new array with stale
@@ -165,6 +168,11 @@ public final class MapData {
 
     /** set when the last map build/render ran out of heap (shown as a hint instead of a raw error) */
     public volatile boolean outOfMemory;
+
+    /** diagnostics for the debug overlay: duration/mode of the last refresh */
+    public volatile long lastRefreshMs;
+    public volatile int lastChangedSections;
+    public volatile boolean lastRefreshIncremental;
 
     private long sessionStartMs;
     /** debounces automatic refreshes so a failing rebuild cannot restart every tick */
@@ -592,6 +600,10 @@ public final class MapData {
         out.add("session: " + secs + "s  delay=" + VoxyMapConfig.INITIAL_REFRESH_DELAY_MINUTES.get() + "min");
         out.add("tex: map=" + (textureId != null) + " small=" + (textureIdSmall != null) + " biome=" + (biomeTextureId != null));
         out.add("labels: " + (biomeLabelsFlat.length / 3) + "  biomes: " + (s == null ? 0 : s.biomeNames.size()));
+        VoxyIndex idx = sectionIndex;
+        out.add("refresh: " + (lastRefreshIncremental ? "incremental" : "full")
+                + "  changed=" + lastChangedSections + "  took=" + lastRefreshMs + "ms"
+                + "  index=" + (idx == null ? "none" : idx.count() + "@seq" + idx.dbSequence));
         Runtime rt = Runtime.getRuntime();
         out.add("mem: " + (rt.totalMemory() - rt.freeMemory()) / 1048576L + " / " + rt.maxMemory() / 1048576L + " MB");
         return out;
@@ -943,6 +955,348 @@ public final class MapData {
         terrainCache = null;
     }
 
+    // ------------------------------------------------------ incremental refresh (M2)
+
+    /** True when an automatic refresh may use the section index instead of a full rebuild. */
+    public boolean canIncrementalRefresh() {
+        if (!VoxyMapConfig.INCREMENTAL_REFRESH.get()) return false;
+        Snapshot s = snap;
+        VoxyIndex idx = sectionIndex;
+        if (s == null || idx == null || idx.stamp != s.stamp) return false;
+        if (idx.pixelBlocks != effectivePixelBlocks() || idx.maxLodLevel != lodCap()) return false;
+        Path storage = findStorage();
+        return storage != null && storage.equals(snapStorage);
+    }
+
+    /** Result of comparing the current DB sections against the previous index. */
+    private static final class IncrementalScan {
+        final long[] keys;
+        final long[] hashes;
+        final long[] changedKeys;
+        final byte[][] changedVals;
+        final int removed;
+        final boolean tooMany;
+        final boolean boundsChanged;
+
+        IncrementalScan(long[] keys, long[] hashes, long[] changedKeys, byte[][] changedVals,
+                        int removed, boolean tooMany, boolean boundsChanged) {
+            this.keys = keys;
+            this.hashes = hashes;
+            this.changedKeys = changedKeys;
+            this.changedVals = changedVals;
+            this.removed = removed;
+            this.tooMany = tooMany;
+            this.boundsChanged = boundsChanged;
+        }
+    }
+
+    /**
+     * Reads keys+values once (roughly 0.4 s for this save's 293 MB of values) and returns the
+     * changed sections plus the new full key/hash arrays. Aborts early (tooMany) when more than 20%
+     * of the sections changed; at that point a full rebuild is cheaper than retaining values.
+     */
+    private IncrementalScan scanIncremental(Object db, Object sections, VoxyIndex prev) throws Exception {
+        int maxChanged = Math.max(4096, prev.count() / 5);
+        int capacity = Math.max(4096, prev.count() + 4096);
+        long[] keys = new long[capacity];
+        long[] hashes = new long[capacity];
+        long[] chKeys = new long[Math.min(maxChanged, 4096)];
+        byte[][] chVals = new byte[chKeys.length][];
+        int n = 0, c = 0, matched = 0;
+        long minWX = Long.MAX_VALUE, maxWX = Long.MIN_VALUE;
+        long minWZ = Long.MAX_VALUE, maxWZ = Long.MIN_VALUE;
+        boolean tooMany = false;
+        Object it = RocksBridge.newIterator(db, sections);
+        try {
+            for (RocksBridge.seekToFirst(it); RocksBridge.isValid(it); RocksBridge.next(it)) {
+                byte[] kb = RocksBridge.key(it);
+                if (kb == null || kb.length != 8) continue;
+                long key = ByteBuffer.wrap(kb).order(ByteOrder.BIG_ENDIAN).getLong();
+                int lvl = (int) ((key >>> 60) & 0xF);
+                if (lvl > prev.maxLodLevel) continue;
+                byte[] val = RocksBridge.value(it);
+                if (val == null || val.length <= 16) continue;
+                long h = VoxyIndex.hashValue(val);
+                int pos = prev.indexOf(key);
+                if (pos >= 0) matched++;
+                if (pos < 0 || prev.hashes[pos] != h) {
+                    if (c >= maxChanged) {
+                        tooMany = true;
+                        break;
+                    }
+                    if (c == chKeys.length) {
+                        chKeys = Arrays.copyOf(chKeys, Math.min(maxChanged, chKeys.length * 2));
+                        chVals = Arrays.copyOf(chVals, chKeys.length);
+                    }
+                    chKeys[c] = key;
+                    chVals[c] = val;
+                    c++;
+                }
+                if (n == keys.length) {
+                    keys = Arrays.copyOf(keys, keys.length + keys.length / 2 + 1024);
+                    hashes = Arrays.copyOf(hashes, keys.length);
+                }
+                keys[n] = key;
+                hashes[n] = h;
+                n++;
+                int scale = 1 << lvl;
+                int sx = (int) ((key << 36) >> 40), sz = (int) ((key << 12) >> 40);
+                long x0 = (long) sx * 32 * scale, z0 = (long) sz * 32 * scale;
+                if (x0 < minWX) minWX = x0;
+                if (x0 + 32L * scale > maxWX) maxWX = x0 + 32L * scale;
+                if (z0 < minWZ) minWZ = z0;
+                if (z0 + 32L * scale > maxWZ) maxWZ = z0 + 32L * scale;
+            }
+        } finally {
+            RocksBridge.close(it);
+        }
+        boolean boundsChanged = !tooMany && (minWX < prev.minWX || minWZ < prev.minWZ
+                || maxWX > prev.minWX + (long) prev.width * prev.pixelBlocks
+                || maxWZ > prev.minWZ + (long) prev.height * prev.pixelBlocks);
+        int removed = prev.count() - matched;
+        return new IncrementalScan(Arrays.copyOf(keys, n), Arrays.copyOf(hashes, n),
+                Arrays.copyOf(chKeys, c), Arrays.copyOf(chVals, c), removed, tooMany, boundsChanged);
+    }
+
+    private void finishIncrementalNoChange(Snapshot s) {
+        Minecraft mc = Minecraft.getInstance();
+        mc.execute(() -> {
+            try {
+                if (textureId == null) {
+                    ColorFrame f = colorFrame;
+                    if (f != null && f.width == s.width && f.height == s.height) {
+                        uploadTexture(s, f.rgb);
+                    }
+                }
+                progress = 100;
+            } finally {
+                loading = false;
+                requested.set(false);
+            }
+        });
+    }
+
+    /**
+     * Incremental refresh: skip when the DB sequence did not change, otherwise hash the section
+     * values, decode only changed sections, merge them into a copy of the snapshot and re-render.
+     * Falls back to the normal full rebuild whenever a correct fast path cannot be guaranteed.
+     */
+    public void refreshIncrementalAsync() {
+        if (!isOverworld()) {
+            updateAsync(true);
+            return;
+        }
+        if (!canIncrementalRefresh()) {
+            updateAsync(true);
+            return;
+        }
+        if (requested.getAndSet(true)) return;
+        loading = true;
+        progress = 0;
+        error = "";
+        outOfMemory = false;
+        oversizePixels = 0;
+        oversizeLimit = 0;
+        oversizeSafePixelBlocks = 0;
+        final int epoch = worldEpoch;
+        final int sea = seaLevel();
+        final long startedNs = System.nanoTime();
+        loader.submit(() -> {
+            boolean handed = false;
+            boolean fallback = false;
+            Snapshot prevSnap = snap;
+            Path prevStorage = snapStorage;
+            VoxyIndex prevIndex = sectionIndex;
+            try {
+                if (epoch != worldEpoch) return;
+                Path storage = findStorage();
+                if (storage == null) {
+                    error = "no Voxy storage found for this world";
+                    return;
+                }
+                lastStorage = storage;
+                loadUiState();
+                // the per-world UI state may have changed the map scale; capture the style after it
+                final String renderStyle = style;
+                if (prevSnap == null || prevIndex == null || !storage.equals(prevStorage)
+                        || prevIndex.stamp != prevSnap.stamp
+                        || prevIndex.pixelBlocks != prevSnap.pixelBlocks
+                        || prevSnap.pixelBlocks != effectivePixelBlocks()
+                        || prevIndex.maxLodLevel != lodCap()) {
+                    fallback = true;
+                    return;
+                }
+                List<Object> handles = new ArrayList<>();
+                Object db = null;
+                try {
+                    db = RocksBridge.openReadOnly(storage.toString(), handles);
+                    Object sections = handles.get(1);
+                    Object mappings = handles.get(2);
+                    long seq = RocksBridge.latestSequence(db);
+                    progress = 3;
+                    if (seq >= 0 && seq == prevIndex.dbSequence) {
+                        // no write at all since the snapshot: nothing to scan or render
+                        lastRefreshIncremental = true;
+                        lastChangedSections = 0;
+                        lastRefreshMs = 0;
+                        handed = true;
+                        finishIncrementalNoChange(prevSnap);
+                        return;
+                    }
+                    progress = 5;
+                    IncrementalScan scan = scanIncremental(db, sections, prevIndex);
+                    if (scan.tooMany || scan.removed > 0 || scan.boundsChanged) {
+                        fallback = true;
+                        return;
+                    }
+                    if (scan.changedKeys.length == 0) {
+                        // unrelated column-family writes advanced the sequence but no section changed
+                        VoxyIndex refreshed = new VoxyIndex(prevSnap.stamp, seq, prevSnap.minWX, prevSnap.minWZ,
+                                prevSnap.width, prevSnap.height, prevSnap.pixelBlocks,
+                                prevIndex.maxLodLevel, scan.keys, scan.hashes);
+                        sectionIndex = refreshed;
+                        saveSectionIndex(storage, prevSnap, refreshed);
+                        lastRefreshIncremental = true;
+                        lastChangedSections = 0;
+                        lastRefreshMs = 0;
+                        handed = true;
+                        finishIncrementalNoChange(prevSnap);
+                        return;
+                    }
+                    progress = 30;
+                    Map<Integer, String> biomeNames = new HashMap<>(prevSnap.biomeNames);
+                    Set<Long> waterIds = loadWaterIds(db, mappings, biomeNames);
+                    int changed = scan.changedKeys.length;
+                    // union of the changed sections' pixel footprints (used by the colour patch)
+                    int dx0 = Integer.MAX_VALUE, dz0 = Integer.MAX_VALUE;
+                    int dx1 = Integer.MIN_VALUE, dz1 = Integer.MIN_VALUE;
+                    for (long key : scan.changedKeys) {
+                        int lvl = (int) ((key >>> 60) & 0xF);
+                        int scale = 1 << lvl;
+                        int sx = (int) ((key << 36) >> 40), sz = (int) ((key << 12) >> 40);
+                        long wx0 = (long) sx * 32 * scale, wz0 = (long) sz * 32 * scale;
+                        int px0 = (int) ((wx0 - prevSnap.minWX) / prevSnap.pixelBlocks);
+                        int px1 = (int) ((wx0 + scale - 1 - prevSnap.minWX) / prevSnap.pixelBlocks);
+                        int pz0 = (int) ((wz0 - prevSnap.minWZ) / prevSnap.pixelBlocks);
+                        int pz1 = (int) ((wz0 + scale - 1 - prevSnap.minWZ) / prevSnap.pixelBlocks);
+                        if (px0 < dx0) dx0 = px0;
+                        if (px1 > dx1) dx1 = px1;
+                        if (pz0 < dz0) dz0 = pz0;
+                        if (pz1 > dz1) dz1 = pz1;
+                    }
+                    dx0 = Math.max(0, dx0);
+                    dz0 = Math.max(0, dz0);
+                    dx1 = Math.min(prevSnap.width - 1, dx1);
+                    dz1 = Math.min(prevSnap.height - 1, dz1);
+                    long[] pixels = prevSnap.pixels.clone();
+                    List<Future<Decoded>> futures = new ArrayList<>(BATCH);
+                    for (int i = 0; i < changed; i++) {
+                        final long key = scan.changedKeys[i];
+                        final byte[] val = scan.changedVals[i];
+                        futures.add(pool.submit(() -> decodeSection(key, val, waterIds)));
+                        if (futures.size() >= BATCH) {
+                            flush(futures, pixels, prevSnap.width, prevSnap.height,
+                                    prevSnap.minWX, prevSnap.minWZ, prevSnap.pixelBlocks);
+                            futures.clear();
+                            progress = 30 + (int) ((long) i * 35 / Math.max(1, changed));
+                        }
+                    }
+                    flush(futures, pixels, prevSnap.width, prevSnap.height,
+                            prevSnap.minWX, prevSnap.minWZ, prevSnap.pixelBlocks);
+                    if (epoch != worldEpoch) return;
+                    Snapshot built = new Snapshot(pixels, prevSnap.width, prevSnap.height,
+                            prevSnap.minWX, prevSnap.minWZ, prevSnap.pixelBlocks, biomeNames,
+                            System.nanoTime());
+                    VoxyIndex newIndex = new VoxyIndex(built.stamp, seq, built.minWX, built.minWZ,
+                            built.width, built.height, built.pixelBlocks, prevIndex.maxLodLevel,
+                            scan.keys, scan.hashes);
+                    snap = built;
+                    snapStorage = storage;
+                    sectionIndex = newIndex;
+                    progress = 70;
+                    // fast path: only the changed part of the analysis/colours
+                    ColorPatch patch = incrementalColorPatch(built, prevSnap, terrainCache, renderStyle, sea,
+                            dx0, dz0, dx1, dz1);
+                    int[] rgb;
+                    if (patch != null) {
+                        ColorFrame prevFrame = colorFrame;
+                        colorFrame = new ColorFrame(patch.rgb, built.width, built.height,
+                                prevFrame == null ? 1 : prevFrame.epoch + 1);
+                        texEpoch++;
+                        lastRenderedStyle = renderStyle;
+                        rgb = patch.rgb;
+                        progress = 95;
+                        saveCache(storage, built);
+                        saveColorCache(storage, built, renderStyle, sea, rgb);
+                        saveSectionIndex(storage, built, newIndex);
+                        patchTexturesAsync(patch.x0, patch.z0, patch.x1, patch.z1, rgb, built.width, built.height);
+                        handed = true;
+                        Minecraft.getInstance().execute(() -> {
+                            try {
+                                outOfMemory = false;
+                                progress = 100;
+                            } finally {
+                                loading = false;
+                                requested.set(false);
+                            }
+                        });
+                    } else {
+                        rgb = renderColor(built, renderStyle, sea);
+                        progress = 95;
+                        saveCache(storage, built);
+                        saveColorCache(storage, built, renderStyle, sea, rgb);
+                        saveSectionIndex(storage, built, newIndex);
+                        handed = true;
+                        Minecraft.getInstance().execute(() -> {
+                            try {
+                                uploadTexture(built, rgb);
+                                lastRenderedStyle = renderStyle;
+                                outOfMemory = false;
+                                progress = 100;
+                            } finally {
+                                loading = false;
+                                requested.set(false);
+                            }
+                        });
+                    }
+                    Minecraft mc = Minecraft.getInstance();
+                    if (mc.player != null) {
+                        lastUpdateX = mc.player.getX();
+                        lastUpdateZ = mc.player.getZ();
+                    }
+                    lastRefreshIncremental = true;
+                    lastChangedSections = changed;
+                    lastRefreshMs = (System.nanoTime() - startedNs) / 1_000_000L;
+                } finally {
+                    for (Object h : handles) RocksBridge.close(h);
+                    RocksBridge.close(db);
+                }
+            } catch (OutOfMemoryError oom) {
+                oom.printStackTrace();
+                restorePreviousSnapshot(prevSnap, prevStorage);
+                sectionIndex = prevIndex;
+                outOfMemory = true;
+                error = "OutOfMemoryError";
+            } catch (Throwable t) {
+                t.printStackTrace();
+                restorePreviousSnapshot(prevSnap, prevStorage);
+                sectionIndex = prevIndex;
+                error = t.getClass().getSimpleName() + ": " + t.getMessage();
+            } finally {
+                if (!handed) {
+                    loading = false;
+                    requested.set(false);
+                    progress = -1;
+                    lastRefreshIncremental = false;
+                    if (fallback && epoch == worldEpoch) {
+                        // full rebuild path: it re-acquires the flags and resets them when done
+                        updateAsync(true);
+                    }
+                }
+            }
+        });
+    }
+
     /**
      * Pixel budget for the terrain analysis. The arrays peak at roughly 60 bytes per pixel on top of
      * the snapshot and the colour buffer, so even a large heap can only take a fraction of the
@@ -952,6 +1306,11 @@ public final class MapData {
         long configured = Math.max(10_000_000L, VoxyMapConfig.MAX_MAP_PIXELS.get());
         long heapCap = Math.max(10_000_000L, (long) (Runtime.getRuntime().maxMemory() * 0.6) / 64L);
         return Math.min(configured, heapCap);
+    }
+
+    /** Clamped LOD cap used by both the full build and the section index. */
+    private static int lodCap() {
+        return Math.max(0, Math.min(4, VoxyMapConfig.MAX_LOD_LEVEL.get()));
     }
 
     /** Reload with the suggested safe grid (coarser blocks per pixel). */
@@ -1085,9 +1444,15 @@ public final class MapData {
                 lastUpdateX = mc.player.getX();
                 lastUpdateZ = mc.player.getZ();
             }
-            // movement means new Voxy data exists, so the snapshot must be rebuilt; the initial
-            // refresh only reuses the disk cache so joining a world does not re-read everything
-            updateAsync(!movementRefresh);
+            // movement means new Voxy data exists, so the snapshot must be updated; the initial
+            // refresh only reuses the disk cache so joining a world does not re-read everything.
+            // An automatic movement refresh prefers the incremental path when its index is valid.
+            if (movementRefresh) {
+                if (canIncrementalRefresh()) refreshIncrementalAsync();
+                else updateAsync(true);
+            } else {
+                updateAsync(false);
+            }
         }
     }
 
@@ -1106,7 +1471,8 @@ public final class MapData {
         if (isInitialRefreshPending()) return;
         lastUpdateX = mc.player.getX();
         lastUpdateZ = mc.player.getZ();
-        updateAsync(true);
+        if (canIncrementalRefresh()) refreshIncrementalAsync();
+        else updateAsync(true);
     }
 
     // ------------------------------------------------------------ disk cache
@@ -1142,7 +1508,8 @@ public final class MapData {
         VoxyIndex idx = VoxyIndex.load(indexFile(storage));
         if (idx == null) return null;
         if (idx.stamp != s.stamp || idx.width != s.width || idx.height != s.height
-                || idx.pixelBlocks != s.pixelBlocks || idx.minWX != s.minWX || idx.minWZ != s.minWZ) {
+                || idx.pixelBlocks != s.pixelBlocks || idx.minWX != s.minWX || idx.minWZ != s.minWZ
+                || idx.maxLodLevel != lodCap()) {
             return null;
         }
         return idx;
@@ -1387,7 +1754,7 @@ public final class MapData {
     private Snapshot buildPixels(Path storage) throws Exception {
         pendingBuiltIndex = null;
         int pixelBlocks = effectivePixelBlocks();
-        int maxLodLevel = Math.max(0, Math.min(4, VoxyMapConfig.MAX_LOD_LEVEL.get()));
+        int maxLodLevel = lodCap();
         if (!RocksBridge.available()) {
             throw new IllegalStateException("rocksdb unavailable: " + RocksBridge.error());
         }
@@ -1502,7 +1869,7 @@ public final class MapData {
             // publish the index that belongs to this exact snapshot (see updateAsync)
             pendingBuiltIndex = idxN > 0
                     ? new VoxyIndex(result.stamp, dbSequence, result.minWX, result.minWZ,
-                            result.width, result.height, result.pixelBlocks,
+                            result.width, result.height, result.pixelBlocks, maxLodLevel,
                             Arrays.copyOf(idxKeys, idxN), Arrays.copyOf(idxHashes, idxN))
                     : null;
             return result;
@@ -1710,6 +2077,7 @@ public final class MapData {
         // the 1/4 texture is kept on purpose: ~5 MB of VRAM, and reopening shows it instantly
         releaseOne(mc, textureId);
         textureId = null;
+        bigTex = null;
         texW = 0;
         texH = 0;
         releaseOne(mc, biomeTextureId);
@@ -1722,6 +2090,7 @@ public final class MapData {
         releaseTextures();
         releaseOne(Minecraft.getInstance(), textureIdSmall);
         textureIdSmall = null;
+        smallTex = null;
     }
 
     private static void releaseOne(Minecraft mc, Identifier id) {
@@ -1881,13 +2250,16 @@ public final class MapData {
         // replace cleanly: drop the previous texture objects before registering the new ones
         releaseOne(mc, textureId);
         textureId = null;
+        bigTex = null;
         releaseOne(mc, textureIdSmall);
         textureIdSmall = null;
+        smallTex = null;
         if (big != null) {
             DynamicTexture tex = new DynamicTexture(() -> "voxymap_img", big);
             Identifier id = Identifier.fromNamespaceAndPath("voxymap", "map");
             Minecraft.getInstance().getTextureManager().register(id, tex);
             textureId = id;
+            bigTex = tex;
             texW = big.getWidth();
             texH = big.getHeight();
         }
@@ -1896,6 +2268,92 @@ public final class MapData {
             Identifier sid = Identifier.fromNamespaceAndPath("voxymap", "map_small");
             Minecraft.getInstance().getTextureManager().register(sid, stex);
             textureIdSmall = sid;
+            smallTex = stex;
+        }
+    }
+
+    /**
+     * Incremental colour update: patches only the given pixel rectangle into the live NativeImages
+     * and uploads them on the main thread. The 1/4 texture is small enough to refresh fully.
+     */
+    private void patchTexturesAsync(int x0, int z0, int x1, int z1, int[] rgb, int w, int h) {
+        if (!buildingTextures.compareAndSet(false, true)) {
+            textureBuildPending = true;
+            return;
+        }
+        final int epoch = texEpoch;
+        final int worldEpochAtStart = worldEpoch;
+        loader.submit(() -> {
+            DynamicTexture bt = bigTex;
+            DynamicTexture st = smallTex;
+            NativeImage big = bt == null ? null : bt.getPixels();
+            if (big == null || big.getWidth() != w || big.getHeight() != h) {
+                // no live texture (map closed / released): rebuild it from the published colour frame
+                buildingTextures.set(false);
+                Minecraft.getInstance().execute(() -> {
+                    if (epoch == texEpoch && worldEpochAtStart == worldEpoch) {
+                        ColorFrame f = colorFrame;
+                        if (f != null) buildTexturesAsync(f.width, f.height, f.rgb);
+                    }
+                });
+                return;
+            }
+            try {
+                for (int z = z0; z <= z1; z++) {
+                    int row = z * w;
+                    for (int x = x0; x <= x1; x++) {
+                        int c = rgb[row + x];
+                        big.setPixelABGR(x, z, 0xFF000000 | ((c & 0xFF) << 16) | (((c >> 8) & 0xFF) << 8)
+                                | ((c >> 16) & 0xFF));
+                    }
+                }
+                NativeImage small = st == null ? null : st.getPixels();
+                if (small != null) writeSmall(small, rgb, w, h);
+                Minecraft.getInstance().execute(() -> {
+                    try {
+                        if (epoch == texEpoch && worldEpochAtStart == worldEpoch) {
+                            if (bt != null) bt.upload();
+                            if (st != null) st.upload();
+                        }
+                    } finally {
+                        buildingTextures.set(false);
+                    }
+                    if (textureBuildPending) {
+                        textureBuildPending = false;
+                        ColorFrame f = colorFrame;
+                        if (f != null) buildTexturesAsync(f.width, f.height, f.rgb);
+                    }
+                });
+            } catch (Throwable t) {
+                buildingTextures.set(false);
+                t.printStackTrace();
+            }
+        });
+    }
+
+    /** Writes the 1/4 box-filtered version into an existing small image. */
+    private static void writeSmall(NativeImage small, int[] rgb, int w, int h) {
+        int sw = small.getWidth();
+        int sh = small.getHeight();
+        for (int z = 0; z < sh; z++) {
+            for (int x = 0; x < sw; x++) {
+                int r = 0, g = 0, b = 0, n = 0;
+                for (int dz = 0; dz < 4; dz++) {
+                    int zz = z * 4 + dz;
+                    if (zz >= h) break;
+                    for (int dx = 0; dx < 4; dx++) {
+                        int xx = x * 4 + dx;
+                        if (xx >= w) break;
+                        int c = rgb[zz * w + xx];
+                        r += (c >> 16) & 0xFF;
+                        g += (c >> 8) & 0xFF;
+                        b += c & 0xFF;
+                        n++;
+                    }
+                }
+                if (n == 0) n = 1;
+                small.setPixelABGR(x, z, 0xFF000000 | ((b / n) << 16) | ((g / n) << 8) | (r / n));
+            }
         }
     }
 
@@ -2097,13 +2555,21 @@ public final class MapData {
      * Contour mask from the smoothed land height, dropping small fragments by connected-area size.
      * Depends only on the terrain + contour settings, never on the colour theme.
      */
+    /** reusable buffers for computeContour (full and incremental analysis both run on the loader) */
+    private boolean[] contourRawBuf;
+    private boolean[] contourSeenBuf;
+    private int[] contourStackBuf;
+
     private boolean[] computeContour(int[] topArr, boolean[] isWaterPix, int[] smoothTop,
                                      int lo, int hi, int w, int h, boolean enabled, int[] stackBuf) {
         boolean[] contour = new boolean[w * h];
         if (!enabled) return contour;
         int contourInterval = Math.max(10, (hi - lo) / Math.max(1, VoxyMapConfig.CONTOUR_DENSITY.get()));
         int minContourArea = VoxyMapConfig.MIN_CONTOUR_AREA.get();
-        boolean[] contourRaw = new boolean[w * h];
+        int cells = w * h;
+        boolean[] contourRaw = contourRawBuf;
+        if (contourRaw == null || contourRaw.length != cells) contourRaw = contourRawBuf = new boolean[cells];
+        else Arrays.fill(contourRaw, false);
         final int[] fTopA = topArr;
         final int[] fSmoothT = smoothTop;
         final boolean[] fWaterC = isWaterPix;
@@ -2129,8 +2595,11 @@ public final class MapData {
                 }
             }
         });
-        boolean[] seen = new boolean[w * h];
-        int[] stack = (stackBuf != null && stackBuf.length >= w * h) ? stackBuf : new int[w * h];
+        boolean[] seen = contourSeenBuf;
+        if (seen == null || seen.length != cells) seen = contourSeenBuf = new boolean[cells];
+        else Arrays.fill(seen, false);
+        int[] stack = (stackBuf != null && stackBuf.length >= cells) ? stackBuf
+                : (contourStackBuf != null && contourStackBuf.length >= cells ? contourStackBuf : new int[cells]);
         for (int start = 0; start < w * h; start++) {
             if (!contourRaw[start] || seen[start]) continue;
             int qh = 0, qt = 0;
@@ -2192,8 +2661,8 @@ public final class MapData {
         final float[] depthMap;
         final int lo;
         final int hi;
-        final int rampLo;
-        final int rampHi;
+        int rampLo;
+        int rampHi;
         final boolean adaptive;
         final int width;
         final int height;
@@ -2660,86 +3129,301 @@ public final class MapData {
         return built;
     }
 
-    private int[] colorize(TerrainCache tc, String style) {
-        progress = 93;
+    // ------------------------------------------------- incremental colour patch (M3)
 
-        int[] out = new int[tc.width * tc.height];
-        final float lx = -0.55f, ly = 0.70f, lz = -0.55f;
-        final float ll = (float) Math.sqrt(lx * lx + ly * ly + lz * lz);
-        final boolean nautical = "nautical".equals(style);
-        final float landStrength = nautical ? 0.06f : 0.18f;
-        final boolean drawShade = VoxyMapConfig.DRAW_HILLSHADE.get();
-        final boolean drawDepth = VoxyMapConfig.DRAW_WATER_DEPTH.get();
-        final float step = 2f * tc.pixelBlocks;
-        final int[] fOut = out;
-        final String fStyle = style;
-        final int fw = tc.width;
-        final int fh = tc.height;
-        final int[] fTopArr = tc.topArr;
-        final int[] fSmoothTop = tc.smoothTop;
-        final int[] fSmoothFloor = tc.smoothFloor;
-        final boolean[] fWater = tc.isWaterPix;
-        final boolean[] fContour = tc.contour;
-        final float[] fDepth = tc.depthMap;
-        parallelRows(fh, (z0, z1) -> {
-        for (int z = z0; z < z1; z++) {
-            for (int x = 0; x < fw; x++) {
-                int idx = z * fw + x;
-                int top = fTopArr[idx];
-                if (top == Integer.MIN_VALUE) {
-                    fOut[idx] = 0;
-                    continue;
+    /** Raw surface height of a packed column, matching the analysis initialization in terrainFor. */
+    private static int rawTop(long packed) {
+        if (packed == LONG_EMPTY) return Integer.MIN_VALUE;
+        int tv = (int) ((packed >>> 24) & 0xFFFF) - 32768;
+        if (tv == NO_TOP) {
+            int fl = (int) (packed & 0xFFFF) - 32768;
+            return fl != NO_SOLID ? fl : Integer.MIN_VALUE;
+        }
+        return tv;
+    }
+
+    private static boolean rawWater(long packed) {
+        if (packed == LONG_EMPTY) return false;
+        if ((int) ((packed >>> 24) & 0xFFFF) - 32768 == NO_TOP) return false;
+        return (packed & (1L << 52)) != 0;
+    }
+
+    /** Raw floor height used by the smoothing pass (land = top, water = sea floor). */
+    private static int rawFloor(long packed) {
+        if (packed == LONG_EMPTY) return Integer.MIN_VALUE;
+        int tv = (int) ((packed >>> 24) & 0xFFFF) - 32768;
+        int fl = (int) (packed & 0xFFFF) - 32768;
+        boolean tw = (packed & (1L << 52)) != 0;
+        if (tv == NO_TOP) tv = fl != NO_SOLID ? fl : Integer.MIN_VALUE;
+        if (tv == Integer.MIN_VALUE) return Integer.MIN_VALUE;
+        return (tw && fl != NO_SOLID && fl < tv) ? fl : tv;
+    }
+
+    /** 3x3 average of the raw top/floor values around (x,z), matching {@link #smooth}. */
+    private static int smoothSample(long[] pixels, int x, int z, int w, int h, boolean top) {
+        int sum = 0, cnt = 0;
+        for (int dz = -1; dz <= 1; dz++) {
+            int zz = z + dz;
+            if (zz < 0 || zz >= h) continue;
+            for (int dx = -1; dx <= 1; dx++) {
+                int xx = x + dx;
+                if (xx < 0 || xx >= w) continue;
+                int v = top ? rawTop(pixels[zz * w + xx]) : rawFloor(pixels[zz * w + xx]);
+                if (v != Integer.MIN_VALUE) {
+                    sum += v;
+                    cnt++;
                 }
-                boolean water = fWater[idx];
-                int rgb;
-                if (water) {
-                    float dep = drawDepth ? fDepth[idx] : 1f;
-                    rgb = MapStyles.waterColor(fStyle, Math.round(dep));
-                } else {
-                    rgb = MapStyles.landColor(fStyle, top, tc.sea, tc.rampLo, tc.rampHi, tc.adaptive);
-                }
-                float shade = 1f;
-                if (drawShade && x > 0 && z > 0 && x < fw - 1 && z < fh - 1) {
-                    int nb0, nb1, nb2, nb3;
-                    if (water) {
-                        nb0 = fSmoothFloor[idx - 1];
-                        nb1 = fSmoothFloor[idx + 1];
-                        nb2 = fSmoothFloor[idx - fw];
-                        nb3 = fSmoothFloor[idx + fw];
-                    } else {
-                        nb0 = fSmoothTop[idx - 1];
-                        nb1 = fSmoothTop[idx + 1];
-                        nb2 = fSmoothTop[idx - fw];
-                        nb3 = fSmoothTop[idx + fw];
-                    }
-                    if (nb0 != Integer.MIN_VALUE && nb1 != Integer.MIN_VALUE && nb2 != Integer.MIN_VALUE && nb3 != Integer.MIN_VALUE) {
-                        float dzdx = (nb1 - nb0) / step;
-                        float dzdy = (nb3 - nb2) / step;
-                        float slope = (float) Math.sqrt(dzdx * dzdx + dzdy * dzdy);
-                        if (slope > 0.08f) {
-                            float nx = -dzdx, ny = 1f, nz = -dzdy;
-                            float nl = (float) Math.sqrt(nx * nx + ny * ny + nz * nz);
-                            float d = (nx * lx + ny * ly + nz * lz) / (nl * ll);
-                            float strength = Math.min(1f, (slope - 0.08f) / 0.6f);
-                            shade = 1f + (water ? 0.10f : landStrength) * d * strength;
-                        }
-                    }
-                }
-                shade = Math.max(0.78f, Math.min(1.08f, shade));
-                if (!water) {
-                    if (fContour[idx]) shade *= nautical ? 0.62f : 0.70f;
-                    boolean coast = (x < fw - 1 && fWater[idx + 1]) || (z < fh - 1 && fWater[idx + fw])
-                            || (x > 0 && fWater[idx - 1]) || (z > 0 && fWater[idx - fw]);
-                    if (coast) shade *= 0.70f;
-                }
-                int r = Math.max(0, Math.min(255, (int) (((rgb >> 16) & 0xFF) * shade)));
-                int g = Math.max(0, Math.min(255, (int) (((rgb >> 8) & 0xFF) * shade)));
-                int b = Math.max(0, Math.min(255, (int) ((rgb & 0xFF) * shade)));
-                fOut[idx] = 0xFF000000 | (r << 16) | (g << 8) | b;
             }
         }
+        return cnt == 0 ? Integer.MIN_VALUE : sum / cnt;
+    }
+
+    /** Adaptive colour-ramp limits; mirrors the block in terrainFor. */
+    private static int[] rampParams(int[] topArr, boolean[] isWaterPix, int sea, int w, int h) {
+        int lo = sea, hi = sea + 820;
+        if (VoxyMapConfig.ADAPTIVE_COLOR_RAMP.get()) {
+            int minH = Integer.MAX_VALUE, maxH = Integer.MIN_VALUE, n = 0;
+            for (int i = 0; i < w * h; i++) {
+                if (topArr[i] != Integer.MIN_VALUE && !isWaterPix[i]) {
+                    if (topArr[i] < minH) minH = topArr[i];
+                    if (topArr[i] > maxH) maxH = topArr[i];
+                    n++;
+                }
+            }
+            if (n > 100 && maxH >= minH) {
+                int bin = Math.max(1, (maxH - minH) / 1024 + 1);
+                int bins = (maxH - minH) / bin + 1;
+                int[] hist = new int[bins];
+                for (int i = 0; i < w * h; i++) {
+                    if (topArr[i] != Integer.MIN_VALUE && !isWaterPix[i]) {
+                        hist[(topArr[i] - minH) / bin]++;
+                    }
+                }
+                int lowIdx = (int) (n * 0.01f);
+                int highIdx = Math.min(n - 1, (int) (n * 0.99f));
+                int acc = 0, loH = minH, hiH = maxH;
+                boolean gotLo = false;
+                for (int k = 0; k < bins; k++) {
+                    acc += hist[k];
+                    if (!gotLo && acc > lowIdx) {
+                        loH = minH + k * bin;
+                        gotLo = true;
+                    }
+                    if (acc > highIdx) {
+                        hiH = minH + k * bin;
+                        break;
+                    }
+                }
+                lo = loH;
+                hi = hiH;
+                if (hi - lo < 40) hi = lo + 40;
+            }
+        }
+        int rampLo = lo, rampHi = hi;
+        if (VoxyMapConfig.MIN_MAX_RAMP.get()) {
+            int maxH = Integer.MIN_VALUE;
+            for (int i = 0; i < w * h; i++) {
+                int top = topArr[i];
+                if (top == Integer.MIN_VALUE || isWaterPix[i]) continue;
+                if (top > maxH) maxH = top;
+            }
+            if (maxH != Integer.MIN_VALUE && maxH - sea >= 40) {
+                rampLo = sea;
+                rampHi = maxH;
+            }
+        }
+        return new int[]{lo, hi, rampLo, rampHi};
+    }
+
+    /** Patched colour buffer + the rectangle it covers. */
+    private static final class ColorPatch {
+        final int[] rgb;
+        final int x0, z0, x1, z1;
+
+        ColorPatch(int[] rgb, int x0, int z0, int x1, int z1) {
+            this.rgb = rgb;
+            this.x0 = x0;
+            this.z0 = z0;
+            this.x1 = x1;
+            this.z1 = z1;
+        }
+    }
+
+    /**
+     * Updates only the analysed arrays / colours covered by the changed sections. Returns null when
+     * the cheap path cannot guarantee the same result as a full analysis (water, fillHoles/denoise,
+     * ramp change, style change, huge dirty area); the caller then runs the normal full render.
+     */
+    private ColorPatch incrementalColorPatch(Snapshot built, Snapshot prevSnap, TerrainCache tc, String style,
+                                             int sea, int dx0, int dz0, int dx1, int dz1) {
+        if (tc == null || tc.snapshot != prevSnap || tc.width != built.width || tc.height != built.height) return null;
+        if (!terrainFingerprint().equals(tc.fingerprint)) return null;
+        if (VoxyMapConfig.FILL_HOLES.get() || VoxyMapConfig.DENOISE.get()) return null;
+        if (!style.equals(lastRenderedStyle)) return null;
+        ColorFrame cf = colorFrame;
+        if (cf == null || cf.width != built.width || cf.height != built.height) return null;
+        int w = built.width, h = built.height;
+        if (dx1 < dx0 || dz1 < dz0) return null;
+        long area = (long) (dx1 - dx0 + 1) * (dz1 - dz0 + 1);
+        if (area > Math.max(4_000_000L, (long) w * h / 3)) return null;
+        boolean contours = contourOverride != null ? contourOverride : VoxyMapConfig.DRAW_CONTOURS.get();
+        if (contours != tc.contourEnabled) return null;
+        // any water in the changed neighbourhood needs the water-depth/blur rebuild
+        int mx0 = Math.max(0, dx0 - 3), mz0 = Math.max(0, dz0 - 3);
+        int mx1 = Math.min(w - 1, dx1 + 3), mz1 = Math.min(h - 1, dz1 + 3);
+        for (int z = mz0; z <= mz1; z++) {
+            for (int x = mx0; x <= mx1; x++) {
+                int i = z * w + x;
+                if (rawWater(built.pixels[i]) || rawWater(prevSnap.pixels[i])) return null;
+            }
+        }
+        // raw heights / water flag for the changed rectangle
+        for (int z = dz0; z <= dz1; z++) {
+            for (int x = dx0; x <= dx1; x++) {
+                int i = z * w + x;
+                long p = built.pixels[i];
+                tc.topArr[i] = rawTop(p);
+                tc.isWaterPix[i] = rawWater(p);
+            }
+        }
+        // smoothing for the rectangle plus one pixel of context
+        int sx0 = Math.max(0, dx0 - 1), sz0 = Math.max(0, dz0 - 1);
+        int sx1 = Math.min(w - 1, dx1 + 1), sz1 = Math.min(h - 1, dz1 + 1);
+        for (int z = sz0; z <= sz1; z++) {
+            for (int x = sx0; x <= sx1; x++) {
+                int i = z * w + x;
+                tc.smoothTop[i] = smoothSample(built.pixels, x, z, w, h, true);
+                tc.smoothFloor[i] = smoothSample(built.pixels, x, z, w, h, false);
+            }
+        }
+        // any ramp change recolours the whole map, so it must be rejected before touching colours
+        int[] ramp = rampParams(tc.topArr, tc.isWaterPix, sea, w, h);
+        if (ramp[0] != tc.lo || ramp[1] != tc.hi || ramp[2] != tc.rampLo || ramp[3] != tc.rampHi) return null;
+        boolean[] oldContour = tc.contour;
+        boolean[] newContour = computeContour(tc.topArr, tc.isWaterPix, tc.smoothTop, tc.lo, tc.hi, w, h, contours, null);
+        // contour fragments are filtered by connected area, so a local edit can toggle a whole
+        // contour line: include every changed mask pixel, or fall back when that area explodes
+        int contourDiff = 0;
+        int ix0 = Integer.MAX_VALUE, iz0 = Integer.MAX_VALUE;
+        int ix1 = Integer.MIN_VALUE, iz1 = Integer.MIN_VALUE;
+        if (oldContour != null && oldContour.length == newContour.length) {
+            for (int z = 0; z < h; z++) {
+                int row = z * w;
+                for (int x = 0; x < w; x++) {
+                    if (oldContour[row + x] != newContour[row + x]) {
+                        contourDiff++;
+                        if (x < ix0) ix0 = x;
+                        if (x > ix1) ix1 = x;
+                        if (z < iz0) iz0 = z;
+                        if (z > iz1) iz1 = z;
+                    }
+                }
+            }
+        } else {
+            contourDiff = Integer.MAX_VALUE;
+        }
+        if (contourDiff > 500_000) return null;
+        tc.contour = newContour;
+        TerrainCache updated = new TerrainCache(built, sea, tc.fingerprint, tc.topArr, tc.smoothTop,
+                tc.smoothFloor, tc.isWaterPix, tc.contour, tc.depthMap, tc.lo, tc.hi, tc.rampLo, tc.rampHi,
+                tc.adaptive, w, h, built.pixelBlocks);
+        updated.contourEnabled = contours;
+        terrainCache = updated;
+        // hillshade and coastline shading read one neighbouring pixel, so colours need two pixels
+        int cx0 = Math.max(0, dx0 - 2), cz0 = Math.max(0, dz0 - 2);
+        int cx1 = Math.min(w - 1, dx1 + 2), cz1 = Math.min(h - 1, dz1 + 2);
+        if (contourDiff > 0) {
+            cx0 = Math.min(cx0, ix0);
+            cz0 = Math.min(cz0, iz0);
+            cx1 = Math.max(cx1, ix1);
+            cz1 = Math.max(cz1, iz1);
+        }
+        long patchArea = (long) (cx1 - cx0 + 1) * (cz1 - cz0 + 1);
+        if (patchArea > Math.max(8_000_000L, (long) w * h / 2)) return null;
+        int[] out = cf.rgb.clone();
+        for (int z = cz0; z <= cz1; z++) {
+            for (int x = cx0; x <= cx1; x++) {
+                int i = z * w + x;
+                out[i] = colorAt(updated, style, i, x, z);
+            }
+        }
+        return new ColorPatch(out, cx0, cz0, cx1, cz1);
+    }
+
+    private int[] colorize(TerrainCache tc, String style) {
+        progress = 93;
+        int[] out = new int[tc.width * tc.height];
+        final int fw = tc.width;
+        final int fh = tc.height;
+        final String fStyle = style;
+        final TerrainCache fTc = tc;
+        parallelRows(fh, (z0, z1) -> {
+            for (int z = z0; z < z1; z++) {
+                int row = z * fw;
+                for (int x = 0; x < fw; x++) {
+                    out[row + x] = colorAt(fTc, fStyle, row + x, x, z);
+                }
+            }
         });
         return out;
+    }
+
+    /**
+     * Colour of one pixel. Shared by the full {@link #colorize} pass and the incremental colour
+     * patch so both always produce exactly the same colours.
+     */
+    private static int colorAt(TerrainCache tc, String style, int idx, int x, int z) {
+        int top = tc.topArr[idx];
+        if (top == Integer.MIN_VALUE) return 0;
+        final int fw = tc.width;
+        final int fh = tc.height;
+        boolean water = tc.isWaterPix[idx];
+        int rgb = water
+                ? MapStyles.waterColor(style, Math.round(VoxyMapConfig.DRAW_WATER_DEPTH.get() ? tc.depthMap[idx] : 1f))
+                : MapStyles.landColor(style, top, tc.sea, tc.rampLo, tc.rampHi, tc.adaptive);
+        float shade = 1f;
+        if (VoxyMapConfig.DRAW_HILLSHADE.get() && x > 0 && z > 0 && x < fw - 1 && z < fh - 1) {
+            int nb0, nb1, nb2, nb3;
+            if (water) {
+                nb0 = tc.smoothFloor[idx - 1];
+                nb1 = tc.smoothFloor[idx + 1];
+                nb2 = tc.smoothFloor[idx - fw];
+                nb3 = tc.smoothFloor[idx + fw];
+            } else {
+                nb0 = tc.smoothTop[idx - 1];
+                nb1 = tc.smoothTop[idx + 1];
+                nb2 = tc.smoothTop[idx - fw];
+                nb3 = tc.smoothTop[idx + fw];
+            }
+            final float lx = -0.55f, ly = 0.70f, lz = -0.55f;
+            final float ll = (float) Math.sqrt(lx * lx + ly * ly + lz * lz);
+            if (nb0 != Integer.MIN_VALUE && nb1 != Integer.MIN_VALUE
+                    && nb2 != Integer.MIN_VALUE && nb3 != Integer.MIN_VALUE) {
+                float step = 2f * tc.pixelBlocks;
+                float dzdx = (nb1 - nb0) / step;
+                float dzdy = (nb3 - nb2) / step;
+                float slope = (float) Math.sqrt(dzdx * dzdx + dzdy * dzdy);
+                if (slope > 0.08f) {
+                    float nx = -dzdx, ny = 1f, nz = -dzdy;
+                    float nl = (float) Math.sqrt(nx * nx + ny * ny + nz * nz);
+                    float d = (nx * lx + ny * ly + nz * lz) / (nl * ll);
+                    float strength = Math.min(1f, (slope - 0.08f) / 0.6f);
+                    float landStrength = "nautical".equals(style) ? 0.06f : 0.18f;
+                    shade = 1f + (water ? 0.10f : landStrength) * d * strength;
+                }
+            }
+        }
+        shade = Math.max(0.78f, Math.min(1.08f, shade));
+        if (!water) {
+            if (tc.contour[idx]) shade *= "nautical".equals(style) ? 0.62f : 0.70f;
+            boolean coast = (x < fw - 1 && tc.isWaterPix[idx + 1]) || (z < fh - 1 && tc.isWaterPix[idx + fw])
+                    || (x > 0 && tc.isWaterPix[idx - 1]) || (z > 0 && tc.isWaterPix[idx - fw]);
+            if (coast) shade *= 0.70f;
+        }
+        int r = Math.max(0, Math.min(255, (int) (((rgb >> 16) & 0xFF) * shade)));
+        int g = Math.max(0, Math.min(255, (int) (((rgb >> 8) & 0xFF) * shade)));
+        int b = Math.max(0, Math.min(255, (int) ((rgb & 0xFF) * shade)));
+        return 0xFF000000 | (r << 16) | (g << 8) | b;
     }
 
 

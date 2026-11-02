@@ -27,7 +27,8 @@ import java.util.Arrays;
 public final class VoxyIndex {
     /** "VXI1" */
     public static final int MAGIC = 0x56584931;
-    public static final int VERSION = 1;
+    /** 2: stores maxLodLevel so a config change can invalidate the index explicitly. */
+    public static final int VERSION = 2;
     /** defensive limits for a corrupt/hostile file */
     private static final int MAX_SECTIONS = 32_000_000;
 
@@ -39,13 +40,14 @@ public final class VoxyIndex {
     public final int width;
     public final int height;
     public final int pixelBlocks;
+    public final int maxLodLevel;
     /** section keys, strictly ascending (the same order RocksDB iterates) */
     public final long[] keys;
     /** value hash parallel to {@link #keys} */
     public final long[] hashes;
 
     public VoxyIndex(long stamp, long dbSequence, long minWX, long minWZ, int width, int height,
-                     int pixelBlocks, long[] keys, long[] hashes) {
+                     int pixelBlocks, int maxLodLevel, long[] keys, long[] hashes) {
         if (keys.length != hashes.length) throw new IllegalArgumentException("key/hash length mismatch");
         this.stamp = stamp;
         this.dbSequence = dbSequence;
@@ -54,6 +56,7 @@ public final class VoxyIndex {
         this.width = width;
         this.height = height;
         this.pixelBlocks = pixelBlocks;
+        this.maxLodLevel = maxLodLevel;
         this.keys = keys;
         this.hashes = hashes;
     }
@@ -160,6 +163,7 @@ public final class VoxyIndex {
             int w = in.readInt();
             int h = in.readInt();
             int pb = in.readInt();
+            int maxLod = in.readInt();
             int count = in.readInt();
             if (count < 0 || count > MAX_SECTIONS || w <= 0 || h <= 0 || pb <= 0) return null;
             int clen = in.readInt();
@@ -178,7 +182,7 @@ public final class VoxyIndex {
                 hashes[i] = block.readLong();
                 if (i > 0 && keys[i] <= keys[i - 1]) return null; // must stay sorted
             }
-            return new VoxyIndex(stamp, seq, minWX, minWZ, w, h, pb, keys, hashes);
+            return new VoxyIndex(stamp, seq, minWX, minWZ, w, h, pb, maxLod, keys, hashes);
         } catch (Throwable t) {
             return null;
         }
@@ -207,6 +211,7 @@ public final class VoxyIndex {
         out.writeInt(width);
         out.writeInt(height);
         out.writeInt(pixelBlocks);
+        out.writeInt(maxLodLevel);
         out.writeInt(keys.length);
         out.writeInt(compressed.length);
         out.write(compressed);
@@ -223,6 +228,7 @@ public final class VoxyIndex {
 
     @Override
     public String toString() {
-        return "VoxyIndex{sections=" + keys.length + ", seq=" + dbSequence + ", pb=" + pixelBlocks + '}';
+        return "VoxyIndex{sections=" + keys.length + ", seq=" + dbSequence + ", pb=" + pixelBlocks
+                + ", maxLod=" + maxLodLevel + '}';
     }
 }
