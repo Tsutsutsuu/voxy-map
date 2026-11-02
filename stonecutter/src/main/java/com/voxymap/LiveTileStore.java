@@ -202,7 +202,14 @@ public final class LiveTileStore {
                 if ((c >>> 24) != 0) any = true;
             }
         }
-        if (!any) return null;
+        if (!any) {
+            LiveTile cached = loadCached(tx, tz);
+            if (cached != null) {
+                LiveTile previous = tiles.putIfAbsent(key(tx, tz), cached);
+                return previous != null ? previous : cached;
+            }
+            return null;
+        }
         LiveTile previous = tiles.putIfAbsent(key(tx, tz), tile);
         if (previous == null) seedTileCount.incrementAndGet();
         return previous != null ? previous : tile;
