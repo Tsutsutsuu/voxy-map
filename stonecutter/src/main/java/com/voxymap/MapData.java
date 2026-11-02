@@ -177,6 +177,32 @@ public final class MapData {
     /** successful incremental refreshes since the last full rebuild (periodic calibration) */
     private volatile int incrementalRefreshCount;
 
+    // ------------------------------------------------------ refresh lanes
+    /** true while the map screen is the current screen */
+    private volatile boolean mapOpen;
+    private volatile long mapClosedAtMs;
+    /** incremented to cancel whatever refresh is currently running */
+    private final java.util.concurrent.atomic.AtomicLong refreshToken =
+            new java.util.concurrent.atomic.AtomicLong();
+    /** token of the job that is currently allowed to publish; 0 = none */
+    private volatile long activeRefreshToken;
+    /** token used by renderColor/colorize to stop early when the map closes */
+    private volatile long renderToken;
+    /** background lane state */
+    private volatile boolean gentleActive;
+    /** a full rebuild is required before the map can become fresh again */
+    private volatile boolean needsFast;
+    private volatile long lastGentleStartMs;
+    private volatile String gentleStage = "";
+    /** gentle lane published colours while the map was closed: refresh the GPU texture on open */
+    private volatile boolean gentlePublished;
+    /** the map was opened while a refresh was still finishing */
+    private volatile boolean openRefreshPending;
+    /** player stillness / teleport tracking for the gentle lane */
+    private double lastPlayerX = Double.NaN, lastPlayerZ = Double.NaN;
+    private long stillSinceMs;
+    private long teleportUntilMs;
+
     private long sessionStartMs;
     /** debounces automatic refreshes so a failing rebuild cannot restart every tick */
     private long lastAutoRefreshMs;
@@ -204,7 +230,7 @@ public final class MapData {
 
     /** What started a refresh; used by the optional chat report only. */
     public enum RefreshTrigger {
-        AUTO_DISTANCE, OPEN_AFTER_TRAVEL, MANUAL_BUTTON, MANUAL_DIALOG,
+        AUTO_DISTANCE, OPEN_AFTER_TRAVEL, OPEN_MAP, MANUAL_BUTTON, MANUAL_DIALOG,
         RETRY_SAFE, RETRY_FORCE, INITIAL_TIMER, INTERNAL
     }
 
@@ -215,6 +241,7 @@ public final class MapData {
         String mode = "full";
         boolean noChange;
         boolean fullFallback;
+        boolean cancelled;
         String error = "";
         int totalSections;
         int changed;
@@ -234,6 +261,7 @@ public final class MapData {
 
         void emit() {
             if (!RefreshDebug.enabled()) return;
+            if (cancelled) return;
             String trig = trigger.name().toLowerCase(java.util.Locale.ROOT);
             Runtime rt = Runtime.getRuntime();
             long usedMb = (rt.totalMemory() - rt.freeMemory()) / 1048576L;
@@ -688,6 +716,10 @@ public final class MapData {
         out.add("refresh: " + (lastRefreshIncremental ? "incremental" : "full")
                 + "  changed=" + lastChangedSections + "  took=" + lastRefreshMs + "ms"
                 + "  index=" + (idx == null ? "none" : idx.count() + "@seq" + idx.dbSequence));
+        long stillSec = stillSinceMs == 0 ? 0 : (System.currentTimeMillis() - stillSinceMs) / 1000L;
+        out.add("auto: mode=" + VoxyMapConfig.AUTO_REFRESH_MODE.get() + " mapOpen=" + mapOpen
+                + " gentle=" + (gentleActive ? gentleStage : "idle") + " needsFast=" + needsFast
+                + " still=" + stillSec + "s");
         Runtime rt = Runtime.getRuntime();
         out.add("mem: " + (rt.totalMemory() - rt.freeMemory()) / 1048576L + " / " + rt.maxMemory() / 1048576L + " MB");
         return out;
@@ -879,6 +911,7 @@ public final class MapData {
     public void updateAsync(boolean forceReload, RefreshTrigger trigger, String fallbackNote) {
         final long reportStart = System.nanoTime();
         final RefreshReport report = new RefreshReport(trigger, fallbackNote);
+        final long jobToken = refreshToken.incrementAndGet();
         ensureDefaultStyle();
         if (!isOverworld()) {
             // only the overworld LOD storage is supported; do not build anything elsewhere
@@ -954,7 +987,7 @@ public final class MapData {
                 // a cache from a different map scale cannot be reused: rebuild at the new scale
                 if (built != null && built.pixelBlocks != effectivePixelBlocks()) built = null;
                 if (built == null) {
-                    built = buildPixels(storage);
+                    built = buildPixels(storage, jobToken);
                     if (built == null) {
                         // oversize warning (dialog) or a genuinely empty storage
                         if (oversizePixels > 0) return;
@@ -988,16 +1021,27 @@ public final class MapData {
                 // the rendered colour cache turns a ~5 s re-render after a restart into a file read
                 int[] cachedRgb = forceReload ? null : loadColorCache(storage, target, renderStyle, sea);
                 if (cachedRgb == null) {
-                    cachedRgb = renderColor(target, renderStyle, sea);
+                    renderToken = jobToken;
+                    try {
+                        cachedRgb = renderColor(target, renderStyle, sea);
+                    } finally {
+                        renderToken = 0;
+                    }
+                    checkJob(jobToken);
                     long t = System.nanoTime();
                     saveColorCache(storage, target, renderStyle, sea, cachedRgb);
                     report.cacheVxcMs = (System.nanoTime() - t) / 1_000_000L;
                 }
                 final int[] rgb = cachedRgb;
                 progress = 95;
+                checkJob(jobToken);
                 handedToMainThread = true;
                 mc.execute(() -> {
                     try {
+                        if (jobToken != refreshToken.get()) {
+                            progress = -1;
+                            return;
+                        }
                         progress = 95;
                         uploadTexture(target, rgb);
                         lastRenderedStyle = renderStyle;
@@ -1012,6 +1056,9 @@ public final class MapData {
                     lastUpdateX = mc.player.getX();
                     lastUpdateZ = mc.player.getZ();
                 }
+            } catch (RefreshCancelled cancelled) {
+                restorePreviousSnapshot(prevSnap, prevSnapStorage);
+                sectionIndex = prevIndex;
             } catch (OutOfMemoryError oom) {
                 oom.printStackTrace();
                 // The colour pass died: put the previous snapshot back so the map/3D view never
@@ -1106,13 +1153,194 @@ public final class MapData {
         }
     }
 
+    /** Thrown when a background/fast refresh is cancelled (map closed, world changed, ...). */
+    private static final class RefreshCancelled extends RuntimeException {
+        @Override
+        public synchronized Throwable fillInStackTrace() {
+            return this;
+        }
+    }
+
+    private static void gentleSleep(int ms) {
+        if (ms <= 0) return;
+        try {
+            Thread.sleep(ms);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private void checkJob(long token) {
+        if (token != 0 && token != refreshToken.get()) throw new RefreshCancelled();
+    }
+
+    private void gentleCheckpoint(long token, int sleepMs) {
+        checkJob(token);
+        if (mapOpen || requested.get()) throw new RefreshCancelled();
+        gentleSleep(sleepMs);
+    }
+
     /**
-     * Reads keys+values once (roughly 0.4 s for this save's 293 MB of values) and returns the
-     * changed sections plus the new full key/hash arrays. Aborts early (tooMany) when more than 20%
-     * of the sections changed; at that point a full rebuild is cheaper than retaining values.
+     * Background lane: incremental only, single thread, explicitly budgeted. It never touches the
+     * GPU, never writes cache files and never triggers a full rebuild. When the cheap path cannot
+     * produce a correct result it only marks {@link #needsFast} and stops.
      */
-    private IncrementalScan scanIncremental(Object db, Object sections, VoxyIndex prev) throws Exception {
-        int maxChanged = Math.max(4096, prev.count() / 5);
+    private void markNeedsFast(String reason) {
+        needsFast = true;
+        if (RefreshDebug.enabled()) {
+            RefreshDebug.chat("gentle stopped: " + reason + " -> fast refresh on next open",
+                    ChatFormatting.YELLOW);
+        }
+    }
+
+    private void gentleRefresh(long token) {
+        Snapshot prevSnap = snap;
+        Path prevStorage = snapStorage;
+        VoxyIndex prevIndex = sectionIndex;
+        List<Object> handles = new ArrayList<>();
+        Object db = null;
+        try {
+            if (prevSnap == null || prevIndex == null || mapOpen) return;
+            if (!canIncrementalRefresh()) {
+                markNeedsFast("index unavailable");
+                return;
+            }
+            Path storage = findStorage();
+            if (storage == null || !storage.equals(prevStorage)) {
+                markNeedsFast("world changed");
+                return;
+            }
+            loadUiState();
+            final String renderStyle = style;
+            final int sea = seaLevel();
+            if (prevSnap.pixelBlocks != effectivePixelBlocks() || prevIndex.maxLodLevel != lodCap()) {
+                markNeedsFast("map scale/LOD changed");
+                return;
+            }
+            int sleepMs = Math.max(4, VoxyMapConfig.GENTLE_BUDGET_MS_PER_10S.get() / 5);
+            db = RocksBridge.openReadOnly(storage.toString(), handles);
+            Object sections = handles.get(1);
+            Object mappings = handles.get(2);
+            long seq = RocksBridge.latestSequence(db);
+            if (seq >= 0 && seq == prevIndex.dbSequence) {
+                return; // nothing has been written since the last snapshot
+            }
+            gentleStage = "scan";
+            IncrementalScan scan = scanIncremental(db, sections, prevIndex, token, sleepMs);
+            if (scan == null) return;
+            if (scan.tooMany || scan.removed > 0 || scan.boundsChanged) {
+                markNeedsFast(scan.tooMany ? "too many changed sections"
+                        : (scan.removed > 0 ? "sections removed" : "map bounds grew"));
+                return;
+            }
+            if (scan.changedKeys.length == 0) {
+                sectionIndex = new VoxyIndex(prevSnap.stamp, seq, prevSnap.minWX, prevSnap.minWZ,
+                        prevSnap.width, prevSnap.height, prevSnap.pixelBlocks,
+                        prevIndex.maxLodLevel, scan.keys, scan.hashes);
+                return;
+            }
+            gentleStage = "decode";
+            Map<Integer, String> biomeNames = new HashMap<>(prevSnap.biomeNames);
+            Set<Long> waterIds = loadWaterIds(db, mappings, biomeNames);
+            int changed = scan.changedKeys.length;
+            int dx0 = Integer.MAX_VALUE, dz0 = Integer.MAX_VALUE;
+            int dx1 = Integer.MIN_VALUE, dz1 = Integer.MIN_VALUE;
+            for (long key : scan.changedKeys) {
+                int lvl = (int) ((key >>> 60) & 0xF);
+                int scale = 1 << lvl;
+                int sx = (int) ((key << 36) >> 40), sz = (int) ((key << 12) >> 40);
+                long wx0 = (long) sx * 32 * scale, wz0 = (long) sz * 32 * scale;
+                int px0 = (int) ((wx0 - prevSnap.minWX) / prevSnap.pixelBlocks);
+                int px1 = (int) ((wx0 + scale - 1 - prevSnap.minWX) / prevSnap.pixelBlocks);
+                int pz0 = (int) ((wz0 - prevSnap.minWZ) / prevSnap.pixelBlocks);
+                int pz1 = (int) ((wz0 + scale - 1 - prevSnap.minWZ) / prevSnap.pixelBlocks);
+                if (px0 < dx0) dx0 = px0;
+                if (px1 > dx1) dx1 = px1;
+                if (pz0 < dz0) dz0 = pz0;
+                if (pz1 > dz1) dz1 = pz1;
+            }
+            dx0 = Math.max(0, dx0);
+            dz0 = Math.max(0, dz0);
+            dx1 = Math.min(prevSnap.width - 1, dx1);
+            dz1 = Math.min(prevSnap.height - 1, dz1);
+            long dirtyArea = (long) (dx1 - dx0 + 1) * (dz1 - dz0 + 1);
+            if (dirtyArea > 2_000_000L) {
+                // too much pixel work for a background lane: leave it to the fast lane on open
+                markNeedsFast("dirty area too large");
+                return;
+            }
+            long[] pixels = prevSnap.pixels.clone();
+            for (int i = 0; i < changed; i++) {
+                if ((i & 31) == 0) gentleCheckpoint(token, sleepMs);
+                Decoded d = decodeSection(scan.changedKeys[i], scan.changedVals[i], waterIds);
+                if (d != null) {
+                    flushSection(d.key(), d.cols(), pixels, prevSnap.width, prevSnap.height,
+                            prevSnap.minWX, prevSnap.minWZ, prevSnap.pixelBlocks);
+                }
+            }
+            gentleCheckpoint(token, 0);
+            if (mapOpen) return;
+            Snapshot built = new Snapshot(pixels, prevSnap.width, prevSnap.height,
+                    prevSnap.minWX, prevSnap.minWZ, prevSnap.pixelBlocks, biomeNames, System.nanoTime());
+            VoxyIndex newIndex = new VoxyIndex(built.stamp, seq,
+                    built.minWX, built.minWZ, built.width, built.height, built.pixelBlocks,
+                    prevIndex.maxLodLevel, scan.keys, scan.hashes);
+            gentleStage = "color";
+            RefreshReport report = new RefreshReport(RefreshTrigger.INTERNAL, "");
+            ColorPatch patch = incrementalColorPatch(built, prevSnap, terrainCache, renderStyle, sea,
+                    dx0, dz0, dx1, dz1, report);
+            if (patch == null) {
+                // the cheap colour path declined; keep the committed snapshot/colour untouched
+                markNeedsFast("colour patch declined: "
+                        + (report.colorFallback.isEmpty() ? "not safe" : report.colorFallback));
+                terrainCache = null;
+                return;
+            }
+            if (mapOpen || token != refreshToken.get()) return;
+            snap = built;
+            snapStorage = storage;
+            sectionIndex = newIndex;
+            ColorFrame prevFrame = colorFrame;
+            colorFrame = new ColorFrame(patch.rgb, built.width, built.height,
+                    prevFrame == null ? 1 : prevFrame.epoch + 1);
+            lastRenderedStyle = renderStyle;
+            gentlePublished = true;
+            needsFast = false;
+            gentleStage = "done";
+            Minecraft mc = Minecraft.getInstance();
+            if (mc.player != null) {
+                lastUpdateX = mc.player.getX();
+                lastUpdateZ = mc.player.getZ();
+            }
+            lastRefreshIncremental = true;
+            lastChangedSections = changed;
+            lastRefreshMs = 0; // the gentle lane has no meaningful wall-clock budget target
+            if (RefreshDebug.verbose()) {
+                RefreshDebug.chat("gentle applied: changed=" + changed + " dirty=" + dx0 + "," + dz0
+                        + ".." + dx1 + "," + dz1, ChatFormatting.DARK_GRAY);
+            }
+        } catch (RefreshCancelled ignored) {
+            // map opened, world changed or another refresh took over
+        } catch (Throwable t) {
+            t.printStackTrace();
+            markNeedsFast("background refresh failed");
+        } finally {
+            gentleActive = false;
+            gentleStage = "";
+            for (Object h : handles) RocksBridge.close(h);
+            RocksBridge.close(db);
+        }
+    }
+
+    /**
+     * Reads keys+values once and returns the changed sections plus the new full key/hash arrays.
+     * Aborts early (tooMany) when more than the configured percentage of sections changed. The
+     * gentle lane passes a token/sleep pair so the scan can be paused between batches.
+     */
+    private IncrementalScan scanIncremental(Object db, Object sections, VoxyIndex prev,
+                                            long token, int sleepMs) throws Exception {
+        int maxChanged = Math.max(4096, prev.count()
+                * Math.max(10, Math.min(90, VoxyMapConfig.INCREMENTAL_MAX_CHANGED_PERCENT.get())) / 100);
         int capacity = Math.max(4096, prev.count() + 4096);
         long[] keys = new long[capacity];
         long[] hashes = new long[capacity];
@@ -1122,6 +1350,7 @@ public final class MapData {
         long minWX = Long.MAX_VALUE, maxWX = Long.MIN_VALUE;
         long minWZ = Long.MAX_VALUE, maxWZ = Long.MIN_VALUE;
         boolean tooMany = false;
+        int scanned = 0;
         Object it = RocksBridge.newIterator(db, sections);
         try {
             for (RocksBridge.seekToFirst(it); RocksBridge.isValid(it); RocksBridge.next(it)) {
@@ -1132,6 +1361,10 @@ public final class MapData {
                 if (lvl > prev.maxLodLevel) continue;
                 byte[] val = RocksBridge.value(it);
                 if (val == null || val.length <= 16) continue;
+                if (token != 0 && (++scanned & 2047) == 0) {
+                    if (sleepMs > 0) gentleCheckpoint(token, sleepMs);
+                    else checkJob(token);
+                }
                 long h = VoxyIndex.hashValue(val);
                 int pos = prev.indexOf(key);
                 if (pos >= 0) matched++;
@@ -1220,6 +1453,7 @@ public final class MapData {
         oversizeSafePixelBlocks = 0;
         final long reportStart = System.nanoTime();
         final RefreshReport report = new RefreshReport(trigger, "");
+        final long jobToken = refreshToken.incrementAndGet();
         final int epoch = worldEpoch;
         final int sea = seaLevel();
         final long startedNs = System.nanoTime();
@@ -1272,7 +1506,7 @@ public final class MapData {
                     }
                     progress = 5;
                     stageStart = System.nanoTime();
-                    IncrementalScan scan = scanIncremental(db, sections, prevIndex);
+                    IncrementalScan scan = scanIncremental(db, sections, prevIndex, jobToken, 0);
                     report.scanMs = (System.nanoTime() - stageStart) / 1_000_000L;
                     report.totalSections = prevIndex.count();
                     report.changed = scan.changedKeys.length;
@@ -1335,6 +1569,7 @@ public final class MapData {
                     report.dirtyW = dx1 >= dx0 ? dx1 - dx0 + 1 : 0;
                     report.dirtyH = dz1 >= dz0 ? dz1 - dz0 + 1 : 0;
                     long mergeStart = System.nanoTime();
+                    checkJob(jobToken);
                     long[] pixels = prevSnap.pixels.clone();
                     List<Future<Decoded>> futures = new ArrayList<>(BATCH);
                     for (int i = 0; i < changed; i++) {
@@ -1345,6 +1580,7 @@ public final class MapData {
                             flush(futures, pixels, prevSnap.width, prevSnap.height,
                                     prevSnap.minWX, prevSnap.minWZ, prevSnap.pixelBlocks);
                             futures.clear();
+                            checkJob(jobToken);
                             progress = 30 + (int) ((long) i * 35 / Math.max(1, changed));
                         }
                     }
@@ -1352,6 +1588,7 @@ public final class MapData {
                             prevSnap.minWX, prevSnap.minWZ, prevSnap.pixelBlocks);
                     report.mergeMs = (System.nanoTime() - mergeStart) / 1_000_000L;
                     if (epoch != worldEpoch) return;
+                    checkJob(jobToken);
                     Snapshot built = new Snapshot(pixels, prevSnap.width, prevSnap.height,
                             prevSnap.minWX, prevSnap.minWZ, prevSnap.pixelBlocks, biomeNames,
                             System.nanoTime());
@@ -1370,6 +1607,7 @@ public final class MapData {
                     if (patch != null) {
                         report.colorMode = "patch";
                         report.contourDiff = patch.contourDiff;
+                        checkJob(jobToken);
                         ColorFrame prevFrame = colorFrame;
                         colorFrame = new ColorFrame(patch.rgb, built.width, built.height,
                                 prevFrame == null ? 1 : prevFrame.epoch + 1);
@@ -1390,6 +1628,10 @@ public final class MapData {
                         handed = true;
                         Minecraft.getInstance().execute(() -> {
                             try {
+                                if (jobToken != refreshToken.get()) {
+                                    progress = -1;
+                                    return;
+                                }
                                 outOfMemory = false;
                                 progress = 100;
                             } finally {
@@ -1399,7 +1641,13 @@ public final class MapData {
                         });
                     } else {
                         report.colorMode = "full";
-                        rgb = renderColor(built, renderStyle, sea);
+                        renderToken = jobToken;
+                        try {
+                            rgb = renderColor(built, renderStyle, sea);
+                        } finally {
+                            renderToken = 0;
+                        }
+                        checkJob(jobToken);
                         progress = 95;
                         long t = System.nanoTime();
                         saveCache(storage, built);
@@ -1413,6 +1661,10 @@ public final class MapData {
                         handed = true;
                         Minecraft.getInstance().execute(() -> {
                             try {
+                                if (jobToken != refreshToken.get()) {
+                                    progress = -1;
+                                    return;
+                                }
                                 uploadTexture(built, rgb);
                                 lastRenderedStyle = renderStyle;
                                 outOfMemory = false;
@@ -1437,6 +1689,10 @@ public final class MapData {
                     for (Object h : handles) RocksBridge.close(h);
                     RocksBridge.close(db);
                 }
+            } catch (RefreshCancelled cancelled) {
+                report.cancelled = true;
+                restorePreviousSnapshot(prevSnap, prevStorage);
+                sectionIndex = prevIndex;
             } catch (OutOfMemoryError oom) {
                 oom.printStackTrace();
                 restorePreviousSnapshot(prevSnap, prevStorage);
@@ -1461,8 +1717,12 @@ public final class MapData {
                 report.error = error;
                 report.emit();
                 if (fallback && epoch == worldEpoch) {
-                    // full rebuild path: it re-acquires the flags and resets them when done
-                    updateAsync(true, trigger, report.fallbackNote);
+                    // only continue into the fast full rebuild while the map is still open
+                    if (mapOpen) {
+                        updateAsync(true, trigger, report.fallbackNote);
+                    } else {
+                        needsFast = true;
+                    }
                 }
             }
         });
@@ -1569,12 +1829,78 @@ public final class MapData {
     /** True while the player is in the overworld (the only dimension with a supported storage). */
     private boolean overworldActive = true;
 
+    /**
+     * Called when the map screen opens. Fast lane: the cached frame is shown immediately, then the
+     * fastest available refresh (incremental or full) starts. This is the only place where opening
+     * the map starts a refresh.
+     */
+    public void onMapOpened() {
+        mapOpen = true;
+        mapClosedAtMs = 0;
+        cancelActiveRefresh();
+        if (needsWorldReload()) dropSnapshotForWorldChange();
+        if (gentlePublished) {
+            gentlePublished = false;
+            ColorFrame f = colorFrame;
+            if (f != null && textureId != null && !loading) buildTexturesAsync(f.width, f.height, f.rgb);
+        }
+        // a fresh world still inside its SeedGen delay waits for the dialog / delay
+        if (isInitialRefreshPending() && isNewWorldNow()) return;
+        if (snap == null) {
+            if (loading) {
+                openRefreshPending = true;
+                return;
+            }
+            // first open in this session: reuse the disk cache when possible (only a full read when
+            // there is no cache yet); this must not ignore .vxm/.vxc, even when auto refresh is off
+            updateAsync(false, RefreshTrigger.OPEN_MAP);
+            return;
+        }
+        if (!VoxyMapConfig.AUTO_REFRESH.get()) return;
+        String mode = VoxyMapConfig.AUTO_REFRESH_MODE.get();
+        if ("off".equalsIgnoreCase(mode)) return;
+        if (loading) {
+            openRefreshPending = true;
+            return;
+        }
+        // fastest available: the incremental path itself falls back to a full rebuild when needed
+        if (!needsFast && canIncrementalRefresh()) {
+            refreshIncrementalAsync(RefreshTrigger.OPEN_MAP);
+        } else {
+            updateAsync(true, RefreshTrigger.OPEN_MAP);
+        }
+    }
+
+    /** Called when the map screen is replaced/closed: the fast lane must not keep working. */
+    public void onMapClosed() {
+        mapOpen = false;
+        mapClosedAtMs = System.currentTimeMillis();
+        openRefreshPending = false;
+        cancelActiveRefresh();
+    }
+
+    private void maybeRunPendingOpenRefresh() {
+        if (openRefreshPending && mapOpen && !loading) {
+            openRefreshPending = false;
+            onMapOpened();
+        }
+    }
+
+    private void cancelActiveRefresh() {
+        refreshToken.incrementAndGet();
+        renderToken = 0;
+        gentleActive = false;
+        gentleStage = "";
+    }
+
+    private static final String FAST = "fast";
+    private static final String GENTLE = "gentle";
+
     /** Called once per client tick. */
     public void tick() {
         Minecraft mc = Minecraft.getInstance();
         boolean active = mc.player != null && isOverworld();
         if (!active) {
-            // nether / end / menus: reset once on entry, then stay idle
             if (overworldActive) {
                 resetForNewWorld();
                 overworldActive = false;
@@ -1582,68 +1908,63 @@ public final class MapData {
             return;
         }
         overworldActive = true;
+        updatePlayerStillness(mc);
         if (!VoxyMapConfig.AUTO_REFRESH.get()) return;
-        long now = System.currentTimeMillis();
-        if (sessionStartMs == 0) sessionStartMs = now;
-        double refreshDist = VoxyMapConfig.REFRESH_DISTANCE_CHUNKS.get() * 16.0;
-        boolean moved = !Double.isNaN(lastUpdateX)
-                && Math.hypot(mc.player.getX() - lastUpdateX, mc.player.getZ() - lastUpdateZ) > refreshDist;
-        // Initial refresh runs once per world, N minutes after joining, so SeedGen has time to fill more data.
-        int delayMin = VoxyMapConfig.INITIAL_REFRESH_DELAY_MINUTES.get();
-        boolean initialPending = !initialRefreshDone && delayMin > 0;
-        boolean timeUp = initialPending && now - sessionStartMs > delayMin * 60_000L;
-        boolean oldWorld = initialPending && isOldWorld(delayMin);
-        // While a fresh world is still inside its initial delay, walking around must not start a
-        // build either: only the delay expiring (or the dialog's "refresh now" button) may. This
-        // keeps the "wait a few minutes so SeedGen can fill the storage" promise, and stops the
-        // map from being built and cached from a nearly empty storage.
-        boolean movedAllowed = moved && !initialPending;
-        boolean initialTrigger = timeUp || oldWorld;
-        boolean mapOpen = Minecraft.getInstance().gui.screen() instanceof MapScreen;
-        // Auto refresh only runs while the map is visible: a full rebuild is expensive and the old
-        // code triggered it on every tick when the player travelled far (the "正在刷新 0%" flicker).
-        // Opening the map after travelling calls refreshIfMoved() instead.
-        boolean movementRefresh = movedAllowed && mapOpen;
-        if ((movementRefresh || initialTrigger) && !loading
-                && oversizePixels == 0 && !outOfMemory
-                && now - lastAutoRefreshMs > 15_000L) {
-            if (initialTrigger) initialRefreshDone = true;
-            lastAutoRefreshMs = now;
-            if (movementRefresh) {
-                // remember the position the async build was started for: a failed refresh must not
-                // restart on every tick
-                lastUpdateX = mc.player.getX();
-                lastUpdateZ = mc.player.getZ();
-            }
-            // movement means new Voxy data exists, so the snapshot must be updated; the initial
-            // refresh only reuses the disk cache so joining a world does not re-read everything.
-            // An automatic movement refresh prefers the incremental path when its index is valid.
-            if (movementRefresh) {
-                if (canIncrementalRefresh()) refreshIncrementalAsync(RefreshTrigger.AUTO_DISTANCE);
-                else updateAsync(true, RefreshTrigger.AUTO_DISTANCE);
-            } else {
-                updateAsync(false, RefreshTrigger.INITIAL_TIMER);
-            }
+        if (mapOpen) {
+            maybeRunPendingOpenRefresh();
+            return; // fast lane is driven by the screen itself
         }
+        if (!GENTLE.equalsIgnoreCase(VoxyMapConfig.AUTO_REFRESH_MODE.get())) return;
+        maybeStartGentle(mc);
     }
 
-    /**
-     * Called when the map screen opens. With auto-refresh enabled the snapshot is rebuilt when the
-     * player travelled farther than {@code refreshDistanceChunks} while the map was closed (auto
-     * refresh itself only runs while the map is visible, to avoid rebuilding huge maps in the
-     * background and to stop the old per-tick retry loop).
-     */
-    public void refreshIfMoved() {
-        if (!VoxyMapConfig.AUTO_REFRESH.get() || loading || outOfMemory || oversizePixels > 0) return;
-        Minecraft mc = Minecraft.getInstance();
-        if (mc.player == null || Double.isNaN(lastUpdateX)) return;
-        double dist = VoxyMapConfig.REFRESH_DISTANCE_CHUNKS.get() * 16.0;
-        if (Math.hypot(mc.player.getX() - lastUpdateX, mc.player.getZ() - lastUpdateZ) <= dist) return;
-        if (isInitialRefreshPending()) return;
-        lastUpdateX = mc.player.getX();
-        lastUpdateZ = mc.player.getZ();
-        if (canIncrementalRefresh()) refreshIncrementalAsync(RefreshTrigger.OPEN_AFTER_TRAVEL);
-        else updateAsync(true, RefreshTrigger.OPEN_AFTER_TRAVEL);
+    private void updatePlayerStillness(Minecraft mc) {
+        if (mc.player == null) return;
+        double x = mc.player.getX(), z = mc.player.getZ();
+        long now = System.currentTimeMillis();
+        if (Double.isNaN(lastPlayerX)) {
+            lastPlayerX = x;
+            lastPlayerZ = z;
+            stillSinceMs = now;
+            return;
+        }
+        double moved = Math.hypot(x - lastPlayerX, z - lastPlayerZ);
+        if (moved > 128.0) {
+            // teleport: wait for Voxy to settle before the background lane may run
+            teleportUntilMs = now + 3000L;
+            stillSinceMs = now;
+        } else if (moved > 0.02) {
+            stillSinceMs = now;
+        }
+        lastPlayerX = x;
+        lastPlayerZ = z;
+    }
+
+    private void maybeStartGentle(Minecraft mc) {
+        if (gentleActive || loading || needsFast) return;
+        if (oversizePixels > 0 || outOfMemory) return;
+        if (stillSinceMs == 0) return;
+        long now = System.currentTimeMillis();
+        int idleSeconds = Math.max(1, VoxyMapConfig.GENTLE_IDLE_SECONDS.get());
+        if (now - stillSinceMs < idleSeconds * 1000L) return;
+        if (now < teleportUntilMs) return;
+        if (now - lastGentleStartMs < 3000L) return;
+        Runtime rt = Runtime.getRuntime();
+        if (rt.totalMemory() > 0 && (rt.totalMemory() - rt.freeMemory()) * 100L / rt.maxMemory() > 85L) return;
+        Snapshot s = snap;
+        if (s == null) return;
+        if (!canIncrementalRefresh()) {
+            needsFast = true;
+            return;
+        }
+        gentleActive = true;
+        lastGentleStartMs = now;
+        final long token = refreshToken.incrementAndGet();
+        if (RefreshDebug.verbose()) {
+            RefreshDebug.chat("gentle start: budget=" + VoxyMapConfig.GENTLE_BUDGET_MS_PER_10S.get()
+                    + "ms/10s idle=" + idleSeconds + "s", ChatFormatting.DARK_GRAY);
+        }
+        loader.submit(() -> gentleRefresh(token));
     }
 
     // ------------------------------------------------------------ disk cache
@@ -1922,7 +2243,7 @@ public final class MapData {
         return null;
     }
 
-    private Snapshot buildPixels(Path storage) throws Exception {
+    private Snapshot buildPixels(Path storage, long token) throws Exception {
         pendingBuiltIndex = null;
         int pixelBlocks = effectivePixelBlocks();
         int maxLodLevel = lodCap();
@@ -1941,6 +2262,7 @@ public final class MapData {
             Set<Long> waterIds = loadWaterIds(db, mappings, biomeNames);
 
             int totalSections = 0;
+            int seen = 0;
             long minWXv = Long.MAX_VALUE, maxWXv = Long.MIN_VALUE;
             long minWZv = Long.MAX_VALUE, maxWZv = Long.MIN_VALUE;
             Object it = RocksBridge.newIterator(db, sections);
@@ -1964,6 +2286,7 @@ public final class MapData {
                             maxWZv = Math.max(maxWZv, z0 + 32L * scale);
                         }
                     }
+                    if ((++seen & 2047) == 0) checkJob(token);
                     RocksBridge.next(it);
                 }
             } finally {
@@ -2025,6 +2348,7 @@ public final class MapData {
                                 if (futures.size() >= BATCH) {
                                     flush(futures, pix, gw, gh, minWXv, minWZv, pixelBlocks);
                                     futures.clear();
+                                    checkJob(token);
                                     progress = Math.min(80, (int) ((long) processedSections * 80 / Math.max(1, totalSections)));
                                 }
                             }
@@ -2036,6 +2360,7 @@ public final class MapData {
                 RocksBridge.close(it2);
             }
             flush(futures, pix, gw, gh, minWXv, minWZv, pixelBlocks);
+            checkJob(token);
             Snapshot result = new Snapshot(pix, gw, gh, minWXv, minWZv, pixelBlocks, biomeNames, System.nanoTime());
             // publish the index that belongs to this exact snapshot (see updateAsync)
             pendingBuiltIndex = idxN > 0
@@ -3569,6 +3894,7 @@ public final class MapData {
         final TerrainCache fTc = tc;
         parallelRows(fh, (z0, z1) -> {
             for (int z = z0; z < z1; z++) {
+                if ((z & 63) == 0 && renderToken != 0 && renderToken != refreshToken.get()) return;
                 int row = z * fw;
                 for (int x = 0; x < fw; x++) {
                     out[row + x] = colorAt(fTc, fStyle, row + x, x, z);

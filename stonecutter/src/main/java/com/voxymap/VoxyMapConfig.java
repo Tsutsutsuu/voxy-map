@@ -20,6 +20,14 @@ public final class VoxyMapConfig {
     private static final String FILE_NAME = "voxymap-client.json";
 
     public static final Value<Boolean> AUTO_REFRESH = new Value<>("autoRefresh", true);
+    /** gentle = closed-map background refresh only; fast = refresh only while the map is open; off = no auto refresh. */
+    public static final Value<String> AUTO_REFRESH_MODE = new Value<>("autoRefreshMode", "gentle");
+    /** CPU budget for the gentle background lane (milliseconds per 10 seconds). */
+    public static final Value<Integer> GENTLE_BUDGET_MS_PER_10S = new Value<>("gentleBudgetMsPer10s", 100);
+    /** Seconds the player must stand still before the gentle lane may run. */
+    public static final Value<Integer> GENTLE_IDLE_SECONDS = new Value<>("gentleIdleSeconds", 2);
+    /** Above this many changed sections the incremental merge gives up and a full rebuild is used. */
+    public static final Value<Integer> INCREMENTAL_MAX_CHANGED_PERCENT = new Value<>("incrementalMaxChangedPercent", 60);
     /** Automatic refreshes only read/decode changed Voxy sections and patch the map. */
     public static final Value<Boolean> INCREMENTAL_REFRESH = new Value<>("incrementalRefresh", true);
     public static final Value<Integer> REFRESH_DISTANCE_CHUNKS = new Value<>("refreshDistanceChunks", 128);

@@ -78,6 +78,11 @@ public class MapConfigScreen extends Screen {
         this.parent = parent;
         // refresh
         add(Group.REFRESH, "autoRefresh", VoxyMapConfig.AUTO_REFRESH, 0, 0, null, true);
+        add(Group.REFRESH, "autoRefreshMode", VoxyMapConfig.AUTO_REFRESH_MODE, 0, 0,
+                new String[]{"gentle", "fast", "off"}, true);
+        add(Group.REFRESH, "gentleBudgetMsPer10s", VoxyMapConfig.GENTLE_BUDGET_MS_PER_10S, 10, 2000, null);
+        add(Group.REFRESH, "gentleIdleSeconds", VoxyMapConfig.GENTLE_IDLE_SECONDS, 1, 60, null);
+        add(Group.REFRESH, "incrementalMaxChangedPercent", VoxyMapConfig.INCREMENTAL_MAX_CHANGED_PERCENT, 10, 90, null);
         add(Group.REFRESH, "incrementalRefresh", VoxyMapConfig.INCREMENTAL_REFRESH, 0, 0, null, true);
         add(Group.REFRESH, "refreshDistanceChunks", VoxyMapConfig.REFRESH_DISTANCE_CHUNKS, 16, 1024, null);
         add(Group.REFRESH, "initialRefreshDelayMinutes", VoxyMapConfig.INITIAL_REFRESH_DELAY_MINUTES, 0, 60, null);

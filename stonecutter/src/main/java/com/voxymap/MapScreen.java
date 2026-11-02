@@ -302,22 +302,16 @@ public class MapScreen extends Screen {
             centerZ = p0.getZ();
         }
         if (waitingForSeedGen) {
+            data.onMapOpened();
             return;
         }
         if (data.needsWorldReload()) {
             // the grid kept from the previous world must not be shown here
             data.dropSnapshotForWorldChange();
-            data.updateAsync();
-        } else {
-            // rejoining the same world: the cached colour grid is re-uploaded instead of rebuilt
-            data.ensureMainTextures();
-            if (data.getMapWidth() <= 0 && !data.isLoading()) {
-                data.updateAsync();
-            }
         }
-        // travelled farther than refreshDistanceChunks while the map was closed: auto-refresh now,
-        // because the automatic refresh only runs while the map is visible
-        data.refreshIfMoved();
+        // show the cached grid immediately; the fast lane below decides whether a refresh is needed
+        data.ensureMainTextures();
+        data.onMapOpened();
     }
 
     @Override
@@ -333,6 +327,11 @@ public class MapScreen extends Screen {
         MapData data = MapData.INSTANCE;
         if (lodWarning && !data.isInitialRefreshPending()) {
             lodWarning = false;
+            // the SeedGen delay expired while the map stayed open: start the fast build now
+            data.skipInitialDelay();
+            if (!data.isLoading()) {
+                data.updateAsync(true, MapData.RefreshTrigger.OPEN_MAP);
+            }
         }
         // keep the slider in sync unless the player is dragging it or a rebuild is running
         if (!sliderDragging && !data.isLoading()) {
@@ -2041,6 +2040,7 @@ public class MapScreen extends Screen {
         // reached both when the map is closed and when another screen temporarily replaces it
         // (e.g. the config screen); init() clears screenClosed again on return
         screenClosed = true;
+        MapData.INSTANCE.onMapClosed();
         releaseSoft3d();
         releaseArrowTexture();
         super.removed();
@@ -2121,7 +2121,7 @@ public class MapScreen extends Screen {
             if (mx >= box.firstBtnX() && mx <= box.firstBtnX() + box.btnW()
                     && my >= box.btnY() && my <= box.btnY() + box.btnH()) {
                 data.skipInitialDelay();
-                data.updateAsync(true);
+                data.updateAsync(true, MapData.RefreshTrigger.MANUAL_DIALOG);
                 lodWarning = false;
                 return true;
             }
@@ -2234,7 +2234,7 @@ public class MapScreen extends Screen {
         int rx = width - 8 - rw;
         if (button == 0 && mx >= rx && mx <= width - 8 && my >= height - 30 && my <= height - 10) {
             if (!data.isLoading()) {
-                data.updateAsync(true);
+                data.updateAsync(true, MapData.RefreshTrigger.MANUAL_BUTTON);
             }
             return true;
         }
