@@ -27,10 +27,15 @@ public final class TileStore {
         public final long minWX, minWZ;
         public final int width, height;
         public final Identifier texture;
+        public final Identifier textureSmall;
+        public final int smallWidth, smallHeight;
         private final DynamicTexture dynamic;
+        private final DynamicTexture dynamicSmall;
 
         MapTile(int indexX, int indexZ, long minWX, long minWZ, int width, int height,
-                Identifier texture, DynamicTexture dynamic) {
+                Identifier texture, DynamicTexture dynamic,
+                Identifier textureSmall, DynamicTexture dynamicSmall,
+                int smallWidth, int smallHeight) {
             this.indexX = indexX;
             this.indexZ = indexZ;
             this.minWX = minWX;
@@ -39,12 +44,21 @@ public final class TileStore {
             this.height = height;
             this.texture = texture;
             this.dynamic = dynamic;
+            this.textureSmall = textureSmall;
+            this.dynamicSmall = dynamicSmall;
+            this.smallWidth = smallWidth;
+            this.smallHeight = smallHeight;
         }
 
         void dispose() {
             try {
                 dynamic.close();
                 Minecraft.getInstance().getTextureManager().release(texture);
+            } catch (Throwable ignored) {
+            }
+            try {
+                if (dynamicSmall != null) dynamicSmall.close();
+                if (textureSmall != null) Minecraft.getInstance().getTextureManager().release(textureSmall);
             } catch (Throwable ignored) {
             }
         }
@@ -180,11 +194,39 @@ public final class TileStore {
                 image.setPixelABGR(x, z, 0xFF000000 | (b << 16) | (g << 8) | r);
             }
         }
+        int sw = Math.max(1, tw / 4), sh = Math.max(1, th / 4);
+        NativeImage small = new NativeImage(sw, sh, false);
+        for (int z = 0; z < sh; z++) {
+            for (int x = 0; x < sw; x++) {
+                int r = 0, g = 0, b = 0, n = 0;
+                for (int dz = 0; dz < 4; dz++) {
+                    int zz = z * 4 + dz;
+                    if (zz >= th) continue;
+                    int row = (pz0 + zz) * width + px0;
+                    for (int dx = 0; dx < 4; dx++) {
+                        int xx = x * 4 + dx;
+                        if (xx >= tw) continue;
+                        int c = rgb[row + xx];
+                        r += (c >> 16) & 0xFF;
+                        g += (c >> 8) & 0xFF;
+                        b += c & 0xFF;
+                        n++;
+                    }
+                }
+                if (n == 0) n = 1;
+                small.setPixelABGR(x, z, 0xFF000000 | ((b / n) << 16) | ((g / n) << 8) | (r / n));
+            }
+        }
         DynamicTexture dynamic = new DynamicTexture(() -> "voxymap_tile", image);
         Identifier id = Identifier.fromNamespaceAndPath("voxymap",
                 "tile_" + epoch + "_" + tx + "_" + tz);
         Minecraft.getInstance().getTextureManager().register(id, dynamic);
-        MapTile tile = new MapTile(tx, tz, tileMinWX(tx), tileMinWZ(tz), tw, th, id, dynamic);
+        DynamicTexture dynamicSmall = new DynamicTexture(() -> "voxymap_tile_small", small);
+        Identifier idSmall = Identifier.fromNamespaceAndPath("voxymap",
+                "tile_" + epoch + "_" + tx + "_" + tz + "_s");
+        Minecraft.getInstance().getTextureManager().register(idSmall, dynamicSmall);
+        MapTile tile = new MapTile(tx, tz, tileMinWX(tx), tileMinWZ(tz), tw, th, id, dynamic,
+                idSmall, dynamicSmall, sw, sh);
         tiles.put(key, tile);
         return tile;
     }

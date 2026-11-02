@@ -493,7 +493,7 @@ public class MapScreen extends Screen {
     private void drawMap(GuiGraphicsExtractor g, MapData data, double uiScale) {
         TileStore tiles = data.getTileStore();
         if (VoxyMapConfig.TILE_RENDER.get() && tiles != null) {
-            drawMapTiles(g, data, tiles);
+            drawMapTiles(g, data, tiles, uiScale);
             return;
         }
         boolean mainReady = data.getTexture() != null;
@@ -531,8 +531,9 @@ public class MapScreen extends Screen {
     }
 
     /** Draws only the tiles intersecting the viewport, one independent texture per tile. */
-    private void drawMapTiles(GuiGraphicsExtractor g, MapData data, TileStore tiles) {
+    private void drawMapTiles(GuiGraphicsExtractor g, MapData data, TileStore tiles, double uiScale) {
         tiles.beginFrame();
+        boolean useSmall = zoom * uiScale < 0.5;
         int pb = Math.max(1, data.getPixelBlocks());
         double worldPerScreenPx = pb / Math.max(1.0e-6, zoom);
         double left = centerX - (width / 2.0) * worldPerScreenPx;
@@ -558,10 +559,20 @@ public class MapScreen extends Screen {
                 var pose = g.pose();
                 pose.pushMatrix();
                 pose.translate((float) sx, (float) sy);
-                pose.scale((float) zoom, (float) zoom);
-                g.blit(RenderPipelines.GUI_TEXTURED_PREMULTIPLIED_ALPHA, tile.texture,
-                        0, 0, 0f, 0f, tile.width, tile.height,
-                        tile.width, tile.height, tile.width, tile.height);
+                if (useSmall) {
+                    // 1/4 box-filtered copy plus a fractional scale so the destination still spans
+                    // exactly this tile (no seams when the small path is selected).
+                    pose.scale((float) (zoom * tile.width / tile.smallWidth),
+                            (float) (zoom * tile.height / tile.smallHeight));
+                    g.blit(RenderPipelines.GUI_TEXTURED_PREMULTIPLIED_ALPHA, tile.textureSmall,
+                            0, 0, 0f, 0f, tile.smallWidth, tile.smallHeight,
+                            tile.smallWidth, tile.smallHeight, tile.smallWidth, tile.smallHeight);
+                } else {
+                    pose.scale((float) zoom, (float) zoom);
+                    g.blit(RenderPipelines.GUI_TEXTURED_PREMULTIPLIED_ALPHA, tile.texture,
+                            0, 0, 0f, 0f, tile.width, tile.height,
+                            tile.width, tile.height, tile.width, tile.height);
+                }
                 pose.popMatrix();
             }
         }
