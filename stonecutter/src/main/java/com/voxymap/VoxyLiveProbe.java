@@ -264,7 +264,7 @@ public final class VoxyLiveProbe {
         }
         String text = "events=" + count + " unique=" + uniqueKeys.size()
                 + " levels=" + (levels.length() == 0 ? "-" : levels)
-                + " threads=" + threads.size()
+                + " threads=" + (threads.size() <= 3 ? threads : threads.size() + " threads")
                 + " copySamples=" + samples.get() + " copyFails=" + copyFails.get()
                 + (lastSample.isEmpty() ? "" : " sample[" + lastSample + "]");
         System.out.println("[voxymap-live] " + text);
