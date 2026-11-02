@@ -2841,6 +2841,10 @@ public final class MapData {
         if (f == null || s == null) return;
         TileStore current = tileStore;
         if (current != null && current.frame() == f) return;
+        if (current != null && current.matches(s.width, s.height, s.minWX, s.minWZ, s.pixelBlocks)) {
+            current.updateFrame(f);
+            return;
+        }
         TileStore next = new TileStore(f, s.width, s.height, s.minWX, s.minWZ, s.pixelBlocks,
                 f.epoch);
         tileStore = next;

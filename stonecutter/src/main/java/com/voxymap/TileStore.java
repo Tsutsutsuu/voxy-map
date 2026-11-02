@@ -26,6 +26,7 @@ public final class TileStore {
         public final int indexX, indexZ;
         public final long minWX, minWZ;
         public final int width, height;
+        public final int frameEpoch;
         public final Identifier texture;
         public final Identifier textureSmall;
         public final int smallWidth, smallHeight;
@@ -33,7 +34,7 @@ public final class TileStore {
         private final DynamicTexture dynamicSmall;
 
         MapTile(int indexX, int indexZ, long minWX, long minWZ, int width, int height,
-                Identifier texture, DynamicTexture dynamic,
+                int frameEpoch, Identifier texture, DynamicTexture dynamic,
                 Identifier textureSmall, DynamicTexture dynamicSmall,
                 int smallWidth, int smallHeight) {
             this.indexX = indexX;
@@ -42,6 +43,7 @@ public final class TileStore {
             this.minWZ = minWZ;
             this.width = width;
             this.height = height;
+            this.frameEpoch = frameEpoch;
             this.texture = texture;
             this.dynamic = dynamic;
             this.textureSmall = textureSmall;
@@ -64,9 +66,8 @@ public final class TileStore {
         }
     }
 
-    private final MapData.ColorFrame frame;
-    private final int width, height;
-    private final long minWX, minWZ;
+    private volatile MapData.ColorFrame frame;
+    private final int width, height;    private final long minWX, minWZ;
     private final int pixelBlocks;
     private final int tilesX, tilesY;
     private final long epoch;
@@ -90,6 +91,23 @@ public final class TileStore {
 
     public MapData.ColorFrame frame() {
         return frame;
+    }
+
+    /** True when this store's world geometry matches the supplied snapshot. */
+    public boolean matches(int width, int height, long minWX, long minWZ, int pixelBlocks) {
+        return this.width == width && this.height == height
+                && this.minWX == minWX && this.minWZ == minWZ && this.pixelBlocks == pixelBlocks;
+    }
+
+    /**
+     * Keeps the existing tile objects but makes their textures stale. The next visit to a tile
+     * re-cuts/upload it from the new colour frame within the per-frame budget, so a refresh does
+     * not throw away every visible tile texture at once.
+     */
+    public void updateFrame(MapData.ColorFrame next) {
+        if (next == this.frame) return;
+        this.frame = next;
+        empty.clear();
     }
 
     public int tilesX() {
@@ -164,7 +182,13 @@ public final class TileStore {
         if (tx < 0 || tz < 0 || tx >= tilesX || tz >= tilesY) return null;
         long key = ((long) tx << 32) | (tz & 0xFFFFFFFFL);
         MapTile existing = tiles.get(key);
-        if (existing != null) return existing;
+        if (existing != null) {
+            if (existing.frameEpoch == frame.epoch) return existing;
+            if (createBudget <= 0) return existing; // keep the old colours for one more frame
+            createBudget--;
+            existing.dispose();
+            tiles.remove(key);
+        }
         if (empty.contains(key)) return null;
         if (createBudget <= 0) return null;
         createBudget--;
@@ -225,7 +249,7 @@ public final class TileStore {
         Identifier idSmall = Identifier.fromNamespaceAndPath("voxymap",
                 "tile_" + epoch + "_" + tx + "_" + tz + "_s");
         Minecraft.getInstance().getTextureManager().register(idSmall, dynamicSmall);
-        MapTile tile = new MapTile(tx, tz, tileMinWX(tx), tileMinWZ(tz), tw, th, id, dynamic,
+        MapTile tile = new MapTile(tx, tz, tileMinWX(tx), tileMinWZ(tz), tw, th, frame.epoch, id, dynamic,
                 idSmall, dynamicSmall, sw, sh);
         tiles.put(key, tile);
         return tile;
