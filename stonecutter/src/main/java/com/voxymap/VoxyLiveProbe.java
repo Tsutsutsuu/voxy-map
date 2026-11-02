@@ -47,10 +47,15 @@ public final class VoxyLiveProbe {
     private static final AtomicLong copyFails = new AtomicLong();
     private static final AtomicIntegerArray levelCounts = new AtomicIntegerArray(8);
     private static final Map<Long, Boolean> uniqueKeys = new ConcurrentHashMap<>();
+    private static final Set<Long> uniqueEver = ConcurrentHashMap.newKeySet();
+    private static final Map<Thread, AtomicLong> threadCounts = new ConcurrentHashMap<>();
+    private static final Map<Integer, AtomicLong> flagCounts = new ConcurrentHashMap<>();
     private static final Set<String> threads = ConcurrentHashMap.newKeySet();
     private static volatile long lastEventMs;
     private static volatile String lastSample = "";
     private static long lastReportMs;
+    private static long lastReportEvents;
+    private static long lastReportAtMs;
     private static long lastAttemptMs;
     private static long lastCallbackCheckMs;
     private static Method callbackAccept;
@@ -202,9 +207,14 @@ public final class VoxyLiveProbe {
             samples.set(0);
             copyFails.set(0);
             uniqueKeys.clear();
+            uniqueEver.clear();
             threads.clear();
+            threadCounts.clear();
+            flagCounts.clear();
             for (int i = 0; i < levelCounts.length(); i++) levelCounts.set(i, 0);
             lastReportMs = System.currentTimeMillis();
+            lastReportAtMs = lastReportMs;
+            lastReportEvents = 0;
             System.out.println("[voxymap-live] installed on " + engineClass.getSimpleName()
                     + " previousCallback=" + (previousCallback == null ? "null"
                     : previousCallback.getClass().getName()));
@@ -228,6 +238,9 @@ public final class VoxyLiveProbe {
         if (lvl >= 0 && lvl < levelCounts.length()) levelCounts.incrementAndGet(lvl);
         long key = sectionKey == null ? 0 : sectionKey.getLong(section);
         if (uniqueKeys.size() < 100_000) uniqueKeys.put(key, Boolean.TRUE);
+        if (uniqueEver.size() < 200_000) uniqueEver.add(key);
+        threadCounts.computeIfAbsent(Thread.currentThread(), t -> new AtomicLong()).incrementAndGet();
+        flagCounts.computeIfAbsent(updateFlags, f -> new AtomicLong()).incrementAndGet();
         long count = events.get();
         if ((count & 511L) == 0L && sectionCopyData != null) {
             samples.incrementAndGet();
@@ -254,6 +267,9 @@ public final class VoxyLiveProbe {
 
     private static void report() {
         long count = events.get();
+        long now = System.currentTimeMillis();
+        long elapsed = Math.max(1L, lastReportAtMs == 0 ? 10_000L : now - lastReportAtMs);
+        long delta = Math.max(0L, count - lastReportEvents);
         StringBuilder levels = new StringBuilder();
         for (int i = 0; i < levelCounts.length(); i++) {
             int c = levelCounts.get(i);
@@ -262,9 +278,27 @@ public final class VoxyLiveProbe {
                 levels.append(i).append(':').append(c);
             }
         }
-        String text = "events=" + count + " unique=" + uniqueKeys.size()
+        StringBuilder threadList = new StringBuilder();
+        threadCounts.entrySet().stream()
+                .sorted((a, b) -> Long.compare(b.getValue().get(), a.getValue().get()))
+                .limit(6)
+                .forEach(e -> {
+                    if (threadList.length() > 0) threadList.append(", ");
+                    threadList.append(e.getKey().getName()).append(':').append(e.getValue().get());
+                });
+        StringBuilder flagList = new StringBuilder();
+        flagCounts.entrySet().stream()
+                .sorted((a, b) -> Long.compare(b.getValue().get(), a.getValue().get()))
+                .limit(8)
+                .forEach(e -> {
+                    if (flagList.length() > 0) flagList.append('/');
+                    flagList.append(e.getKey()).append(':').append(e.getValue().get());
+                });
+        String text = "events=" + count + " (+" + (delta * 1000L / elapsed) + "/s)"
+                + " uniqueWindow=" + uniqueKeys.size() + " uniqueTotal=" + uniqueEver.size()
                 + " levels=" + (levels.length() == 0 ? "-" : levels)
-                + " threads=" + (threads.size() <= 3 ? threads : threads.size() + " threads")
+                + " threads=[" + threadList + "]"
+                + " flags=" + (flagList.length() == 0 ? "-" : flagList)
                 + " copySamples=" + samples.get() + " copyFails=" + copyFails.get()
                 + (lastSample.isEmpty() ? "" : " sample[" + lastSample + "]");
         System.out.println("[voxymap-live] " + text);
@@ -273,6 +307,10 @@ public final class VoxyLiveProbe {
         }
         uniqueKeys.clear();
         threads.clear();
+        threadCounts.clear();
+        flagCounts.clear();
+        lastReportEvents = count;
+        lastReportAtMs = now;
     }
 
     public static String statsLine() {
