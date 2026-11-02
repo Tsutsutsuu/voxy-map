@@ -493,6 +493,9 @@ public class MapScreen extends Screen {
     private void drawMap(GuiGraphicsExtractor g, MapData data, double uiScale) {
         TileStore tiles = data.getTileStore();
         if (VoxyMapConfig.TILE_RENDER.get() && tiles != null) {
+            // Show the pre-filtered whole-map copy first, then let tiles replace it. Without this
+            // the per-frame tile budget makes a freshly opened map visibly fill from top to bottom.
+            drawTilePreview(g, data);
             drawMapTiles(g, data, tiles, uiScale);
             return;
         }
@@ -528,6 +531,27 @@ public class MapScreen extends Screen {
         g.blit(RenderPipelines.GUI_TEXTURED_PREMULTIPLIED_ALPHA, tex, (int) Math.round(x0), (int) Math.round(y0),
                 0f, 0f, Math.max(1, (int) Math.round(w)), Math.max(1, (int) Math.round(h)),
                 srcW, srcH, srcW, srcH);
+    }
+
+    /** Cheap whole-map backdrop used until the visible tile textures have been created. */
+    private void drawTilePreview(GuiGraphicsExtractor g, MapData data) {
+        int mapW = data.getMapWidth(), mapH = data.getMapHeight();
+        if (mapW <= 0 || mapH <= 0) return;
+        Identifier tex = data.getTextureSmall();
+        boolean small = tex != null;
+        if (tex == null) tex = data.getTexture();
+        if (tex == null) return;
+        int srcW = small ? Math.max(1, mapW / 4) : mapW;
+        int srcH = small ? Math.max(1, mapH / 4) : mapH;
+        double x0 = width / 2.0 - centerPx() * zoom;
+        double y0 = height / 2.0 - centerPz() * zoom;
+        var pose = g.pose();
+        pose.pushMatrix();
+        pose.translate((float) x0, (float) y0);
+        pose.scale((float) zoom, (float) zoom);
+        g.blit(RenderPipelines.GUI_TEXTURED_PREMULTIPLIED_ALPHA, tex,
+                0, 0, 0f, 0f, mapW, mapH, srcW, srcH, srcW, srcH);
+        pose.popMatrix();
     }
 
     /** Draws only the tiles intersecting the viewport, one independent texture per tile. */
