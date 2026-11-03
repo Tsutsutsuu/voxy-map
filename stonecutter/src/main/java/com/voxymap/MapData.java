@@ -3294,6 +3294,11 @@ public final class MapData {
         return next;
     }
 
+    /** Loads the Voxy liquid ids from an already-open database (used by VoxyTileSource). */
+    public static Set<Long> loadWaterIdsFromDb(Object db, Object mappings) {
+        return loadWaterIds(db, mappings, new HashMap<>());
+    }
+
     /** Loads the Voxy liquid id set without building the global Snapshot (needed by live tiles). */
     public void ensureWaterIdsAsync() {
         if (waterIdsLoaded || waterIdsLoading) return;
@@ -3313,7 +3318,11 @@ public final class MapData {
                     if (!hadWater && !loaded.isEmpty()) {
                         Minecraft.getInstance().execute(() -> {
                             LiveTileStore store = liveTiles;
-                            if (store != null) store.dropAllTiles();
+                            if (store != null) {
+                                // tiles/cache built before the liquid ids were known are dry land
+                                store.dropAllTiles(false);
+                                store.clearCacheFiles();
+                            }
                         });
                     }
                 }

@@ -36,7 +36,7 @@ import java.util.concurrent.atomic.AtomicLong;
 public final class LiveTileStore {
     public static final int TILE_PIXELS = 256;
     private static final int CACHE_MAGIC = 0x56585431;
-    private static final int CACHE_VERSION = 3;
+    private static final int CACHE_VERSION = 4;
     private static final ExecutorService CACHE_IO = Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "voxymap-tile-cache");
         t.setDaemon(true);
@@ -165,9 +165,14 @@ public final class LiveTileStore {
 
     /** Drops every tile so the next frame rebuilds them from cache/Voxy storage (manual refresh). */
     public void dropAllTiles() {
+        dropAllTiles(true);
+    }
+
+    /** @param persistLive write live-only tiles to disk before dropping (false while invalidating) */
+    public void dropAllTiles(boolean persistLive) {
         resetGeneration.incrementAndGet();
         for (LiveTile tile : tiles.values()) {
-            if (tile.seedEpoch < 0) CACHE_IO.submit(() -> saveCached(tile));
+            if (persistLive && tile.seedEpoch < 0) CACHE_IO.submit(() -> saveCached(tile));
             tile.dispose();
         }
         tiles.clear();
@@ -180,6 +185,28 @@ public final class LiveTileStore {
         maxTileX.set(Integer.MIN_VALUE);
         minTileZ.set(Integer.MAX_VALUE);
         maxTileZ.set(Integer.MIN_VALUE);
+    }
+
+    /** Deletes this tile store's on-disk cache (used when the liquid-id table was not ready yet). */
+    public void clearCacheFiles() {
+        if (cacheDir == null) return;
+        // CACHE_IO is FIFO: any dry cache writes queued before this delete run first and are
+        // removed; correct tiles written afterwards are kept.
+        CACHE_IO.submit(() -> {
+            try {
+                if (!Files.isDirectory(cacheDir)) return;
+                try (java.util.stream.Stream<Path> files = Files.list(cacheDir)) {
+                    files.filter(p -> p.getFileName().toString().endsWith(".vxt"))
+                            .forEach(p -> {
+                                try {
+                                    Files.deleteIfExists(p);
+                                } catch (Throwable ignored) {
+                                }
+                            });
+                }
+            } catch (Throwable ignored) {
+            }
+        });
     }
 
     public long minWX() {

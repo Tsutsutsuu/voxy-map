@@ -37,6 +37,7 @@ public final class VoxyTileSource {
     private Object db;
     private final List<Object> handles = new ArrayList<>();
     private Object sectionsHandle;
+    private volatile Set<Long> ownWaterIds = Set.of();
 
     private static final class KeyList {
         long[] keys = new long[16];
@@ -85,6 +86,11 @@ public final class VoxyTileSource {
         db = RocksBridge.openReadOnly(storage.toString(), handles);
         if (db == null || handles.size() < 3) return;
         sectionsHandle = handles.get(1);
+        // The tile source must not decode water as solid just because the async global liquid-id
+        // load has not finished yet: read the same mapping table directly from this connection.
+        if (waterIds.get().isEmpty()) {
+            ownWaterIds = MapData.loadWaterIdsFromDb(db, handles.get(2));
+        }
         Object it = RocksBridge.newIterator(db, sectionsHandle);
         final long tileWorld = (long) LiveTileStore.TILE_PIXELS * pixelBlocks;
         try {
@@ -151,7 +157,9 @@ public final class VoxyTileSource {
             keyBuf.putLong(key);
             byte[] val = RocksBridge.get(db, sectionsHandle, keyBuf.array());
             if (val == null) continue;
-            long[] cols = MapData.decodeSectionColumns(key, val, waterIds.get());
+            Set<Long> ids = waterIds.get();
+            if (ids.isEmpty()) ids = ownWaterIds;
+            long[] cols = MapData.decodeSectionColumns(key, val, ids);
             if (cols == null) continue;
             for (int c = 0; c < 1024; c++) {
                 long packed = cols[c];
