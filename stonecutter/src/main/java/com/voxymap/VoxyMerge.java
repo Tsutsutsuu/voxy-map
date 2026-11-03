@@ -94,6 +94,9 @@ public final class VoxyMerge {
             if (curFloor == NO_SOLID) {
                 acceptSolid = true;
             } else if (lvl < curSolidLvl) {
+                // A finitely-detailed section with a real surface is authoritative. If it is a
+                // buried slice, keep the higher of this section and any coarser solid already
+                // seen, so section arrival order (DB scan vs live event) cannot change the height.
                 acceptSolid = true;
             } else if (lvl == curSolidLvl) {
                 acceptSolid = solidHere > curFloor;
@@ -101,7 +104,13 @@ public final class VoxyMerge {
                 acceptSolid = curSolidBuried && solidHere > curFloor;
             }
             if (acceptSolid) {
-                curFloor = solidHere;
+                if (lvl < curSolidLvl && top == NO_TOP && curFloor != NO_SOLID) {
+                    curFloor = Math.max(curFloor, solidHere);
+                } else if (lvl < curSolidLvl && top != NO_TOP) {
+                    curFloor = solidHere;
+                } else {
+                    curFloor = solidHere;
+                }
                 curSolidLvl = lvl;
                 curSolidBuried = top == NO_TOP;
             }
