@@ -90,29 +90,20 @@ public final class VoxyMerge {
         // This keeps flat/valley columns at lvl0 precision instead of maxing every column against
         // the coarsest LOD.
         if (solidHere != Integer.MIN_VALUE) {
-            boolean acceptSolid;
-            if (curFloor == NO_SOLID) {
-                acceptSolid = true;
-            } else if (lvl < curSolidLvl) {
-                // A finitely-detailed section with a real surface is authoritative. If it is a
-                // buried slice, keep the higher of this section and any coarser solid already
-                // seen, so section arrival order (DB scan vs live event) cannot change the height.
-                acceptSolid = true;
-            } else if (lvl == curSolidLvl) {
-                acceptSolid = solidHere > curFloor;
-            } else {
-                acceptSolid = curSolidBuried && solidHere > curFloor;
-            }
-            if (acceptSolid) {
-                if (lvl < curSolidLvl && top == NO_TOP && curFloor != NO_SOLID) {
-                    curFloor = Math.max(curFloor, solidHere);
-                } else if (lvl < curSolidLvl && top != NO_TOP) {
-                    curFloor = solidHere;
-                } else {
-                    curFloor = solidHere;
-                }
+            if (lvl < curSolidLvl) {
+                // A finer level determines whether coarser solids may fill: if the finer level
+                // has a real surface its exact solid wins; if it is only a buried slice, keep the
+                // highest solid and stay in "buried" mode so all coarser levels can be compared
+                // regardless of arrival order.
+                curFloor = top != NO_TOP ? solidHere : Math.max(solidHere, curFloor);
                 curSolidLvl = lvl;
                 curSolidBuried = top == NO_TOP;
+            } else if (lvl == curSolidLvl) {
+                if (solidHere > curFloor) curFloor = solidHere;
+                if (top != NO_TOP) curSolidBuried = false;
+            } else if (curSolidBuried && solidHere > curFloor) {
+                // still the same finest (buried) level underneath: only raise the fallback height
+                curFloor = solidHere;
             }
         }
         if (!curWater) {
