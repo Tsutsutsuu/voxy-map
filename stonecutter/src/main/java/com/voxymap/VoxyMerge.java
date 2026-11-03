@@ -41,18 +41,24 @@ public final class VoxyMerge {
         int curLvl;
         int curFloor;
         int curBiome;
+        int curSolidLvl;
+        boolean curSolidBuried;
         if (prevPacked == LONG_EMPTY) {
             curTop = top;
             curWater = top != NO_TOP && topFluid;
             curLvl = lvl;
             curFloor = floor;
             curBiome = biome;
+            curSolidLvl = lvl;
+            curSolidBuried = top == NO_TOP;
         } else {
             curTop = (int) ((prevPacked >>> 24) & 0xFFFF) - 32768;
             curWater = (prevPacked & (1L << 52)) != 0;
             curLvl = (int) ((prevPacked >>> 48) & 0xF);
             curFloor = (int) (prevPacked & 0xFFFF) - 32768;
             curBiome = (int) ((prevPacked >>> 53) & 0x1FF);
+            curSolidLvl = (int) ((prevPacked >>> 16) & 0xF);
+            curSolidBuried = (prevPacked & (1L << 20)) != 0;
 
             // The map only needs two things from a column: its highest solid height and whether
             // its *finest* real surface is water. A top is never chosen by comparing heights across
@@ -79,11 +85,26 @@ public final class VoxyMerge {
             }
         }
 
-        // highest solid over all LODs is the reliable terrain height; the finest real surface only
-        // supplies the water flag (and its water height)
-        if (solidHere != Integer.MIN_VALUE
-                && (curFloor == NO_SOLID || solidHere > curFloor)) {
-            curFloor = solidHere;
+        // Solid height is level-aware: the finest level that has any solid wins. A coarser solid
+        // may only fill above a buried fine slice (its ceiling is not the real terrain height).
+        // This keeps flat/valley columns at lvl0 precision instead of maxing every column against
+        // the coarsest LOD.
+        if (solidHere != Integer.MIN_VALUE) {
+            boolean acceptSolid;
+            if (curFloor == NO_SOLID) {
+                acceptSolid = true;
+            } else if (lvl < curSolidLvl) {
+                acceptSolid = true;
+            } else if (lvl == curSolidLvl) {
+                acceptSolid = solidHere > curFloor;
+            } else {
+                acceptSolid = curSolidBuried && solidHere > curFloor;
+            }
+            if (acceptSolid) {
+                curFloor = solidHere;
+                curSolidLvl = lvl;
+                curSolidBuried = top == NO_TOP;
+            }
         }
         if (!curWater) {
             curTop = curFloor != NO_SOLID ? curFloor : NO_TOP;
@@ -95,6 +116,8 @@ public final class VoxyMerge {
         if (curWater) out |= (1L << 52);
         out |= ((long) curBiome) << 53;
         out |= ((long) Math.min(15, Math.max(0, curLvl))) << 48;
+        out |= ((long) Math.min(15, Math.max(0, curSolidLvl))) << 16;
+        if (curSolidBuried) out |= 1L << 20;
         return out;
     }
 }

@@ -61,7 +61,7 @@ public final class MapData {
      */
     private static final long GROW_MARGIN_BLOCKS = 512L;
     /** 8: snapshots keep a 512-block empty margin so edge exploration can stay incremental. */
-    private static final int CACHE_VERSION = 8;
+    private static final int CACHE_VERSION = 9;
     private static final int FALLBACK_SEA = 63;
 
     private static final class Snapshot {
@@ -2410,7 +2410,7 @@ public final class MapData {
      * paired with a rebuilt snapshot again (that mismatch is what left black blocks on the map when
      * a refresh ran out of memory before it could re-render the colours).
      */
-    private static final int COLOR_CACHE_VERSION = 3;
+    private static final int COLOR_CACHE_VERSION = 4;
 
     /** everything that changes the produced pixels; changing any of these invalidates the .vxc */
     private static String colorCacheKey(String style, int sea) {

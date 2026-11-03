@@ -36,7 +36,7 @@ import java.util.concurrent.atomic.AtomicLong;
 public final class LiveTileStore {
     public static final int TILE_PIXELS = 256;
     private static final int CACHE_MAGIC = 0x56585431;
-    private static final int CACHE_VERSION = 1;
+    private static final int CACHE_VERSION = 2;
     private static final ExecutorService CACHE_IO = Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "voxymap-tile-cache");
         t.setDaemon(true);
