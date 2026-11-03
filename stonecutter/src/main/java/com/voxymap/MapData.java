@@ -146,6 +146,7 @@ public final class MapData {
     private volatile int texW, texH;
     private volatile boolean loading;
     private volatile boolean styleChanging;
+    private volatile long styleChangeStartMs;
     /** last 3D view mode for this world (per-world ui state) */
     private volatile boolean view3d;
     /** remembered orbit camera (per-world ui state) */
@@ -859,23 +860,39 @@ public final class MapData {
     }
 
     public void setStyle(String s) {
-        if (!isReady() || loading || styleChanging) return;
+        if (!isReady() || loading || styleChanging) {
+            if (RefreshDebug.enabled()) {
+                RefreshDebug.chat("style change ignored: ready=" + isReady() + " loading=" + loading
+                        + " changing=" + styleChanging, net.minecraft.ChatFormatting.YELLOW);
+            }
+            return;
+        }
         style = s;
         saveUiState();
         Snapshot target = snap;
         int sea = seaLevel();
         styleChanging = true;
+        styleChangeStartMs = System.currentTimeMillis();
+        if (RefreshDebug.enabled()) {
+            RefreshDebug.chat("style -> " + s + " (" + (target == null ? 0 : target.width) + "x"
+                    + (target == null ? 0 : target.height) + ")", net.minecraft.ChatFormatting.DARK_GRAY);
+        }
         loader.submit(() -> {
             try {
                 int[] rgb = renderColor(target, s, sea, false);
                 Minecraft.getInstance().execute(() -> {
-                    uploadTexture(target, rgb);
-                    lastRenderedStyle = s;
-                    styleChanging = false;
+                    try {
+                        uploadTexture(target, rgb);
+                        lastRenderedStyle = s;
+                    } finally {
+                        styleChanging = false;
+                        styleChangeStartMs = 0;
+                    }
                 });
             } catch (Throwable t) {
                 t.printStackTrace();
                 styleChanging = false;
+                styleChangeStartMs = 0;
             }
         });
     }
@@ -891,17 +908,23 @@ public final class MapData {
         int sea = seaLevel();
         String current = style;
         styleChanging = true;
+        styleChangeStartMs = System.currentTimeMillis();
         loader.submit(() -> {
             try {
                 int[] rgb = renderColor(target, current, sea, false);
                 Minecraft.getInstance().execute(() -> {
-                    uploadTexture(target, rgb);
-                    lastRenderedStyle = current;
-                    styleChanging = false;
+                    try {
+                        uploadTexture(target, rgb);
+                        lastRenderedStyle = current;
+                    } finally {
+                        styleChanging = false;
+                        styleChangeStartMs = 0;
+                    }
                 });
             } catch (Throwable t) {
                 t.printStackTrace();
                 styleChanging = false;
+                styleChangeStartMs = 0;
             }
         });
     }
@@ -2158,6 +2181,15 @@ public final class MapData {
             }
         }
         updatePlayerStillness(mc);
+        if (styleChanging && styleChangeStartMs != 0
+                && nowMs - styleChangeStartMs > 30_000L) {
+            // never leave the style button disabled forever if a colour job was lost
+            styleChanging = false;
+            styleChangeStartMs = 0;
+            if (RefreshDebug.enabled()) {
+                RefreshDebug.chat("style change watchdog: forced idle", net.minecraft.ChatFormatting.YELLOW);
+            }
+        }
         if (!VoxyMapConfig.AUTO_REFRESH.get()) return;
         if (mapOpen) {
             maybeRunPendingOpenRefresh();
