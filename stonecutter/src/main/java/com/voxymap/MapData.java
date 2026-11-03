@@ -3212,8 +3212,9 @@ public final class MapData {
         NativeImage img = new NativeImage(w, h, false);
         for (int i = 0; i < rgb.length; i++) {
             int c = rgb[i];
+            int a = (c >>> 24) & 0xFF;
             int r = (c >> 16) & 0xFF, g = (c >> 8) & 0xFF, b = c & 0xFF;
-            img.setPixelABGR(i % w, i / w, 0xFF000000 | (b << 16) | (g << 8) | r);
+            img.setPixelABGR(i % w, i / w, (a << 24) | (b << 16) | (g << 8) | r);
         }
         return img;
     }
@@ -3225,20 +3226,24 @@ public final class MapData {
         NativeImage small = new NativeImage(sw, sh, false);
         for (int z = 0; z < sh; z++) {
             for (int x = 0; x < sw; x++) {
-                int r = 0, g = 0, b = 0, n = 0;
+                int r = 0, g = 0, b = 0, a = 0, n = 0;
                 for (int dz = 0; dz < 4; dz++) {
                     for (int dx = 0; dx < 4; dx++) {
                         int i = (z * 4 + dz) * w + (x * 4 + dx);
                         if (i >= rgb.length) continue;
                         int c = rgb[i];
+                        int ca = (c >>> 24) & 0xFF;
+                        if (ca == 0) continue;
                         r += (c >> 16) & 0xFF;
                         g += (c >> 8) & 0xFF;
                         b += c & 0xFF;
+                        a += ca;
                         n++;
                     }
                 }
-                if (n == 0) n = 1;
-                small.setPixelABGR(x, z, 0xFF000000 | ((b / n) << 16) | ((g / n) << 8) | (r / n));
+                int alpha = n == 0 ? 0 : a / n;
+                small.setPixelABGR(x, z, (alpha << 24) | ((b / Math.max(1, n)) << 16)
+                        | ((g / Math.max(1, n)) << 8) | (r / Math.max(1, n)));
             }
         }
         return small;
