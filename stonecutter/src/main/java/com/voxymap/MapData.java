@@ -3197,6 +3197,10 @@ public final class MapData {
         colorFrame = new ColorFrame(rgb, s.width, s.height, prev == null ? 1 : prev.epoch + 1);
         if (!(VoxyMapConfig.TILE_RENDER.get() && VoxyMapConfig.UNIFIED_TILES.get())) {
             ensureTileStore();
+        } else {
+            // create the live store as soon as a colour frame exists, even while the map is
+            // closed, so Voxy events for newly explored chunks are not dropped until first open
+            getLiveTiles();
         }
         texEpoch++;
         Minecraft mc = Minecraft.getInstance();
