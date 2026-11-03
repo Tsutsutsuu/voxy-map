@@ -42,6 +42,11 @@ public final class LiveTileStore {
         t.setDaemon(true);
         return t;
     });
+    private static final ExecutorService SEED_IO = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "voxymap-tile-seed");
+        t.setDaemon(true);
+        return t;
+    });
 
     public static final class LiveTile {
         public final int tx, tz;
@@ -95,6 +100,8 @@ public final class LiveTileStore {
     private final AtomicInteger colorRequestsThisFrame = new AtomicInteger();
     private final AtomicInteger seedCreatesThisFrame = new AtomicInteger();
     private final AtomicInteger seedRefreshesThisFrame = new AtomicInteger();
+    private final AtomicInteger seedRequestsThisFrame = new AtomicInteger();
+    private final Set<Long> seedPending = ConcurrentHashMap.newKeySet();
     private final AtomicInteger seedTileCount = new AtomicInteger();
     private final AtomicInteger liveOnlyTileCount = new AtomicInteger();
     private final AtomicInteger minTileX = new AtomicInteger(Integer.MAX_VALUE);
@@ -195,6 +202,7 @@ public final class LiveTileStore {
         colorRequestsThisFrame.set(0);
         seedCreatesThisFrame.set(0);
         seedRefreshesThisFrame.set(0);
+        seedRequestsThisFrame.set(0);
     }
 
     public LiveTile get(int tx, int tz) {
@@ -228,33 +236,51 @@ public final class LiveTileStore {
             }
             return existing;
         }
-        if (seedCreatesThisFrame.get() >= 16) return null;
-        seedCreatesThisFrame.incrementAndGet();
-        long[] srcPixels = seedPixels;
-        int[] srcRgb = seedRgb;
-        if (srcPixels == null || srcRgb == null) {
-            LiveTile cached = loadCached(tx, tz);
-            if (cached != null) {
-                LiveTile previous = tiles.putIfAbsent(key(tx, tz), cached);
-                return previous != null ? previous : cached;
-            }
-            return null;
-        }
+        if (seedRequestsThisFrame.get() >= 16) return null;
+        long key = key(tx, tz);
+        if (!seedPending.add(key)) return null;
+        seedRequestsThisFrame.incrementAndGet();
+        final long[] srcPixels = seedPixels;
+        final int[] srcRgb = seedRgb;
+        final int srcWidth = seedWidth, srcHeight = seedHeight;
+        final long srcMinWX = seedMinWX, srcMinWZ = seedMinWZ;
+        final int srcPb = seedPixelBlocks;
+        final int srcEpoch = seedEpoch;
+        SEED_IO.submit(() -> {
+            LiveTile built = buildSeedTile(tx, tz, srcPixels, srcRgb, srcWidth, srcHeight,
+                    srcMinWX, srcMinWZ, srcPb, srcEpoch);
+            if (built == null) built = loadCached(tx, tz);
+            final LiveTile result = built;
+            Minecraft.getInstance().execute(() -> {
+                seedPending.remove(key);
+                if (result == null) return;
+                LiveTile previous = tiles.putIfAbsent(key, result);
+                if (previous == null) {
+                    seedTileCount.incrementAndGet();
+                    markBounds(tx, tz);
+                }
+            });
+        });
+        return null; // the renderer retries next frame; preview hides the gap
+    }
+
+    private LiveTile buildSeedTile(int tx, int tz, long[] srcPixels, int[] srcRgb,
+                                   int srcWidth, int srcHeight, long srcMinWX, long srcMinWZ,
+                                   int srcPb, int srcEpoch) {
+        if (srcPixels == null || srcRgb == null || srcWidth <= 0 || srcHeight <= 0) return null;
         long tileWorldX = tileMinWX(tx);
         long tileWorldZ = tileMinWZ(tz);
-        int px0 = (int) Math.floorDiv(tileWorldX - seedMinWX, seedPixelBlocks);
-        int pz0 = (int) Math.floorDiv(tileWorldZ - seedMinWZ, seedPixelBlocks);
-        int step = Math.max(1, seedPixelBlocks / pixelBlocks);
+        int px0 = (int) Math.floorDiv(tileWorldX - srcMinWX, Math.max(1, srcPb));
+        int pz0 = (int) Math.floorDiv(tileWorldZ - srcMinWZ, Math.max(1, srcPb));
         LiveTile tile = new LiveTile(tx, tz, tileWorldX, tileWorldZ);
-        tile.seedEpoch = seedEpoch;
         boolean any = false;
         for (int z = 0; z < TILE_PIXELS; z++) {
             int sz = pz0 + z;
-            if (sz < 0 || sz >= seedHeight) continue;
+            if (sz < 0 || sz >= srcHeight) continue;
             for (int x = 0; x < TILE_PIXELS; x++) {
                 int sx = px0 + x;
-                if (sx < 0 || sx >= seedWidth) continue;
-                int si = sz * seedWidth + sx;
+                if (sx < 0 || sx >= srcWidth) continue;
+                int si = sz * srcWidth + sx;
                 if (si >= srcPixels.length || si >= srcRgb.length) continue;
                 tile.pixels[z * TILE_PIXELS + x] = srcPixels[si];
                 int c = srcRgb[si];
@@ -263,20 +289,9 @@ public final class LiveTileStore {
                 if ((c >>> 24) != 0) any = true;
             }
         }
-        if (!any) {
-            LiveTile cached = loadCached(tx, tz);
-            if (cached != null) {
-                LiveTile previous = tiles.putIfAbsent(key(tx, tz), cached);
-                return previous != null ? previous : cached;
-            }
-            return null;
-        }
-        LiveTile previous = tiles.putIfAbsent(key(tx, tz), tile);
-        if (previous == null) {
-            seedTileCount.incrementAndGet();
-            markBounds(tx, tz);
-        }
-        return previous != null ? previous : tile;
+        if (!any) return null;
+        tile.seedEpoch = srcEpoch;
+        return tile;
     }
 
     private Path cacheFile(int tx, int tz) {
