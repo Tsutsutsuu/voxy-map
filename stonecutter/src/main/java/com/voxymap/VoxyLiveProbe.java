@@ -309,6 +309,10 @@ public final class VoxyLiveProbe {
 
     private static void processKey(long key, Dirty d) {
         if (engine == null) return;
+        SectionConsumer sink = consumer;
+        boolean debug = VoxyMapConfig.DEBUG_VOXY_EVENTS.get() || RefreshDebug.enabled();
+        boolean live = sink != null && VoxyMapConfig.LIVE_TILES.get() && MapData.INSTANCE.hasLiveStore();
+        if (!debug && !live) return; // map has not opened yet: only drain the coalesced queue
         Object section = null;
         long t0 = System.nanoTime();
         try {
@@ -329,8 +333,7 @@ public final class VoxyLiveProbe {
         try {
             long t1 = System.nanoTime();
             long n = processed.incrementAndGet();
-            SectionConsumer sink = consumer;
-            if (sink != null && VoxyMapConfig.LIVE_TILES.get() && MapData.INSTANCE.hasLiveStore()) {
+            if (live) {
                 // The live tile overlay needs the current voxels, so the consumer path always
                 // copies; the geometric map work is coalesced by the dirty queue already.
                 try {
