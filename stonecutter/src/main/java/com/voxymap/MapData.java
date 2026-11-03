@@ -229,6 +229,8 @@ public final class MapData {
     /** debounces automatic refreshes so a failing rebuild cannot restart every tick */
     private long lastAutoRefreshMs;
     private double lastUpdateX = Double.NaN, lastUpdateZ = Double.NaN;
+    /** teleported while the map is open: the visible rectangle may now be far from the player */
+    private volatile boolean teleportRefreshPending;
 
     private MapData() {
     }
@@ -2197,6 +2199,12 @@ public final class MapData {
         }
         if (!VoxyMapConfig.AUTO_REFRESH.get()) return;
         if (mapOpen) {
+            if (teleportRefreshPending && !loading && !styleChanging) {
+                teleportRefreshPending = false;
+                // a map that is already open will not run the open-map probe again; refresh after
+                // a teleport so far-away live tiles cannot stay on their old coarse LOD data
+                updateAsync(true, RefreshTrigger.OPEN_AFTER_TRAVEL);
+            }
             maybeRunPendingOpenRefresh();
             return; // fast lane is driven by the screen itself
         }
@@ -2228,6 +2236,7 @@ public final class MapData {
             // teleport: wait for Voxy to settle before the background lane may run
             teleportUntilMs = now + 3000L;
             stillSinceMs = now;
+            teleportRefreshPending = true;
         } else if (moved > 0.02) {
             stillSinceMs = now;
         }
