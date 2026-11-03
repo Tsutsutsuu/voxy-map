@@ -1135,7 +1135,13 @@ public final class MapData {
             // they are rebuilt from the per-tile cache / Voxy storage on the next frame.
             ensureWaterIdsAsync();
             LiveTileStore store = ensure2DStore();
-            if (forceReload) store.dropAllTiles();
+            if (forceReload) {
+                // A manual refresh must not alternate between an old .vxt cache and freshly
+                // decoded storage: clear the cache and rebuild only from the authoritative DB.
+                store.dropAllTiles(false);
+                store.clearCacheFiles();
+                store.invalidateSourceIndex();
+            }
             return;
         }
         final long reportStart = System.nanoTime();

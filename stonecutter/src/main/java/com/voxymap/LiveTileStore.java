@@ -295,6 +295,12 @@ public final class LiveTileStore {
         this.cacheReady = ready;
     }
 
+    /** Rebuilds the lazy source's section index after a manual refresh. */
+    public void invalidateSourceIndex() {
+        VoxyTileSource src = source;
+        if (src != null) src.invalidateIndex();
+    }
+
     private void requestSourceTile(int tx, int tz, long key) {
         VoxyTileSource src = source;
         if (src == null || sourcePending.contains(key) || sourceEmpty.contains(key)) return;

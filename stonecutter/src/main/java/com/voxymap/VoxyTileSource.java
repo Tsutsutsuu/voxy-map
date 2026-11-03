@@ -195,10 +195,26 @@ public final class VoxyTileSource {
     public void close() {
         if (!closed.compareAndSet(false, true)) return;
         io.submit(() -> {
-            for (Object h : handles) RocksBridge.close(h);
-            RocksBridge.close(db);
-            db = null;
+            closeDb();
         });
         io.shutdown();
+    }
+
+    /** Rebuilds the section index on the next request (manual refresh after new exploration). */
+    public void invalidateIndex() {
+        if (closed.get()) return;
+        io.submit(() -> {
+            closeDb();
+            byTile.clear();
+            indexed = false;
+        });
+    }
+
+    private void closeDb() {
+        for (Object h : handles) RocksBridge.close(h);
+        handles.clear();
+        RocksBridge.close(db);
+        db = null;
+        sectionsHandle = null;
     }
 }
