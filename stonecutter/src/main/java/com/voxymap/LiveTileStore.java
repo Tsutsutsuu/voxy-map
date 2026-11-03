@@ -97,6 +97,10 @@ public final class LiveTileStore {
     private final AtomicInteger seedRefreshesThisFrame = new AtomicInteger();
     private final AtomicInteger seedTileCount = new AtomicInteger();
     private final AtomicInteger liveOnlyTileCount = new AtomicInteger();
+    private final AtomicInteger minTileX = new AtomicInteger(Integer.MAX_VALUE);
+    private final AtomicInteger maxTileX = new AtomicInteger(Integer.MIN_VALUE);
+    private final AtomicInteger minTileZ = new AtomicInteger(Integer.MAX_VALUE);
+    private final AtomicInteger maxTileZ = new AtomicInteger(Integer.MIN_VALUE);
 
     public LiveTileStore(long minWX, long minWZ, int pixelBlocks, Path cacheDir) {
         this.minWX = minWX;
@@ -153,6 +157,33 @@ public final class LiveTileStore {
 
     public int liveOnlyTileCount() {
         return liveOnlyTileCount.get();
+    }
+
+    public boolean hasBounds() {
+        return minTileX.get() != Integer.MAX_VALUE;
+    }
+
+    public int minTileX() {
+        return minTileX.get();
+    }
+
+    public int maxTileX() {
+        return maxTileX.get();
+    }
+
+    public int minTileZ() {
+        return minTileZ.get();
+    }
+
+    public int maxTileZ() {
+        return maxTileZ.get();
+    }
+
+    private void markBounds(int tx, int tz) {
+        minTileX.accumulateAndGet(tx, Math::min);
+        maxTileX.accumulateAndGet(tx, Math::max);
+        minTileZ.accumulateAndGet(tz, Math::min);
+        maxTileZ.accumulateAndGet(tz, Math::max);
     }
 
     public long sectionCount() {
@@ -241,7 +272,10 @@ public final class LiveTileStore {
             return null;
         }
         LiveTile previous = tiles.putIfAbsent(key(tx, tz), tile);
-        if (previous == null) seedTileCount.incrementAndGet();
+        if (previous == null) {
+            seedTileCount.incrementAndGet();
+            markBounds(tx, tz);
+        }
         return previous != null ? previous : tile;
     }
 
@@ -270,6 +304,7 @@ public final class LiveTileStore {
             for (int i = 0; i < tile.pixels.length; i++) tile.pixels[i] = bb.getLong();
             tile.liveDirty = true; // cached pixels have no colour; let the live pipeline colour them
             liveOnlyTileCount.incrementAndGet();
+            markBounds(tx, tz);
             return tile;
         } catch (Throwable t) {
             return null;
@@ -411,6 +446,7 @@ public final class LiveTileStore {
                         if (tile == null) {
                             tile = created;
                             liveOnlyTileCount.incrementAndGet();
+                            markBounds(tx, tz);
                         }
                     }
                     int idx = localZ * TILE_PIXELS + localX;

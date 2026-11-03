@@ -36,12 +36,12 @@ public final class Map3D {
                                 int[] stepPx, double[] radiiBlocks, boolean debugColors) {
         // per-layer tints for the LOD debug view: near = red, mid = green, far = blue
         final int[] tint = {0xE02020, 0x20E020, 0x2020E0};
-        int mapW = data.getMapWidth();
-        int mapH = data.getMapHeight();
+        int mapW = data.getRenderWidthPx();
+        int mapH = data.getRenderHeightPx();
         if (mapW <= 0 || mapH <= 0) return null;
         int pb = Math.max(1, data.getPixelBlocks());
-        long minWX = data.getMinWX();
-        long minWZ = data.getMinWZ();
+        long minWX = data.getRenderMinWX();
+        long minWZ = data.getRenderMinWZ();
 
         java.util.ArrayList<float[]> verts = new java.util.ArrayList<>();
         java.util.ArrayList<Integer> idxList = new java.util.ArrayList<>();
@@ -77,7 +77,7 @@ public final class Map3D {
                     int worldX = (int) (minWX + (long) px * pb);
                     int worldZ = (int) (minWZ + (long) pz * pb);
                     boolean e = data.isEmptyAt(worldX, worldZ);
-                    int rgb = data.getRgbAt(px, pz);
+                    int rgb = data.getRgbAtWorld(worldX, worldZ);
                     int r = (rgb >> 16) & 0xFF;
                     int g = (rgb >> 8) & 0xFF;
                     int b = rgb & 0xFF;

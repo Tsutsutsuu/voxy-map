@@ -466,6 +466,51 @@ public final class MapData {
         return s == null ? 0 : s.minWZ;
     }
 
+    /** World bounds used by the 3D mesh: the union of the base snapshot and existing live tiles. */
+    public long getRenderMinWX() {
+        Snapshot s = snap;
+        LiveTileStore live = liveTiles;
+        long min = s == null ? 0 : s.minWX;
+        if (live != null && live.hasBounds()) {
+            min = Math.min(min, live.tileMinWX(live.minTileX()));
+        }
+        return min;
+    }
+
+    public long getRenderMinWZ() {
+        Snapshot s = snap;
+        LiveTileStore live = liveTiles;
+        long min = s == null ? 0 : s.minWZ;
+        if (live != null && live.hasBounds()) {
+            min = Math.min(min, live.tileMinWZ(live.minTileZ()));
+        }
+        return min;
+    }
+
+    public int getRenderWidthPx() {
+        Snapshot s = snap;
+        int pb = getPixelBlocks();
+        long min = getRenderMinWX();
+        long max = s == null ? min : s.minWX + (long) s.width * s.pixelBlocks;
+        LiveTileStore live = liveTiles;
+        if (live != null && live.hasBounds()) {
+            max = Math.max(max, live.tileMinWX(live.maxTileX() + 1));
+        }
+        return (int) Math.max(1, (max - min + pb - 1) / pb);
+    }
+
+    public int getRenderHeightPx() {
+        Snapshot s = snap;
+        int pb = getPixelBlocks();
+        long min = getRenderMinWZ();
+        long max = s == null ? min : s.minWZ + (long) s.height * s.pixelBlocks;
+        LiveTileStore live = liveTiles;
+        if (live != null && live.hasBounds()) {
+            max = Math.max(max, live.tileMinWZ(live.maxTileZ() + 1));
+        }
+        return (int) Math.max(1, (max - min + pb - 1) / pb);
+    }
+
     /** Ground height at a world position, or sea level when unknown. */
     public int heightAt(int worldX, int worldZ) {
         Snapshot s = snap;
@@ -566,17 +611,21 @@ public final class MapData {
 
     /** Rendered RGB colour at a map pixel (0 when no data yet). */
     public int getRgbAt(int mapX, int mapZ) {
-        Snapshot s = snap;
+        int wx = (int) (getMinWX() + (long) mapX * getPixelBlocks());
+        int wz = (int) (getMinWZ() + (long) mapZ * getPixelBlocks());
+        return getRgbAtWorld(wx, wz);
+    }
+
+    /** Rendered RGB at a world coordinate, preferring the unified tile colour when available. */
+    public int getRgbAtWorld(int worldX, int worldZ) {
         LiveTileStore store = liveTiles;
-        if (store != null && s != null) {
-            int wx = (int) (s.minWX + (long) mapX * s.pixelBlocks);
-            int wz = (int) (s.minWZ + (long) mapZ * s.pixelBlocks);
-            LiveTileStore.LiveTile tile = liveTileAt(wx, wz);
+        if (store != null) {
+            LiveTileStore.LiveTile tile = liveTileAt(worldX, worldZ);
             if (tile != null && tile.rgb != null) {
-                int tx = store.tileIndexX(wx);
-                int tz = store.tileIndexZ(wz);
-                long px = Math.floorDiv((long) wx - store.minWX(), store.pixelBlocks());
-                long pz = Math.floorDiv((long) wz - store.minWZ(), store.pixelBlocks());
+                int tx = store.tileIndexX(worldX);
+                int tz = store.tileIndexZ(worldZ);
+                long px = Math.floorDiv((long) worldX - store.minWX(), store.pixelBlocks());
+                long pz = Math.floorDiv((long) worldZ - store.minWZ(), store.pixelBlocks());
                 int lx = (int) (px - (long) tx * LiveTileStore.TILE_PIXELS);
                 int lz = (int) (pz - (long) tz * LiveTileStore.TILE_PIXELS);
                 if (lx >= 0 && lx < LiveTileStore.TILE_PIXELS
@@ -586,10 +635,13 @@ public final class MapData {
                 }
             }
         }
+        Snapshot s = snap;
         ColorFrame f = colorFrame;
-        if (f == null || f.width <= 0 || f.height <= 0) return 0;
-        if (mapX < 0 || mapZ < 0 || mapX >= f.width || mapZ >= f.height) return 0;
-        return f.rgb[mapZ * f.width + mapX];
+        if (s == null || f == null || f.width <= 0 || f.height <= 0) return 0;
+        int gx = (int) Math.floorDiv((long) worldX - s.minWX, s.pixelBlocks);
+        int gz = (int) Math.floorDiv((long) worldZ - s.minWZ, s.pixelBlocks);
+        if (gx < 0 || gz < 0 || gx >= f.width || gz >= f.height) return 0;
+        return f.rgb[gz * f.width + gx];
     }
 
     /** Biome id at a world position, or -1 when unknown. */
