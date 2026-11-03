@@ -378,8 +378,14 @@ public final class LiveTileStore {
     private void fillMissing(LiveTile tile, long[] pixels) {
         boolean changed = false;
         for (int i = 0; i < tile.pixels.length; i++) {
-            if (tile.pixels[i] == VoxyMerge.LONG_EMPTY && pixels[i] != VoxyMerge.LONG_EMPTY) {
-                tile.pixels[i] = pixels[i];
+            long old = tile.pixels[i];
+            long src = pixels[i];
+            if (src == VoxyMerge.LONG_EMPTY) continue;
+            if (old == VoxyMerge.LONG_EMPTY || detailLevel(src) < detailLevel(old)) {
+                // Replace, not just fill: a live event may have created the pixel from a coarse
+                // LOD, and leaving it would keep a rectangular coarse-height step even though the
+                // storage tile has a much finer sample for the same column.
+                tile.pixels[i] = src;
                 changed = true;
             }
         }
@@ -390,6 +396,13 @@ public final class LiveTileStore {
             tile.colorPending = false;
             invalidateNeighborColors(tile.tx, tile.tz);
         }
+    }
+
+    private static int detailLevel(long packed) {
+        if (packed == VoxyMerge.LONG_EMPTY) return 15;
+        int topLvl = (int) ((packed >>> 48) & 0xF);
+        int solidLvl = (int) ((packed >>> 16) & 0xF);
+        return Math.min(topLvl, solidLvl);
     }
 
     public void beginFrame() {
