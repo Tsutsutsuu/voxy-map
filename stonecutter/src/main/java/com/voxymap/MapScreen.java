@@ -554,35 +554,52 @@ public class MapScreen extends Screen {
         int tz0 = live.tileIndexZ(top), tz1 = live.tileIndexZ(bottom);
         String style = data.getStyle();
         int sea = data.seaLevel();
-        for (int tz = tz0; tz <= tz1; tz++) {
-            for (int tx = tx0; tx <= tx1; tx++) {
-                LiveTileStore.LiveTile tile = live.get(tx, tz);
-                if (tile == null || tile.seedEpoch < 0) {
-                    // Event-created tiles exist before the first seed pass; make sure they are
-                    // upgraded to the base snapshot instead of staying as coarse live-only patches.
-                    tile = live.getOrCreateSeed(tx, tz);
-                }
-                if (tile == null) continue;
-                Identifier tex = live.textureFor(tile, style, sea, data.getColorEpoch());
-                if (tex == null) continue;
-                double sx = width / 2.0 + (tile.minWX - centerX) * zoom / pb;
-                double sy = height / 2.0 + (tile.minWZ - centerZ) * zoom / pb;
-                double sw = LiveTileStore.TILE_PIXELS * zoom;
-                double sh = LiveTileStore.TILE_PIXELS * zoom;
-                if (sx + sw < 0 || sy + sh < 0 || sx > width || sy > height) continue;
-                var pose = g.pose();
-                pose.pushMatrix();
-                pose.translate((float) sx, (float) sy);
-                pose.scale((float) zoom, (float) zoom);
-                g.blit(RenderPipelines.GUI_TEXTURED_PREMULTIPLIED_ALPHA, tex,
-                        0, 0, 0f, 0f, LiveTileStore.TILE_PIXELS, LiveTileStore.TILE_PIXELS,
-                        LiveTileStore.TILE_PIXELS, LiveTileStore.TILE_PIXELS,
-                        LiveTileStore.TILE_PIXELS, LiveTileStore.TILE_PIXELS);
-                pose.popMatrix();
+        int ccx = live.tileIndexX(centerX), ccz = live.tileIndexZ(centerZ);
+        int maxR = Math.max(Math.max(Math.abs(tx0 - ccx), Math.abs(tx1 - ccx)),
+                Math.max(Math.abs(tz0 - ccz), Math.abs(tz1 - ccz)));
+        // Seed/draw from the viewport centre outwards: with asynchronous seed creation this keeps
+        // the player's immediate area sharp instead of filling top-to-bottom.
+        for (int r = 0; r <= maxR; r++) {
+            for (int tx = ccx - r; tx <= ccx + r; tx++) {
+                drawUnifiedTile(g, data, live, tx, ccz - r, style, sea, pb, tx0, tx1, tz0, tz1);
+                if (r != 0) drawUnifiedTile(g, data, live, tx, ccz + r, style, sea, pb, tx0, tx1, tz0, tz1);
+            }
+            for (int tz = ccz - r + 1; tz <= ccz + r - 1; tz++) {
+                drawUnifiedTile(g, data, live, ccx - r, tz, style, sea, pb, tx0, tx1, tz0, tz1);
+                if (r != 0) drawUnifiedTile(g, data, live, ccx + r, tz, style, sea, pb, tx0, tx1, tz0, tz1);
             }
         }
         int viewRadius = Math.max(tx1 - tx0, tz1 - tz0) / 2 + 4;
         live.evictFar(live.tileIndexX(centerX), live.tileIndexZ(centerZ), viewRadius, 512);
+    }
+
+    private void drawUnifiedTile(GuiGraphicsExtractor g, MapData data, LiveTileStore live,
+                                 int tx, int tz, String style, int sea, int pb,
+                                 int tx0, int tx1, int tz0, int tz1) {
+        if (tx < tx0 || tx > tx1 || tz < tz0 || tz > tz1) return;
+        LiveTileStore.LiveTile tile = live.get(tx, tz);
+        if (tile == null || tile.seedEpoch < 0) {
+            // Event-created tiles exist before the first seed pass; make sure they are
+            // upgraded to the base snapshot instead of staying as coarse live-only patches.
+            tile = live.getOrCreateSeed(tx, tz);
+        }
+        if (tile == null) return;
+        Identifier tex = live.textureFor(tile, style, sea, data.getColorEpoch());
+        if (tex == null) return;
+        double sx = width / 2.0 + (tile.minWX - centerX) * zoom / pb;
+        double sy = height / 2.0 + (tile.minWZ - centerZ) * zoom / pb;
+        double sw = LiveTileStore.TILE_PIXELS * zoom;
+        double sh = LiveTileStore.TILE_PIXELS * zoom;
+        if (sx + sw < 0 || sy + sh < 0 || sx > width || sy > height) return;
+        var pose = g.pose();
+        pose.pushMatrix();
+        pose.translate((float) sx, (float) sy);
+        pose.scale((float) zoom, (float) zoom);
+        g.blit(RenderPipelines.GUI_TEXTURED_PREMULTIPLIED_ALPHA, tex,
+                0, 0, 0f, 0f, LiveTileStore.TILE_PIXELS, LiveTileStore.TILE_PIXELS,
+                LiveTileStore.TILE_PIXELS, LiveTileStore.TILE_PIXELS,
+                LiveTileStore.TILE_PIXELS, LiveTileStore.TILE_PIXELS);
+        pose.popMatrix();
     }
 
     /** Event-fed tiles outside the base snapshot; the base tile always wins where it has data. */

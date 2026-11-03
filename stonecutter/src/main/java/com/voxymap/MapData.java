@@ -3118,6 +3118,7 @@ public final class MapData {
     /** Re-upload the main textures from the last rendered grid (background, used when reopening). */
     public void ensureMainTextures() {
         boolean tile2d = VoxyMapConfig.TILE_RENDER.get() && VoxyMapConfig.UNIFIED_TILES.get();
+        if (tile2d) return; // tiles are drawn directly; no global preview texture
         if (!tile2d) ensureTileStore();
         if (tile2d && textureIdSmall != null) return;
         if (!tile2d && textureId != null) return;
@@ -3260,6 +3261,9 @@ public final class MapData {
         releaseOne(mc, biomeTextureId);
         biomeTextureId = null;
         biomeImage = null;
+        if (VoxyMapConfig.TILE_RENDER.get() && VoxyMapConfig.UNIFIED_TILES.get()) {
+            return; // the unified 2D renderer never needs a global texture
+        }
         buildTexturesAsync(s.width, s.height, rgb);
     }
 
