@@ -103,6 +103,28 @@ public final class LiveTileStore {
         this.minWZ = minWZ;
         this.pixelBlocks = pixelBlocks;
         this.cacheDir = cacheDir;
+        if (cacheDir != null) CACHE_IO.submit(this::cleanupCache);
+    }
+
+    private void cleanupCache() {
+        try {
+            if (!Files.isDirectory(cacheDir)) return;
+            java.util.List<Path> files = Files.list(cacheDir)
+                    .filter(p -> p.getFileName().toString().endsWith(".vxt"))
+                    .toList();
+            final int maxFiles = 4096;
+            if (files.size() <= maxFiles) return;
+            files.sort((a, b) -> {
+                try {
+                    return Long.compare(Files.getLastModifiedTime(b).toMillis(),
+                            Files.getLastModifiedTime(a).toMillis());
+                } catch (Throwable t) {
+                    return 0;
+                }
+            });
+            for (int i = maxFiles; i < files.size(); i++) Files.deleteIfExists(files.get(i));
+        } catch (Throwable ignored) {
+        }
     }
 
     public boolean matches(long minWX, long minWZ, int pixelBlocks) {
@@ -111,6 +133,14 @@ public final class LiveTileStore {
 
     public int pixelBlocks() {
         return pixelBlocks;
+    }
+
+    public long minWX() {
+        return minWX;
+    }
+
+    public long minWZ() {
+        return minWZ;
     }
 
     public int tileCount() {

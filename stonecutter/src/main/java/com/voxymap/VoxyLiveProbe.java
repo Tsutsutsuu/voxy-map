@@ -330,7 +330,7 @@ public final class VoxyLiveProbe {
             long t1 = System.nanoTime();
             long n = processed.incrementAndGet();
             SectionConsumer sink = consumer;
-            if (sink != null && VoxyMapConfig.LIVE_TILES.get()) {
+            if (sink != null && VoxyMapConfig.LIVE_TILES.get() && MapData.INSTANCE.hasLiveStore()) {
                 // The live tile overlay needs the current voxels, so the consumer path always
                 // copies; the geometric map work is coalesced by the dirty queue already.
                 try {

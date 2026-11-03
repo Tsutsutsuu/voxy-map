@@ -462,10 +462,13 @@ public final class MapData {
     public int heightAt(int worldX, int worldZ) {
         Snapshot s = snap;
         if (s == null) return seaLevel();
-        int gx = (int) Math.floorDiv((long) worldX - s.minWX, s.pixelBlocks);
-        int gz = (int) Math.floorDiv((long) worldZ - s.minWZ, s.pixelBlocks);
-        if (gx < 0 || gx >= s.width || gz < 0 || gz >= s.height) return seaLevel();
-        long p = s.pixels[gz * s.width + gx];
+        long p = livePackedAt(worldX, worldZ);
+        if (p == LONG_EMPTY) {
+            int gx = (int) Math.floorDiv((long) worldX - s.minWX, s.pixelBlocks);
+            int gz = (int) Math.floorDiv((long) worldZ - s.minWZ, s.pixelBlocks);
+            if (gx < 0 || gx >= s.width || gz < 0 || gz >= s.height) return seaLevel();
+            p = s.pixels[gz * s.width + gx];
+        }
         if (p == LONG_EMPTY) return seaLevel();
         int top = (int) ((p >>> 24) & 0xFFFF) - 32768;
         int floor = (int) (p & 0xFFFF) - 32768;
@@ -477,11 +480,14 @@ public final class MapData {
     /** True when the map snapshot has no data at this position (unexplored). */
     public boolean isEmptyAt(int worldX, int worldZ) {
         Snapshot s = snap;
-        if (s == null) return true;
-        int gx = (int) Math.floorDiv((long) worldX - s.minWX, s.pixelBlocks);
-        int gz = (int) Math.floorDiv((long) worldZ - s.minWZ, s.pixelBlocks);
-        if (gx < 0 || gx >= s.width || gz < 0 || gz >= s.height) return true;
-        long p = s.pixels[gz * s.width + gx];
+        long p = livePackedAt(worldX, worldZ);
+        if (p == LONG_EMPTY) {
+            if (s == null) return true;
+            int gx = (int) Math.floorDiv((long) worldX - s.minWX, s.pixelBlocks);
+            int gz = (int) Math.floorDiv((long) worldZ - s.minWZ, s.pixelBlocks);
+            if (gx < 0 || gx >= s.width || gz < 0 || gz >= s.height) return true;
+            p = s.pixels[gz * s.width + gx];
+        }
         if (p == LONG_EMPTY) return true;
         // a column whose only data is a buried, top-less section is drawn as transparent by the 2D
         // renderer; treat it as empty here too so the 3D mesh does not add black sea-level triangles
@@ -492,13 +498,51 @@ public final class MapData {
 
     /** True when the top of the column at this position is water. */
     public boolean isWaterAt(int worldX, int worldZ) {
-        Snapshot s = snap;
-        if (s == null) return false;
-        int gx = (int) Math.floorDiv((long) worldX - s.minWX, s.pixelBlocks);
-        int gz = (int) Math.floorDiv((long) worldZ - s.minWZ, s.pixelBlocks);
-        if (gx < 0 || gx >= s.width || gz < 0 || gz >= s.height) return false;
-        long p = s.pixels[gz * s.width + gx];
+        long p = livePackedAt(worldX, worldZ);
+        if (p == LONG_EMPTY) {
+            Snapshot s = snap;
+            if (s == null) return false;
+            int gx = (int) Math.floorDiv((long) worldX - s.minWX, s.pixelBlocks);
+            int gz = (int) Math.floorDiv((long) worldZ - s.minWZ, s.pixelBlocks);
+            if (gx < 0 || gx >= s.width || gz < 0 || gz >= s.height) return false;
+            p = s.pixels[gz * s.width + gx];
+        }
         return p != LONG_EMPTY && (p & (1L << 52)) != 0;
+    }
+
+    /**
+     * Packed column from the unified tile store when it already has that tile. This lets hover,
+     * labels and the 3D mesh use live-updated data while the global snapshot is still the seed.
+     */
+    private long livePackedAt(int worldX, int worldZ) {
+        LiveTileStore.LiveTile tile = liveTileAt(worldX, worldZ);
+        if (tile == null) return LONG_EMPTY;
+        LiveTileStore store = liveTiles;
+        int tx = store.tileIndexX(worldX);
+        int tz = store.tileIndexZ(worldZ);
+        long px = Math.floorDiv((long) worldX - store.minWX(), store.pixelBlocks());
+        long pz = Math.floorDiv((long) worldZ - store.minWZ(), store.pixelBlocks());
+        int lx = (int) (px - (long) tx * LiveTileStore.TILE_PIXELS);
+        int lz = (int) (pz - (long) tz * LiveTileStore.TILE_PIXELS);
+        if (lx < 0 || lx >= LiveTileStore.TILE_PIXELS || lz < 0 || lz >= LiveTileStore.TILE_PIXELS) {
+            return LONG_EMPTY;
+        }
+        return tile.pixels[lz * LiveTileStore.TILE_PIXELS + lx];
+    }
+
+    private LiveTileStore.LiveTile liveTileAt(int worldX, int worldZ) {
+        LiveTileStore store = liveTiles;
+        if (store == null) return null;
+        int tx = store.tileIndexX(worldX);
+        int tz = store.tileIndexZ(worldZ);
+        long key = ((long) tx << 32) ^ (tz & 0xFFFFFFFFL)
+                ^ ((long) System.identityHashCode(store) << 1);
+        Object[] cache = LIVE_QUERY_CACHE.get();
+        if ((Long) cache[0] != key) {
+            cache[0] = key;
+            cache[1] = store.get(tx, tz);
+        }
+        return (LiveTileStore.LiveTile) cache[1];
     }
 
     /** Increments whenever the rendered colour buffer is replaced. */
@@ -514,6 +558,26 @@ public final class MapData {
 
     /** Rendered RGB colour at a map pixel (0 when no data yet). */
     public int getRgbAt(int mapX, int mapZ) {
+        Snapshot s = snap;
+        LiveTileStore store = liveTiles;
+        if (store != null && s != null) {
+            int wx = (int) (s.minWX + (long) mapX * s.pixelBlocks);
+            int wz = (int) (s.minWZ + (long) mapZ * s.pixelBlocks);
+            LiveTileStore.LiveTile tile = liveTileAt(wx, wz);
+            if (tile != null && tile.rgb != null) {
+                int tx = store.tileIndexX(wx);
+                int tz = store.tileIndexZ(wz);
+                long px = Math.floorDiv((long) wx - store.minWX(), store.pixelBlocks());
+                long pz = Math.floorDiv((long) wz - store.minWZ(), store.pixelBlocks());
+                int lx = (int) (px - (long) tx * LiveTileStore.TILE_PIXELS);
+                int lz = (int) (pz - (long) tz * LiveTileStore.TILE_PIXELS);
+                if (lx >= 0 && lx < LiveTileStore.TILE_PIXELS
+                        && lz >= 0 && lz < LiveTileStore.TILE_PIXELS) {
+                    int c = tile.rgb[lz * LiveTileStore.TILE_PIXELS + lx];
+                    if ((c >>> 24) != 0) return c;
+                }
+            }
+        }
         ColorFrame f = colorFrame;
         if (f == null || f.width <= 0 || f.height <= 0) return 0;
         if (mapX < 0 || mapZ < 0 || mapX >= f.width || mapZ >= f.height) return 0;
@@ -523,11 +587,14 @@ public final class MapData {
     /** Biome id at a world position, or -1 when unknown. */
     public int biomeAt(int worldX, int worldZ) {
         Snapshot s = snap;
-        if (s == null) return -1;
-        int gx = (int) Math.floorDiv((long) worldX - s.minWX, s.pixelBlocks);
-        int gz = (int) Math.floorDiv((long) worldZ - s.minWZ, s.pixelBlocks);
-        if (gx < 0 || gx >= s.width || gz < 0 || gz >= s.height) return -1;
-        long p = s.pixels[gz * s.width + gx];
+        long p = livePackedAt(worldX, worldZ);
+        if (p == LONG_EMPTY) {
+            if (s == null) return -1;
+            int gx = (int) Math.floorDiv((long) worldX - s.minWX, s.pixelBlocks);
+            int gz = (int) Math.floorDiv((long) worldZ - s.minWZ, s.pixelBlocks);
+            if (gx < 0 || gx >= s.width || gz < 0 || gz >= s.height) return -1;
+            p = s.pixels[gz * s.width + gx];
+        }
         if (p == LONG_EMPTY) return -1;
         return (int) ((p >>> 53) & 0x1FF);
     }
@@ -3012,6 +3079,11 @@ public final class MapData {
         return next;
     }
 
+    /** True once the render thread has created the live tile store for the current snapshot. */
+    public boolean hasLiveStore() {
+        return liveTiles != null;
+    }
+
     /** Consumer for the Voxy live-section bridge (called on its worker thread). */
     public void onLiveSection(long key, long[] raw) {
         if (!VoxyMapConfig.LIVE_TILES.get() || !VoxyMapConfig.TILE_RENDER.get()) return;
@@ -3622,12 +3694,14 @@ public final class MapData {
     private volatile TerrainCache terrainCache;
 
     /** Ramp limits shared by every tile so adaptive/min-max ramps cannot shift per tile. */
-    private volatile Snapshot globalRampSnap;
-    private volatile String globalRampFingerprint;
+    private volatile Snapshot globalRampSnap;    private volatile String globalRampFingerprint;
     private volatile int globalLo = FALLBACK_SEA, globalHi = FALLBACK_SEA + 820;
     private volatile int globalRampLo = FALLBACK_SEA, globalRampHi = FALLBACK_SEA + 820;
     private boolean useRampOverride;
     private int overrideLo, overrideHi, overrideRampLo, overrideRampHi;
+    /** per-thread one-entry tile lookup cache used by 3D/hover queries */
+    private static final ThreadLocal<Object[]> LIVE_QUERY_CACHE =
+            ThreadLocal.withInitial(() -> new Object[]{Long.MIN_VALUE, null});
 
     /** Settings that shape the terrain analysis; changing any of them invalidates the cache. */
     private static String terrainFingerprint() {
