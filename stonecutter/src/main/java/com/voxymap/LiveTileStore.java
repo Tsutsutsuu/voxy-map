@@ -58,6 +58,8 @@ public final class LiveTileStore {
         volatile boolean colorPending;
         volatile boolean liveDirty;
         volatile int seedEpoch = -1;
+        /** true once the whole tile has been filled from cache/Voxy storage (not just live sections) */
+        volatile boolean sourceFilled;
         volatile int textureSeedEpoch = -1;
         volatile int[] rgb;
         volatile boolean textureDirty = true;
@@ -104,6 +106,7 @@ public final class LiveTileStore {
     private final AtomicInteger seedCreatesThisFrame = new AtomicInteger();
     private final AtomicInteger seedRefreshesThisFrame = new AtomicInteger();
     private final AtomicInteger seedRequestsThisFrame = new AtomicInteger();
+    private final AtomicInteger sourceFillRequestsThisFrame = new AtomicInteger();
     private final Set<Long> seedPending = ConcurrentHashMap.newKeySet();
     private final Set<Long> sourcePending = ConcurrentHashMap.newKeySet();
     private final Set<Long> sourceEmpty = ConcurrentHashMap.newKeySet();
@@ -316,13 +319,77 @@ public final class LiveTileStore {
             LiveTile tile = new LiveTile(tx, tz, tileMinWX(tx), tileMinWZ(tz));
             System.arraycopy(pixels, 0, tile.pixels, 0, tile.pixels.length);
             tile.liveDirty = true;
+            tile.sourceFilled = true;
             LiveTile previous = tiles.putIfAbsent(key, tile);
             if (previous == null) {
                 liveOnlyTileCount.incrementAndGet();
                 markBounds(tx, tz);
                 invalidateNeighborColors(tx, tz);
+            } else {
+                fillMissing(previous, pixels);
             }
         });
+    }
+
+    /**
+     * Live events create tiles containing only the touched sections. Fill the remaining pixels
+     * from the authoritative storage tile so a partially updated tile cannot appear as a small
+     * island surrounded by an empty/black rectangle (especially visible at 1:4).
+     */
+    private void requestSourceFill(int tx, int tz, LiveTile tile) {
+        VoxyTileSource src = source;
+        if (tile.sourceFilled) return;
+        if (src == null) {
+            tile.sourceFilled = true;
+            return;
+        }
+        long key = key(tx, tz);
+        if (sourcePending.contains(key) || sourceEmpty.contains(key)) return;
+        if (sourceFillRequestsThisFrame.get() >= 16) return;
+        sourceFillRequestsThisFrame.incrementAndGet();
+        sourcePending.add(key);
+        final int generation = resetGeneration.get();
+        src.request(tx, tz, pixels -> {
+            if (generation != resetGeneration.get()) return;
+            sourcePending.remove(key);
+            LiveTile current = tiles.get(key);
+            if (current == null) {
+                if (pixels == null) {
+                    sourceEmpty.add(key);
+                    return;
+                }
+                LiveTile created = new LiveTile(tx, tz, tileMinWX(tx), tileMinWZ(tz));
+                System.arraycopy(pixels, 0, created.pixels, 0, created.pixels.length);
+                created.liveDirty = true;
+                created.sourceFilled = true;
+                if (tiles.putIfAbsent(key, created) == null) {
+                    liveOnlyTileCount.incrementAndGet();
+                    markBounds(tx, tz);
+                    invalidateNeighborColors(tx, tz);
+                }
+                return;
+            }
+            current.sourceFilled = true;
+            if (pixels == null) return;
+            fillMissing(current, pixels);
+        });
+    }
+
+    private void fillMissing(LiveTile tile, long[] pixels) {
+        boolean changed = false;
+        for (int i = 0; i < tile.pixels.length; i++) {
+            if (tile.pixels[i] == VoxyMerge.LONG_EMPTY && pixels[i] != VoxyMerge.LONG_EMPTY) {
+                tile.pixels[i] = pixels[i];
+                changed = true;
+            }
+        }
+        if (changed) {
+            tile.liveDirty = true;
+            tile.version++;
+            tile.textureDirty = true;
+            tile.colorPending = false;
+            invalidateNeighborColors(tile.tx, tile.tz);
+        }
     }
 
     public void beginFrame() {
@@ -331,6 +398,7 @@ public final class LiveTileStore {
         seedCreatesThisFrame.set(0);
         seedRefreshesThisFrame.set(0);
         seedRequestsThisFrame.set(0);
+        sourceFillRequestsThisFrame.set(0);
     }
 
     public LiveTile get(int tx, int tz) {
@@ -358,6 +426,7 @@ public final class LiveTileStore {
     public LiveTile getOrCreateSeed(int tx, int tz) {
         LiveTile existing = tiles.get(key(tx, tz));
         if (existing != null) {
+            if (!existing.sourceFilled) requestSourceFill(tx, tz, existing);
             if (existing.seedEpoch < 0 && seedPixels != null && seedRgb != null
                     && seedCreatesThisFrame.get() < 16) {
                 seedCreatesThisFrame.incrementAndGet();
