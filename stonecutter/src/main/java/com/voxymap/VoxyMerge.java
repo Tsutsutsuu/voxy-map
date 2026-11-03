@@ -57,13 +57,12 @@ public final class VoxyMerge {
             curBiome = (int) ((prevPacked >>> 53) & 0x1FF);
             if (top != NO_TOP) {
                 // Finest known level wins whenever it has a real surface, even when a coarse
-                // mip is higher. A coarse surface is only usable when the finer data is a
-                // buried slice (NO_TOP) and the coarse top is above the known solid floor.
-                // The old rule `lvl > curLvl && curTop < 0` also let coarse water overwrite
-                // valid sub-sea-level land, creating fake water pits.
+                // mip is higher. A buried fine slice already carries a solid lower bound
+                // (floor); letting a coarse top replace it is what produced plateau-shaped
+                // LOD artifacts. Only a completely unknown column may be filled by coarse data.
                 boolean accept;
                 if (curTop == NO_TOP) {
-                    accept = curFloor == NO_SOLID || top >= curFloor;
+                    accept = curFloor == NO_SOLID;
                 } else if (lvl < curLvl) {
                     accept = true;
                 } else if (lvl == curLvl) {
