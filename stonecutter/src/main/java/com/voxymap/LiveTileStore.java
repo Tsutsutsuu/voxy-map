@@ -645,7 +645,6 @@ public final class LiveTileStore {
         if (tiles.size() <= maxTiles) return;
         java.util.List<LiveTile> candidates = new java.util.ArrayList<>();
         for (LiveTile tile : tiles.values()) {
-            if (tile.seedEpoch < 0) continue; // keep live-only data
             int dx = tile.tx - centerTx;
             int dz = tile.tz - centerTz;
             if (Math.max(Math.abs(dx), Math.abs(dz)) > keepRadius) candidates.add(tile);
@@ -658,9 +657,18 @@ public final class LiveTileStore {
         int excess = tiles.size() - maxTiles;
         for (LiveTile tile : candidates) {
             if (excess-- <= 0) break;
+            // live-only tiles are persisted before eviction, so a later visit can restore them
+            // from cache (or rebuild from Voxy storage) instead of keeping them forever
+            if (tile.seedEpoch < 0) {
+                CACHE_IO.submit(() -> saveCached(tile));
+            }
             if (tiles.remove(key(tile.tx, tile.tz), tile)) {
                 tile.dispose();
-                seedTileCount.decrementAndGet();
+                if (tile.seedEpoch < 0) {
+                    liveOnlyTileCount.decrementAndGet();
+                } else {
+                    seedTileCount.decrementAndGet();
+                }
             }
         }
     }
