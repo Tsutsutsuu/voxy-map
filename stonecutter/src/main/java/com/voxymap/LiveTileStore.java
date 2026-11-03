@@ -229,6 +229,25 @@ public final class LiveTileStore {
         maxTileZ.accumulateAndGet(tz, Math::max);
     }
 
+    /**
+     * A tile's colour job uses an 8px halo from its neighbours (hillshade, contours, water depth).
+     * When a neighbour appears or changes, the tile must be coloured again or it keeps a visible
+     * contour/edge frame along the tile boundary.
+     */
+    private void invalidateNeighborColors(int tx, int tz) {
+        for (int dz = -1; dz <= 1; dz++) {
+            for (int dx = -1; dx <= 1; dx++) {
+                if (dx == 0 && dz == 0) continue;
+                LiveTile t = tiles.get(key(tx + dx, tz + dz));
+                if (t == null || t.seedEpoch >= 0) continue;
+                t.liveDirty = true;
+                t.coloredVersion = -1;
+                t.colorPending = false;
+                t.textureDirty = true;
+            }
+        }
+    }
+
     public long sectionCount() {
         return sectionCount.get();
     }
@@ -256,6 +275,7 @@ public final class LiveTileStore {
             if (previous == null) {
                 liveOnlyTileCount.incrementAndGet();
                 markBounds(tx, tz);
+                invalidateNeighborColors(tx, tz);
             }
         });
     }
@@ -320,6 +340,7 @@ public final class LiveTileStore {
                     if (previous == null) {
                         liveOnlyTileCount.incrementAndGet();
                         markBounds(tx, tz);
+                        invalidateNeighborColors(tx, tz);
                     }
                 });
             });
@@ -347,6 +368,7 @@ public final class LiveTileStore {
                 if (previous == null) {
                     seedTileCount.incrementAndGet();
                     markBounds(tx, tz);
+                    invalidateNeighborColors(tx, tz);
                 }
             });
         });
@@ -569,6 +591,7 @@ public final class LiveTileStore {
             t.version++;
             t.textureDirty = true;
             t.colorPending = false;
+            invalidateNeighborColors(t.tx, t.tz);
         }
     }
 
@@ -637,6 +660,13 @@ public final class LiveTileStore {
                 LiveTile src = tiles.get(key(tx, tz));
                 if (src != null) {
                     withHalo[z * hw + x] = src.pixels[lz * TILE_PIXELS + lx];
+                } else {
+                    // No neighbour loaded yet: clamp this tile's edge instead of leaving an
+                    // empty halo. Empty halo pixels made the contour pass draw a false frame
+                    // along every tile border after a map-scale change.
+                    int ownX = Math.max(0, Math.min(TILE_PIXELS - 1, gx - tile.tx * TILE_PIXELS));
+                    int ownZ = Math.max(0, Math.min(TILE_PIXELS - 1, gz - tile.tz * TILE_PIXELS));
+                    withHalo[z * hw + x] = tile.pixels[ownZ * TILE_PIXELS + ownX];
                 }
             }
         }
