@@ -1,0 +1,164 @@
+package com.voxymap;
+
+import net.minecraft.client.Minecraft;
+
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
+
+/**
+ * On-demand tile builder for the unified map. When a visible tile has neither seed, live nor
+ * cached data, it scans the Voxy section keys (built once) and decodes only the sections that
+ * intersect that tile. This lets the tile map grow beyond the original global Snapshot rectangle.
+ *
+ * <p>One dedicated I/O thread; callbacks are forwarded to the client thread.</p>
+ */
+public final class VoxyTileSource {
+    private final Path storage;
+    private final long minWX, minWZ;
+    private final int pixelBlocks;
+    private final int maxLod;
+    private final Set<Long> waterIds;
+    private final ExecutorService io = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "voxymap-tile-source");
+        t.setDaemon(true);
+        return t;
+    });
+    private final AtomicBoolean closed = new AtomicBoolean();
+    private boolean indexed;
+    private long[] keys = new long[1024];
+    private int keyCount;
+    private Object db;
+    private final List<Object> handles = new ArrayList<>();
+    private Object sectionsHandle;
+
+    public VoxyTileSource(Path storage, long minWX, long minWZ, int pixelBlocks, int maxLod,
+                          Set<Long> waterIds) {
+        this.storage = storage;
+        this.minWX = minWX;
+        this.minWZ = minWZ;
+        this.pixelBlocks = Math.max(1, pixelBlocks);
+        this.maxLod = maxLod;
+        this.waterIds = waterIds;
+    }
+
+    public void request(int tx, int tz, Consumer<long[]> callback) {
+        if (closed.get()) return;
+        io.submit(() -> {
+            if (closed.get()) return;
+            try {
+                ensureIndex();
+                long[] pixels = buildTile(tx, tz);
+                if (closed.get()) return;
+                Minecraft.getInstance().execute(() -> callback.accept(pixels));
+            } catch (Throwable t) {
+                Minecraft.getInstance().execute(() -> callback.accept(null));
+            }
+        });
+    }
+
+    private void ensureIndex() throws Exception {
+        if (indexed) return;
+        indexed = true;
+        if (!RocksBridge.available() || storage == null) return;
+        db = RocksBridge.openReadOnly(storage.toString(), handles);
+        if (db == null || handles.size() < 3) return;
+        sectionsHandle = handles.get(1);
+        Object it = RocksBridge.newIterator(db, sectionsHandle);
+        try {
+            RocksBridge.seekToFirst(it);
+            while (RocksBridge.isValid(it)) {
+                byte[] kb = RocksBridge.key(it);
+                if (kb != null && kb.length == 8) {
+                    long key = ByteBuffer.wrap(kb).order(ByteOrder.BIG_ENDIAN).getLong();
+                    if ((int) ((key >>> 60) & 0xF) <= maxLod) {
+                        if (keyCount == keys.length) {
+                            long[] grown = new long[keys.length + keys.length / 2];
+                            System.arraycopy(keys, 0, grown, 0, keyCount);
+                            keys = grown;
+                        }
+                        keys[keyCount++] = key;
+                    }
+                }
+                RocksBridge.next(it);
+            }
+        } finally {
+            RocksBridge.close(it);
+        }
+    }
+
+    private long[] buildTile(int tx, int tz) throws Exception {
+        if (db == null || sectionsHandle == null) return null;
+        long[] pixels = new long[LiveTileStore.TILE_PIXELS * LiveTileStore.TILE_PIXELS];
+        java.util.Arrays.fill(pixels, VoxyMerge.LONG_EMPTY);
+        long tileX0 = minWX + (long) tx * LiveTileStore.TILE_PIXELS * pixelBlocks;
+        long tileZ0 = minWZ + (long) tz * LiveTileStore.TILE_PIXELS * pixelBlocks;
+        long tileX1 = tileX0 + (long) LiveTileStore.TILE_PIXELS * pixelBlocks;
+        long tileZ1 = tileZ0 + (long) LiveTileStore.TILE_PIXELS * pixelBlocks;
+        boolean any = false;
+        ByteBuffer keyBuf = ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN);
+        for (int k = 0; k < keyCount; k++) {
+            long key = keys[k];
+            int lvl = (int) ((key >>> 60) & 0xF);
+            int scale = 1 << lvl;
+            int sx = (int) ((key << 36) >> 40);
+            int sz = (int) ((key << 12) >> 40);
+            long wx0 = (long) sx * 32 * scale;
+            long wz0 = (long) sz * 32 * scale;
+            long wx1 = wx0 + 32L * scale;
+            long wz1 = wz0 + 32L * scale;
+            if (wx1 <= tileX0 || wx0 >= tileX1 || wz1 <= tileZ0 || wz0 >= tileZ1) continue;
+            keyBuf.clear();
+            keyBuf.putLong(key);
+            byte[] val = RocksBridge.get(db, sectionsHandle, keyBuf.array());
+            if (val == null) continue;
+            long[] cols = MapData.decodeSectionColumns(key, val, waterIds);
+            if (cols == null) continue;
+            for (int c = 0; c < 1024; c++) {
+                long packed = cols[c];
+                if (packed == VoxyMerge.LONG_EMPTY) continue;
+                long colX = wx0 + (long) (c & 31) * scale;
+                long colZ = wz0 + (long) (c >> 5) * scale;
+                int px0 = (int) Math.floorDiv(colX - minWX, pixelBlocks);
+                int pz0 = (int) Math.floorDiv(colZ - minWZ, pixelBlocks);
+                int px1 = (int) Math.floorDiv(colX + scale - 1 - minWX, pixelBlocks);
+                int pz1 = (int) Math.floorDiv(colZ + scale - 1 - minWZ, pixelBlocks);
+                for (int pz = pz0; pz <= pz1; pz++) {
+                    if (pz < tz * LiveTileStore.TILE_PIXELS
+                            || pz >= (tz + 1) * LiveTileStore.TILE_PIXELS) continue;
+                    int lz = pz - tz * LiveTileStore.TILE_PIXELS;
+                    for (int px = px0; px <= px1; px++) {
+                        if (px < tx * LiveTileStore.TILE_PIXELS
+                                || px >= (tx + 1) * LiveTileStore.TILE_PIXELS) continue;
+                        int lx = px - tx * LiveTileStore.TILE_PIXELS;
+                        int idx = lz * LiveTileStore.TILE_PIXELS + lx;
+                        pixels[idx] = VoxyMerge.mergeColumn(pixels[idx], lvl,
+                                (int) ((packed >>> 24) & 0xFFFF) - 32768,
+                                (int) (packed & 0xFFFF) - 32768,
+                                (packed & (1L << 52)) != 0,
+                                (int) ((packed >>> 53) & 0x1FF));
+                        any = true;
+                    }
+                }
+            }
+        }
+        return any ? pixels : null;
+    }
+
+    public void close() {
+        if (!closed.compareAndSet(false, true)) return;
+        io.submit(() -> {
+            for (Object h : handles) RocksBridge.close(h);
+            RocksBridge.close(db);
+            db = null;
+        });
+        io.shutdown();
+    }
+}

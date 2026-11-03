@@ -102,6 +102,9 @@ public final class LiveTileStore {
     private final AtomicInteger seedRefreshesThisFrame = new AtomicInteger();
     private final AtomicInteger seedRequestsThisFrame = new AtomicInteger();
     private final Set<Long> seedPending = ConcurrentHashMap.newKeySet();
+    private final Set<Long> sourcePending = ConcurrentHashMap.newKeySet();
+    private final Set<Long> sourceEmpty = ConcurrentHashMap.newKeySet();
+    private volatile VoxyTileSource source;
     private final AtomicInteger seedTileCount = new AtomicInteger();
     private final AtomicInteger liveOnlyTileCount = new AtomicInteger();
     private final AtomicInteger minTileX = new AtomicInteger(Integer.MAX_VALUE);
@@ -197,6 +200,31 @@ public final class LiveTileStore {
         return sectionCount.get();
     }
 
+    public void setSource(VoxyTileSource source) {
+        this.source = source;
+    }
+
+    private void requestSourceTile(int tx, int tz, long key) {
+        VoxyTileSource src = source;
+        if (src == null || sourcePending.contains(key) || sourceEmpty.contains(key)) return;
+        sourcePending.add(key);
+        src.request(tx, tz, pixels -> {
+            sourcePending.remove(key);
+            if (pixels == null) {
+                sourceEmpty.add(key);
+                return;
+            }
+            LiveTile tile = new LiveTile(tx, tz, tileMinWX(tx), tileMinWZ(tz));
+            System.arraycopy(pixels, 0, tile.pixels, 0, tile.pixels.length);
+            tile.liveDirty = true;
+            LiveTile previous = tiles.putIfAbsent(key, tile);
+            if (previous == null) {
+                liveOnlyTileCount.incrementAndGet();
+                markBounds(tx, tz);
+            }
+        });
+    }
+
     public void beginFrame() {
         createdThisFrame.set(0);
         colorRequestsThisFrame.set(0);
@@ -240,6 +268,12 @@ public final class LiveTileStore {
         long key = key(tx, tz);
         if (!seedPending.add(key)) return null;
         seedRequestsThisFrame.incrementAndGet();
+        final boolean hasSeed = seedPixels != null && seedRgb != null;
+        if (!hasSeed) {
+            seedPending.remove(key);
+            requestSourceTile(tx, tz, key);
+            return null;
+        }
         final long[] srcPixels = seedPixels;
         final int[] srcRgb = seedRgb;
         final int srcWidth = seedWidth, srcHeight = seedHeight;
@@ -253,7 +287,10 @@ public final class LiveTileStore {
             final LiveTile result = built;
             Minecraft.getInstance().execute(() -> {
                 seedPending.remove(key);
-                if (result == null) return;
+                if (result == null) {
+                    requestSourceTile(tx, tz, key);
+                    return;
+                }
                 LiveTile previous = tiles.putIfAbsent(key, result);
                 if (previous == null) {
                     seedTileCount.incrementAndGet();
@@ -634,5 +671,8 @@ public final class LiveTileStore {
             tile.dispose();
         }
         tiles.clear();
+        VoxyTileSource src = source;
+        source = null;
+        if (src != null) src.close();
     }
 }

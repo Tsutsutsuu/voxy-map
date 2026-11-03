@@ -17,6 +17,7 @@ public final class RocksBridge {
     private static Class<?> cRocksDB, cDBOptions, cCfd, cHandle, cIter;
     private static Constructor<?> ctorOptions, ctorCfd;
     private static Method mLoadLibrary, mOpenReadOnly, mNewIterator, mSeekFirst, mIsValid, mKey, mValue, mNext;
+    private static Method mSeek, mGet;
     /** optional: RocksDB.getLatestSequenceNumber(), used as a cheap "did anything change" test */
     private static Method mLatestSequence;
 
@@ -58,6 +59,16 @@ public final class RocksBridge {
             mKey = cIter.getMethod("key");
             mValue = cIter.getMethod("value");
             mNext = cIter.getMethod("next");
+            try {
+                mSeek = cIter.getMethod("seek", byte[].class);
+            } catch (Throwable ignored) {
+                mSeek = null;
+            }
+            try {
+                mGet = cRocksDB.getMethod("get", cHandle, byte[].class);
+            } catch (Throwable ignored) {
+                mGet = null;
+            }
             mLoadLibrary.invoke(null);
         } catch (Throwable t) {
             error = t.toString();
@@ -127,6 +138,21 @@ public final class RocksBridge {
 
     public static void next(Object it) throws Exception {
         mNext.invoke(it);
+    }
+
+    /** Random read of one key from a column family (returns null when absent). */
+    public static byte[] get(Object db, Object handle, byte[] key) {
+        if (mGet == null) return null;
+        try {
+            return (byte[]) mGet.invoke(db, handle, key);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    public static void seek(Object it, byte[] key) throws Exception {
+        if (mSeek == null) return;
+        mSeek.invoke(it, key);
     }
 
     /**

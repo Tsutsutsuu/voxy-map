@@ -2815,8 +2815,25 @@ public final class MapData {
         }
     }
 
-    private static Decoded decodeSection(long key, byte[] val, Set<Long> waterIds) {
-        byte[] d = decompress(val);
+    /** Decodes one compressed RocksDB section into packed columns for the lazy tile loader. */
+    public static long[] decodeSectionColumns(long key, byte[] val, Set<Long> waterIds) {
+        Decoded d = decodeSection(key, val, waterIds);
+        return d == null ? null : d.cols();
+    }
+
+    public Path currentStoragePath() {
+        return snapStorage;
+    }
+
+    public Set<Long> waterIdsSnapshot() {
+        return waterIdsCache;
+    }
+
+    public int maxLodLevel() {
+        return lodCap();
+    }
+
+    private static Decoded decodeSection(long key, byte[] val, Set<Long> waterIds) {        byte[] d = decompress(val);
         if (d == null || d.length < 16 + VOL * 2) return null;
         ByteBuffer bb = ByteBuffer.wrap(d).order(ByteOrder.LITTLE_ENDIAN);
         bb.getLong();
@@ -3170,6 +3187,10 @@ public final class MapData {
         if (current != null) current.dispose();
         Path tileCache = snapStorage == null ? null : worldCacheDir(snapStorage).resolve("tiles");
         LiveTileStore next = new LiveTileStore(s.minWX, s.minWZ, s.pixelBlocks, tileCache);
+        if (snapStorage != null) {
+            next.setSource(new VoxyTileSource(snapStorage, s.minWX, s.minWZ, s.pixelBlocks,
+                    lodCap(), waterIdsCache));
+        }
         ColorFrame f = colorFrame;
         if (f != null && f.width == s.width && f.height == s.height) {
             next.setSeed(s.pixels, f.rgb, s.width, s.height, s.minWX, s.minWZ, s.pixelBlocks, f.epoch);
