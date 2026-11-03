@@ -431,6 +431,11 @@ public final class MapData {
     }
 
     public boolean isReady() {
+        if (VoxyMapConfig.TILE_RENDER.get() && VoxyMapConfig.UNIFIED_TILES.get()) {
+            // the unified 2D path deliberately has no big map texture; the tile store only needs
+            // a snapshot + colour frame. Requiring textureId here disabled style buttons.
+            return snap != null && colorFrame != null;
+        }
         return snap != null && textureId != null;
     }
 
