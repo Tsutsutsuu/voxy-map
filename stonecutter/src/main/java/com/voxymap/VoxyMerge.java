@@ -43,10 +43,8 @@ public final class VoxyMerge {
         int curBiome;
         if (prevPacked == LONG_EMPTY) {
             curTop = top;
-            curWater = topFluid;
+            curWater = top != NO_TOP && topFluid;
             curLvl = lvl;
-            // keep the decoded solid height: a buried slice's ceiling is the only height
-            // information available when no section above holds the real surface
             curFloor = floor;
             curBiome = biome;
         } else {
@@ -55,57 +53,48 @@ public final class VoxyMerge {
             curLvl = (int) ((prevPacked >>> 48) & 0xF);
             curFloor = (int) (prevPacked & 0xFFFF) - 32768;
             curBiome = (int) ((prevPacked >>> 53) & 0x1FF);
-            if (top != NO_TOP) {
-                // Finest known level wins whenever it has a real surface, even when a coarse
-                // mip is higher. A buried fine slice already carries a solid lower bound
-                // (floor); letting a coarse top replace it is what produced plateau-shaped
-                // LOD artifacts. Only a completely unknown column may be filled by coarse data.
-                boolean accept;
-                if (curTop == NO_TOP) {
-                    accept = curFloor == NO_SOLID;
-                } else if (lvl < curLvl) {
-                    accept = true;
-                } else if (lvl == curLvl) {
-                    accept = top > curTop;
-                } else {
-                    accept = false;
-                }
-                if (accept) {
+
+            // The map only needs two things from a column: its highest solid height and whether
+            // its *finest* real surface is water. A top is never chosen by comparing heights across
+            // LODs - coarse mip tops are maxima over a cell and produce plateaus when mixed into
+            // fine terrain.
+            if (top != NO_TOP && lvl < curLvl) {
+                curLvl = lvl;
+                curTop = top;
+                curWater = topFluid;
+                curBiome = biome;
+            } else if (top != NO_TOP && lvl == curLvl) {
+                if (top > curTop) {
                     curTop = top;
                     curWater = topFluid;
-                    curLvl = lvl;
                     curBiome = biome;
                 }
+            } else if (top == NO_TOP && lvl < curLvl) {
+                // a finer level exists here but only as a buried slice: the finest level has no
+                // visible surface, so do not inherit a coarser water surface
+                curLvl = lvl;
+                curTop = NO_TOP;
+                curWater = false;
+                curBiome = biome;
             }
         }
-        // same-level highest solid above the current top: the top is a cave/underground
-        // ceiling, so the real surface is the top of that solid
-        if (curTop != NO_TOP && solidHere != Integer.MIN_VALUE && solidHere > curTop && lvl == curLvl) {
-            curTop = solidHere;
-            curWater = false;
-            curLvl = lvl;
-            curBiome = biome;
-        }
-        // A "buried slice" (solid up to the section ceiling) still knows a lower bound for
-        // the surface. Keep the highest such solid: when the surface happens to lie in the
-        // section's top row and no section above has data, dropping the column produced the
-        // black ring of holes on high mountains.
-        if (curTop == NO_TOP && solidHere != Integer.MIN_VALUE
+
+        // highest solid over all LODs is the reliable terrain height; the finest real surface only
+        // supplies the water flag (and its water height)
+        if (solidHere != Integer.MIN_VALUE
                 && (curFloor == NO_SOLID || solidHere > curFloor)) {
             curFloor = solidHere;
         }
-        // floor: highest solid anywhere in the column (sea floor for water)
-        if (curTop != NO_TOP && solidHere != Integer.MIN_VALUE && solidHere < curTop) {
-            int prevF = curFloor == NO_SOLID ? Integer.MIN_VALUE : curFloor;
-            if (prevF == Integer.MIN_VALUE || solidHere > prevF) curFloor = solidHere;
+        if (!curWater) {
+            curTop = curFloor != NO_SOLID ? curFloor : NO_TOP;
+        } else if (curFloor != NO_SOLID && curFloor >= curTop) {
+            curFloor = curTop - 1;
         }
-        if (curTop != NO_TOP && !curWater) curFloor = curTop;
         if (curFloor == Integer.MIN_VALUE) curFloor = NO_SOLID;
         long out = ((long) (curTop + 32768)) << 24 | ((curFloor + 32768) & 0xFFFF);
         if (curWater) out |= (1L << 52);
         out |= ((long) curBiome) << 53;
-        // the merge above compares LOD levels; the level must be stored for later sections
-        out |= ((long) curLvl) << 48;
+        out |= ((long) Math.min(15, Math.max(0, curLvl))) << 48;
         return out;
     }
 }
