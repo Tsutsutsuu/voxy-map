@@ -88,6 +88,9 @@ public final class LiveTileStore {
     private final long minWX, minWZ;
     private final int pixelBlocks;
     private final Path cacheDir;
+    /** false until the world's liquid-id table is known; dry (water-as-solid) tiles must not be cached. */
+    private volatile boolean cacheReady;
+    private final AtomicInteger cacheGeneration = new AtomicInteger();
     private volatile long[] seedPixels;
     private volatile int[] seedRgb;
     private volatile int seedWidth, seedHeight;
@@ -172,7 +175,7 @@ public final class LiveTileStore {
     public void dropAllTiles(boolean persistLive) {
         resetGeneration.incrementAndGet();
         for (LiveTile tile : tiles.values()) {
-            if (persistLive && tile.seedEpoch < 0) CACHE_IO.submit(() -> saveCached(tile));
+            if (persistLive && tile.seedEpoch < 0) scheduleSave(tile);
             tile.dispose();
         }
         tiles.clear();
@@ -189,23 +192,28 @@ public final class LiveTileStore {
 
     /** Deletes this tile store's on-disk cache (used when the liquid-id table was not ready yet). */
     public void clearCacheFiles() {
+        cacheGeneration.incrementAndGet(); // queued writes from the dry phase must be ignored
         if (cacheDir == null) return;
-        // CACHE_IO is FIFO: any dry cache writes queued before this delete run first and are
-        // removed; correct tiles written afterwards are kept.
-        CACHE_IO.submit(() -> {
-            try {
-                if (!Files.isDirectory(cacheDir)) return;
-                try (java.util.stream.Stream<Path> files = Files.list(cacheDir)) {
-                    files.filter(p -> p.getFileName().toString().endsWith(".vxt"))
-                            .forEach(p -> {
-                                try {
-                                    Files.deleteIfExists(p);
-                                } catch (Throwable ignored) {
-                                }
-                            });
-                }
-            } catch (Throwable ignored) {
+        try {
+            if (!Files.isDirectory(cacheDir)) return;
+            try (java.util.stream.Stream<Path> files = Files.list(cacheDir)) {
+                files.filter(p -> p.getFileName().toString().endsWith(".vxt"))
+                        .forEach(p -> {
+                            try {
+                                Files.deleteIfExists(p);
+                            } catch (Throwable ignored) {
+                            }
+                        });
             }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private void scheduleSave(LiveTile tile) {
+        if (cacheDir == null || !cacheReady || tile.seedEpoch >= 0) return;
+        final int generation = cacheGeneration.get();
+        CACHE_IO.submit(() -> {
+            if (generation == cacheGeneration.get()) saveCached(tile);
         });
     }
 
@@ -283,6 +291,10 @@ public final class LiveTileStore {
         this.source = source;
     }
 
+    public void setCacheReady(boolean ready) {
+        this.cacheReady = ready;
+    }
+
     private void requestSourceTile(int tx, int tz, long key) {
         VoxyTileSource src = source;
         if (src == null || sourcePending.contains(key) || sourceEmpty.contains(key)) return;
@@ -353,6 +365,11 @@ public final class LiveTileStore {
         seedRequestsThisFrame.incrementAndGet();
         final boolean hasSeed = seedPixels != null && seedRgb != null;
         final int generation = resetGeneration.get();
+        if (!hasSeed && !cacheReady) {
+            seedPending.remove(key);
+            requestSourceTile(tx, tz, key);
+            return null;
+        }
         if (!hasSeed) {
             SEED_IO.submit(() -> {
                 LiveTile cached = loadCached(tx, tz);
@@ -437,7 +454,7 @@ public final class LiveTileStore {
     }
 
     private LiveTile loadCached(int tx, int tz) {
-        if (cacheDir == null) return null;
+        if (cacheDir == null || !cacheReady) return null;
         Path file = cacheFile(tx, tz);
         if (!Files.isRegularFile(file)) return null;
         try (DataInputStream in = new DataInputStream(
@@ -465,7 +482,7 @@ public final class LiveTileStore {
     }
 
     private void saveCached(LiveTile tile) {
-        if (cacheDir == null || tile.seedEpoch >= 0) return;
+        if (cacheDir == null || !cacheReady || tile.seedEpoch >= 0) return;
         try {
             Files.createDirectories(cacheDir);
             ByteBuffer raw = ByteBuffer.allocate(TILE_PIXELS * TILE_PIXELS * Long.BYTES)
@@ -769,7 +786,7 @@ public final class LiveTileStore {
             // live-only tiles are persisted before eviction, so a later visit can restore them
             // from cache (or rebuild from Voxy storage) instead of keeping them forever
             if (tile.seedEpoch < 0) {
-                CACHE_IO.submit(() -> saveCached(tile));
+                scheduleSave(tile);
             }
             if (tiles.remove(key(tile.tx, tile.tz), tile)) {
                 tile.dispose();
@@ -785,7 +802,7 @@ public final class LiveTileStore {
     public void dispose() {
         resetGeneration.incrementAndGet();
         for (LiveTile tile : tiles.values()) {
-            if (tile.seedEpoch < 0) CACHE_IO.submit(() -> saveCached(tile));
+            if (tile.seedEpoch < 0) scheduleSave(tile);
             tile.dispose();
         }
         tiles.clear();

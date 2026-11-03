@@ -3288,6 +3288,7 @@ public final class MapData {
         if (storage != null) {
             next.setSource(new VoxyTileSource(storage, 0L, 0L, pb, lodCap(), this::waterIdsSnapshot));
         }
+        next.setCacheReady(waterIdsLoaded);
         liveTiles = next;
         tile2dStorage = storage;
         ensureWaterIdsAsync();
@@ -3315,16 +3316,17 @@ public final class MapData {
                     boolean hadWater = !waterIdsCache.isEmpty();
                     waterIdsCache = loaded;
                     waterIdsLoaded = true;
-                    if (!hadWater && !loaded.isEmpty()) {
-                        Minecraft.getInstance().execute(() -> {
-                            LiveTileStore store = liveTiles;
-                            if (store != null) {
+                    Minecraft.getInstance().execute(() -> {
+                        LiveTileStore store = liveTiles;
+                        if (store != null) {
+                            if (!hadWater) {
                                 // tiles/cache built before the liquid ids were known are dry land
                                 store.dropAllTiles(false);
                                 store.clearCacheFiles();
                             }
-                        });
-                    }
+                            store.setCacheReady(true);
+                        }
+                    });
                 }
             } catch (Throwable t) {
                 // water ids are advisory; leave the previous/empty set
