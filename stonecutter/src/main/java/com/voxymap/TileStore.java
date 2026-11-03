@@ -183,6 +183,25 @@ public final class TileStore {
         createBudget = 12;
     }
 
+    /** Cheap coverage test used by the live overlay: does this base tile contain any map pixels? */
+    public boolean hasData(int tx, int tz) {
+        if (tx < 0 || tz < 0 || tx >= tilesX || tz >= tilesY) return false;
+        long key = ((long) tx << 32) | (tz & 0xFFFFFFFFL);
+        if (tiles.containsKey(key)) return true;
+        if (empty.contains(key)) return false;
+        int tw = tileWidth(tx), th = tileHeight(tz);
+        int[] rgb = frame.rgb;
+        int px0 = tx * TILE_PIXELS, pz0 = tz * TILE_PIXELS;
+        for (int z = 0; z < th; z++) {
+            int row = (pz0 + z) * width + px0;
+            for (int x = 0; x < tw; x++) {
+                if ((rgb[row + x] >>> 24) != 0) return true;
+            }
+        }
+        empty.add(key);
+        return false;
+    }
+
     /** Returns the tile, or null when the tile is empty / out of bounds / deferred this frame. Main thread only. */
     public MapTile getTile(int tx, int tz) {
         if (tx < 0 || tz < 0 || tx >= tilesX || tz >= tilesY) return null;
