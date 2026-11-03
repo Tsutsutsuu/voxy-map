@@ -1496,7 +1496,7 @@ public class MapScreen extends Screen {
         int d3x = selX - 6 - d3w;
         float d3hov = busy ? 0f
                 : hoverAmount("view3d", mouseX >= d3x && mouseX <= d3x + d3w && mouseY >= selY && mouseY <= selY + 20);
-        drawButton(g, d3x, selY, d3w, d3, d3hov, !busy);
+        drawButton(g, d3x, selY, d3w, d3, d3hov, !busy && !data.isTile2DMode());
         if (view3d && !busy) {
             g.fill(d3x, selY, d3x + d3w, selY + 1, COL_ACCENT);
         }
@@ -2390,7 +2390,7 @@ public class MapScreen extends Screen {
         int d3wm = font.width(d3m) + 12;
         if (button == 0 && mx >= selX2 - 6 - d3wm && mx <= selX2 - 6 && my >= selY2 && my <= selY2 + 20) {
             // match the painted disabled state: no switching while a style change is running
-            if (!data.isLoading() && !data.isStyleChanging()) {
+            if (!data.isLoading() && !data.isStyleChanging() && !data.isTile2DMode()) {
                 toggle3D();
             }
             return true;

@@ -779,6 +779,7 @@ public final class MapData {
                     }
                     String savedView3d = props.getProperty("view3d");
                     if (savedView3d != null) view3d = Boolean.parseBoolean(savedView3d);
+                    if (isTile2DMode()) view3d = false; // per-tile 3D mesh is not implemented yet
                     String sYaw = props.getProperty("view3dYaw");
                     String sPitch = props.getProperty("view3dPitch");
                     String sDist = props.getProperty("view3dDistance");
@@ -2304,6 +2305,7 @@ public final class MapData {
         if (isTile2DMode()) {
             // tiles are fed by the Voxy event bridge / lazy storage reads; no global refresh lane
             teleportRefreshPending = false;
+            loadCurrentWorldUiState(); // saved map scale/style must be known before creating the store
             ensureWaterIdsAsync();
             ensure2DStore();
             return;
