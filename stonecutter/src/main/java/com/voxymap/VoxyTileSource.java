@@ -25,7 +25,7 @@ public final class VoxyTileSource {
     private final long minWX, minWZ;
     private final int pixelBlocks;
     private final int maxLod;
-    private final Set<Long> waterIds;
+    private final java.util.function.Supplier<Set<Long>> waterIds;
     private final ExecutorService io = Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "voxymap-tile-source");
         t.setDaemon(true);
@@ -33,14 +33,28 @@ public final class VoxyTileSource {
     });
     private final AtomicBoolean closed = new AtomicBoolean();
     private boolean indexed;
-    private long[] keys = new long[1024];
-    private int keyCount;
+    private final java.util.HashMap<Long, KeyList> byTile = new java.util.HashMap<>();
     private Object db;
     private final List<Object> handles = new ArrayList<>();
     private Object sectionsHandle;
 
+    private static final class KeyList {
+        long[] keys = new long[16];
+        int size;
+
+        void add(long key) {
+            if (size == keys.length) keys = java.util.Arrays.copyOf(keys, size + size / 2 + 1);
+            keys[size++] = key;
+        }
+    }
+
     public VoxyTileSource(Path storage, long minWX, long minWZ, int pixelBlocks, int maxLod,
                           Set<Long> waterIds) {
+        this(storage, minWX, minWZ, pixelBlocks, maxLod, () -> waterIds);
+    }
+
+    public VoxyTileSource(Path storage, long minWX, long minWZ, int pixelBlocks, int maxLod,
+                          java.util.function.Supplier<Set<Long>> waterIds) {
         this.storage = storage;
         this.minWX = minWX;
         this.minWZ = minWZ;
@@ -72,19 +86,31 @@ public final class VoxyTileSource {
         if (db == null || handles.size() < 3) return;
         sectionsHandle = handles.get(1);
         Object it = RocksBridge.newIterator(db, sectionsHandle);
+        final long tileWorld = (long) LiveTileStore.TILE_PIXELS * pixelBlocks;
         try {
             RocksBridge.seekToFirst(it);
             while (RocksBridge.isValid(it)) {
                 byte[] kb = RocksBridge.key(it);
                 if (kb != null && kb.length == 8) {
                     long key = ByteBuffer.wrap(kb).order(ByteOrder.BIG_ENDIAN).getLong();
-                    if ((int) ((key >>> 60) & 0xF) <= maxLod) {
-                        if (keyCount == keys.length) {
-                            long[] grown = new long[keys.length + keys.length / 2];
-                            System.arraycopy(keys, 0, grown, 0, keyCount);
-                            keys = grown;
+                    int lvl = (int) ((key >>> 60) & 0xF);
+                    if (lvl <= maxLod) {
+                        int scale = 1 << lvl;
+                        int sx = (int) ((key << 36) >> 40);
+                        int sz = (int) ((key << 12) >> 40);
+                        long wx0 = (long) sx * 32 * scale;
+                        long wz0 = (long) sz * 32 * scale;
+                        long wx1 = wx0 + 32L * scale;
+                        long wz1 = wz0 + 32L * scale;
+                        int tx0 = (int) Math.floorDiv(wx0 - minWX, tileWorld);
+                        int tx1 = (int) Math.floorDiv(wx1 - 1 - minWX, tileWorld);
+                        int tz0 = (int) Math.floorDiv(wz0 - minWZ, tileWorld);
+                        int tz1 = (int) Math.floorDiv(wz1 - 1 - minWZ, tileWorld);
+                        for (int tz = tz0; tz <= tz1; tz++) {
+                            for (int tx = tx0; tx <= tx1; tx++) {
+                                byTile.computeIfAbsent(tileKey(tx, tz), k -> new KeyList()).add(key);
+                            }
                         }
-                        keys[keyCount++] = key;
                     }
                 }
                 RocksBridge.next(it);
@@ -92,6 +118,10 @@ public final class VoxyTileSource {
         } finally {
             RocksBridge.close(it);
         }
+    }
+
+    private static long tileKey(int tx, int tz) {
+        return ((long) tx << 32) ^ (tz & 0xFFFFFFFFL);
     }
 
     private long[] buildTile(int tx, int tz) throws Exception {
@@ -103,9 +133,11 @@ public final class VoxyTileSource {
         long tileX1 = tileX0 + (long) LiveTileStore.TILE_PIXELS * pixelBlocks;
         long tileZ1 = tileZ0 + (long) LiveTileStore.TILE_PIXELS * pixelBlocks;
         boolean any = false;
+        KeyList list = byTile.get(tileKey(tx, tz));
+        if (list == null) return null;
         ByteBuffer keyBuf = ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN);
-        for (int k = 0; k < keyCount; k++) {
-            long key = keys[k];
+        for (int k = 0; k < list.size; k++) {
+            long key = list.keys[k];
             int lvl = (int) ((key >>> 60) & 0xF);
             int scale = 1 << lvl;
             int sx = (int) ((key << 36) >> 40);
@@ -119,7 +151,7 @@ public final class VoxyTileSource {
             keyBuf.putLong(key);
             byte[] val = RocksBridge.get(db, sectionsHandle, keyBuf.array());
             if (val == null) continue;
-            long[] cols = MapData.decodeSectionColumns(key, val, waterIds);
+            long[] cols = MapData.decodeSectionColumns(key, val, waterIds.get());
             if (cols == null) continue;
             for (int c = 0; c < 1024; c++) {
                 long packed = cols[c];

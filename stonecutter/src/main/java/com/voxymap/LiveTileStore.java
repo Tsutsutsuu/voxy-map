@@ -36,7 +36,7 @@ import java.util.concurrent.atomic.AtomicLong;
 public final class LiveTileStore {
     public static final int TILE_PIXELS = 256;
     private static final int CACHE_MAGIC = 0x56585431;
-    private static final int CACHE_VERSION = 2;
+    private static final int CACHE_VERSION = 3;
     private static final ExecutorService CACHE_IO = Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "voxymap-tile-cache");
         t.setDaemon(true);
@@ -104,6 +104,7 @@ public final class LiveTileStore {
     private final Set<Long> seedPending = ConcurrentHashMap.newKeySet();
     private final Set<Long> sourcePending = ConcurrentHashMap.newKeySet();
     private final Set<Long> sourceEmpty = ConcurrentHashMap.newKeySet();
+    private final AtomicInteger resetGeneration = new AtomicInteger();
     private volatile VoxyTileSource source;
     private final AtomicInteger seedTileCount = new AtomicInteger();
     private final AtomicInteger liveOnlyTileCount = new AtomicInteger();
@@ -147,6 +148,38 @@ public final class LiveTileStore {
 
     public int pixelBlocks() {
         return pixelBlocks;
+    }
+
+    /** Invalidates every tile colour/texture after a style or display-option change. */
+    public void invalidateAllColors() {
+        for (LiveTile tile : tiles.values()) {
+            tile.liveDirty = true;
+            tile.colorPending = false;
+            tile.coloredVersion = -1;
+            tile.colorStyleHash = 0;
+            tile.textureDirty = true;
+            tile.textureEpoch = -1;
+        }
+        colorRequestsThisFrame.set(0);
+    }
+
+    /** Drops every tile so the next frame rebuilds them from cache/Voxy storage (manual refresh). */
+    public void dropAllTiles() {
+        resetGeneration.incrementAndGet();
+        for (LiveTile tile : tiles.values()) {
+            if (tile.seedEpoch < 0) CACHE_IO.submit(() -> saveCached(tile));
+            tile.dispose();
+        }
+        tiles.clear();
+        seedTileCount.set(0);
+        liveOnlyTileCount.set(0);
+        sourceEmpty.clear();
+        seedPending.clear();
+        sourcePending.clear();
+        minTileX.set(Integer.MAX_VALUE);
+        maxTileX.set(Integer.MIN_VALUE);
+        minTileZ.set(Integer.MAX_VALUE);
+        maxTileZ.set(Integer.MIN_VALUE);
     }
 
     public long minWX() {
@@ -208,7 +241,9 @@ public final class LiveTileStore {
         VoxyTileSource src = source;
         if (src == null || sourcePending.contains(key) || sourceEmpty.contains(key)) return;
         sourcePending.add(key);
+        final int generation = resetGeneration.get();
         src.request(tx, tz, pixels -> {
+            if (generation != resetGeneration.get()) return;
             sourcePending.remove(key);
             if (pixels == null) {
                 sourceEmpty.add(key);
@@ -258,7 +293,8 @@ public final class LiveTileStore {
     public LiveTile getOrCreateSeed(int tx, int tz) {
         LiveTile existing = tiles.get(key(tx, tz));
         if (existing != null) {
-            if (existing.seedEpoch < 0 && seedCreatesThisFrame.get() < 16) {
+            if (existing.seedEpoch < 0 && seedPixels != null && seedRgb != null
+                    && seedCreatesThisFrame.get() < 16) {
                 seedCreatesThisFrame.incrementAndGet();
                 seedExisting(existing);
             }
@@ -269,9 +305,24 @@ public final class LiveTileStore {
         if (!seedPending.add(key)) return null;
         seedRequestsThisFrame.incrementAndGet();
         final boolean hasSeed = seedPixels != null && seedRgb != null;
+        final int generation = resetGeneration.get();
         if (!hasSeed) {
-            seedPending.remove(key);
-            requestSourceTile(tx, tz, key);
+            SEED_IO.submit(() -> {
+                LiveTile cached = loadCached(tx, tz);
+                Minecraft.getInstance().execute(() -> {
+                    if (generation != resetGeneration.get()) return;
+                    seedPending.remove(key);
+                    if (cached == null) {
+                        requestSourceTile(tx, tz, key);
+                        return;
+                    }
+                    LiveTile previous = tiles.putIfAbsent(key, cached);
+                    if (previous == null) {
+                        liveOnlyTileCount.incrementAndGet();
+                        markBounds(tx, tz);
+                    }
+                });
+            });
             return null;
         }
         final long[] srcPixels = seedPixels;
@@ -286,6 +337,7 @@ public final class LiveTileStore {
             if (built == null) built = loadCached(tx, tz);
             final LiveTile result = built;
             Minecraft.getInstance().execute(() -> {
+                if (generation != resetGeneration.get()) return;
                 seedPending.remove(key);
                 if (result == null) {
                     requestSourceTile(tx, tz, key);
@@ -674,6 +726,7 @@ public final class LiveTileStore {
     }
 
     public void dispose() {
+        resetGeneration.incrementAndGet();
         for (LiveTile tile : tiles.values()) {
             if (tile.seedEpoch < 0) CACHE_IO.submit(() -> saveCached(tile));
             tile.dispose();

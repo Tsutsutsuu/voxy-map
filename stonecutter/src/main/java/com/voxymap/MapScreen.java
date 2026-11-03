@@ -295,7 +295,7 @@ public class MapScreen extends Screen {
         // A world created minutes ago is still being filled by SeedGen: show the dialog and wait
         // instead of building a nearly empty map. Either the initial delay expires (MapData.tick)
         // or the dialog's "refresh now" button starts the build.
-        boolean waitingForSeedGen = data.isInitialRefreshPending() && data.isNewWorldNow();
+        boolean waitingForSeedGen = !data.isTile2DMode() && data.isInitialRefreshPending() && data.isNewWorldNow();
         lodWarning = waitingForSeedGen;
         if (p0 != null) {
             centerX = p0.getX();
@@ -492,7 +492,6 @@ public class MapScreen extends Screen {
     /** Layer 1: the map texture (nearest neighbour when zoomed in, the pre-filtered copy far out). */
     private void drawMap(GuiGraphicsExtractor g, MapData data, double uiScale) {
         if (VoxyMapConfig.TILE_RENDER.get() && VoxyMapConfig.UNIFIED_TILES.get()) {
-            drawTilePreview(g, data);
             drawUnifiedTiles(g, data, uiScale);
             return;
         }
@@ -734,11 +733,9 @@ public class MapScreen extends Screen {
     private void drawPlayerArrow(GuiGraphicsExtractor g) {
         var player = Minecraft.getInstance().player;
         MapData data = MapData.INSTANCE;
-        if (player == null || data.getMapWidth() <= 0) return;
-        double px = (player.getX() - data.getMinWX()) / data.getPixelBlocks();
-        double pz = (player.getZ() - data.getMinWZ()) / data.getPixelBlocks();
-        float cx = (float) (width / 2.0 + (px - centerPx()) * zoom);
-        float cy = (float) (height / 2.0 + (pz - centerPz()) * zoom);
+        if (player == null) return;
+        float cx = (float) (width / 2.0 + (player.getX() - centerX) * zoom / data.getPixelBlocks());
+        float cy = (float) (height / 2.0 + (player.getZ() - centerZ) * zoom / data.getPixelBlocks());
         Identifier arrow = arrowTex();
         // image centre sits on the player position, image top points north
         float angle = player.getYRot() + 180.0f;
@@ -1233,6 +1230,15 @@ public class MapScreen extends Screen {
     }
 
     private void drawStatusText(GuiGraphicsExtractor g, MapData data) {
+        if (data.isTile2DMode()) {
+            if (!data.hasLiveStore()) {
+                drawStatusLine(g, Component.translatable("voxymap.ui.no_data"), 24, COL_TEXT);
+            }
+            if (data.isStyleChanging()) {
+                drawStatusLine(g, Component.translatable("voxymap.ui.styleChanging"), 24, COL_ACCENT);
+            }
+            return;
+        }
         if (data.getMapWidth() <= 0) {
             // first build: use the same top line and warning colour as a refresh, so both states match
             Component msg = data.isLoading()
@@ -1567,18 +1573,15 @@ public class MapScreen extends Screen {
     private void drawRenderDistanceBox(GuiGraphicsExtractor g) {
         var player = Minecraft.getInstance().player;
         MapData data = MapData.INSTANCE;
-        if (player == null || data.getMapWidth() <= 0) return;
+        if (player == null) return;
         double dist = Minecraft.getInstance().options.renderDistance().get() * 16.0;
         double px = player.getX();
         double pz = player.getZ();
-        double gx0 = (px - dist - data.getMinWX()) / data.getPixelBlocks();
-        double gx1 = (px + dist - data.getMinWX()) / data.getPixelBlocks();
-        double gz0 = (pz - dist - data.getMinWZ()) / data.getPixelBlocks();
-        double gz1 = (pz + dist - data.getMinWZ()) / data.getPixelBlocks();
-        int x0 = (int) Math.round(width / 2.0 + (gx0 - centerPx()) * zoom);
-        int x1 = (int) Math.round(width / 2.0 + (gx1 - centerPx()) * zoom);
-        int z0 = (int) Math.round(height / 2.0 + (gz0 - centerPz()) * zoom);
-        int z1 = (int) Math.round(height / 2.0 + (gz1 - centerPz()) * zoom);
+        double pb = Math.max(1, data.getPixelBlocks());
+        int x0 = (int) Math.round(width / 2.0 + (px - dist - centerX) * zoom / pb);
+        int x1 = (int) Math.round(width / 2.0 + (px + dist - centerX) * zoom / pb);
+        int z0 = (int) Math.round(height / 2.0 + (pz - dist - centerZ) * zoom / pb);
+        int z1 = (int) Math.round(height / 2.0 + (pz + dist - centerZ) * zoom / pb);
         int yellow = 0xE0FFFF00;
         g.fill(x0, z0, x0 + 1, z1 + 1, yellow);
         g.fill(x1, z0, x1 + 1, z1 + 1, yellow);

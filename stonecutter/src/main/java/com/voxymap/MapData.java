@@ -122,8 +122,12 @@ public final class MapData {
     private volatile TileStore tileStore;
     /** Event-driven overlay tiles for areas the global snapshot does not cover yet. */
     private volatile LiveTileStore liveTiles;
+    /** storage path the 2D tile store was created for (independent of the global snapshot) */
+    private volatile Path tile2dStorage;
     /** water block ids from the last mapping scan, shared with the live section decoder */
     private volatile Set<Long> waterIdsCache = Set.of();
+    private volatile boolean waterIdsLoading;
+    private volatile boolean waterIdsLoaded;
     /** live textures, kept so incremental refreshes can patch only the changed rows */
     private volatile DynamicTexture bigTex;
     private volatile DynamicTexture smallTex;
@@ -433,12 +437,15 @@ public final class MapData {
     }
 
     public boolean isReady() {
-        if (VoxyMapConfig.TILE_RENDER.get() && VoxyMapConfig.UNIFIED_TILES.get()) {
-            // the unified 2D path deliberately has no big map texture; the tile store only needs
-            // a snapshot + colour frame. Requiring textureId here disabled style buttons.
-            return snap != null && colorFrame != null;
+        if (isTile2DMode()) {
+            return liveTiles != null;
         }
         return snap != null && textureId != null;
+    }
+
+    /** True when the unified 2D renderer is the active map path. */
+    public boolean isTile2DMode() {
+        return VoxyMapConfig.TILE_RENDER.get() && VoxyMapConfig.UNIFIED_TILES.get();
     }
 
     public int getMapWidth() {
@@ -447,6 +454,10 @@ public final class MapData {
     }
 
     public int getPixelBlocks() {
+        if (isTile2DMode()) {
+            LiveTileStore live = liveTiles;
+            return live != null ? live.pixelBlocks() : effectivePixelBlocks();
+        }
         Snapshot s = snap;
         return s == null ? 2 : s.pixelBlocks;
     }
@@ -457,11 +468,19 @@ public final class MapData {
     }
 
     public long getMinWX() {
+        if (isTile2DMode()) {
+            LiveTileStore live = liveTiles;
+            return live != null ? live.minWX() : 0;
+        }
         Snapshot s = snap;
         return s == null ? 0 : s.minWX;
     }
 
     public long getMinWZ() {
+        if (isTile2DMode()) {
+            LiveTileStore live = liveTiles;
+            return live != null ? live.minWZ() : 0;
+        }
         Snapshot s = snap;
         return s == null ? 0 : s.minWZ;
     }
@@ -513,10 +532,10 @@ public final class MapData {
 
     /** Ground height at a world position, or sea level when unknown. */
     public int heightAt(int worldX, int worldZ) {
-        Snapshot s = snap;
-        if (s == null) return seaLevel();
         long p = livePackedAt(worldX, worldZ);
         if (p == LONG_EMPTY) {
+            Snapshot s = snap;
+            if (s == null) return seaLevel();
             int gx = (int) Math.floorDiv((long) worldX - s.minWX, s.pixelBlocks);
             int gz = (int) Math.floorDiv((long) worldZ - s.minWZ, s.pixelBlocks);
             if (gx < 0 || gx >= s.width || gz < 0 || gz >= s.height) return seaLevel();
@@ -928,6 +947,18 @@ public final class MapData {
         }
         style = s;
         saveUiState();
+        if (isTile2DMode()) {
+            // each tile re-colours independently; no global map re-render is required
+            lastRenderedStyle = s;
+            LiveTileStore live = ensure2DStore();
+            live.invalidateAllColors();
+            styleChanging = false;
+            styleChangeStartMs = 0;
+            if (RefreshDebug.enabled()) {
+                RefreshDebug.chat("style -> " + s + " (tiles)", net.minecraft.ChatFormatting.DARK_GRAY);
+            }
+            return;
+        }
         Snapshot target = snap;
         int sea = seaLevel();
         styleChanging = true;
@@ -962,6 +993,11 @@ public final class MapData {
      */
     public void requestColorRerender() {
         if (!isReady() || loading || styleChanging) return;
+        if (isTile2DMode()) {
+            LiveTileStore live = ensure2DStore();
+            live.invalidateAllColors();
+            return;
+        }
         Snapshot target = snap;
         if (target == null) return;
         int sea = seaLevel();
@@ -1013,6 +1049,8 @@ public final class MapData {
         // is detected by comparing the storage path (needsWorldReload) and drops the old grid first.
         releaseTextures();
         dropAnalysisCaches();
+        releaseLiveTiles();
+        tile2dStorage = null;
         // 3D and forced-grid state is per-world too: without this a new world could inherit the
         // previous world's 3D mode/camera or its safety-grid choice, and the first saveUiState()
         // would write the current values into the previous world's state file
@@ -1091,6 +1129,14 @@ public final class MapData {
      * @param fallbackNote why an incremental refresh fell back to this full rebuild ("" = none)
      */
     public void updateAsync(boolean forceReload, RefreshTrigger trigger, String fallbackNote) {
+        if (isTile2DMode()) {
+            // The 2D map has no global refresh lane. A manual refresh drops the in-memory tiles;
+            // they are rebuilt from the per-tile cache / Voxy storage on the next frame.
+            ensureWaterIdsAsync();
+            LiveTileStore store = ensure2DStore();
+            if (forceReload) store.dropAllTiles();
+            return;
+        }
         final long reportStart = System.nanoTime();
         final RefreshReport report = new RefreshReport(trigger, fallbackNote);
         final long jobToken = refreshToken.incrementAndGet();
@@ -2046,6 +2092,12 @@ public final class MapData {
         mapOpen = true;
         mapClosedAtMs = 0;
         cancelActiveRefresh();
+        if (isTile2DMode()) {
+            // the unified 2D path never waits for a global snapshot/colour build
+            ensureWaterIdsAsync();
+            ensure2DStore();
+            return;
+        }
         if (needsWorldReload()) dropSnapshotForWorldChange();
         if (gentlePublished) {
             gentlePublished = false;
@@ -2248,6 +2300,13 @@ public final class MapData {
             if (RefreshDebug.enabled()) {
                 RefreshDebug.chat("style change watchdog: forced idle", net.minecraft.ChatFormatting.YELLOW);
             }
+        }
+        if (isTile2DMode()) {
+            // tiles are fed by the Voxy event bridge / lazy storage reads; no global refresh lane
+            teleportRefreshPending = false;
+            ensureWaterIdsAsync();
+            ensure2DStore();
+            return;
         }
         if (!VoxyMapConfig.AUTO_REFRESH.get()) return;
         if (mapOpen) {
@@ -2985,6 +3044,14 @@ public final class MapData {
             overrideHi = globalHi;
             overrideRampLo = globalRampLo;
             overrideRampHi = globalRampHi;
+        } else {
+            // tile-only mode: use one fixed world-wide ramp so colours stay consistent between
+            // independently coloured tiles (never normalise a single tile against itself)
+            useRampOverride = true;
+            overrideLo = sea;
+            overrideHi = sea + 512;
+            overrideRampLo = sea;
+            overrideRampHi = sea + 512;
         }
         Snapshot s = new Snapshot(pixels, width, height, minWX, minWZ, pixelBlocks,
                 java.util.Map.of(), System.nanoTime());
@@ -3174,6 +3241,7 @@ public final class MapData {
      * if the base geometry changes the overlay is discarded (the next base build covers the area).
      */
     public LiveTileStore getLiveTiles() {
+        if (isTile2DMode()) return ensure2DStore();
         Snapshot s = snap;
         if (s == null) return null;
         LiveTileStore current = liveTiles;
@@ -3189,7 +3257,7 @@ public final class MapData {
         LiveTileStore next = new LiveTileStore(s.minWX, s.minWZ, s.pixelBlocks, tileCache);
         if (snapStorage != null) {
             next.setSource(new VoxyTileSource(snapStorage, s.minWX, s.minWZ, s.pixelBlocks,
-                    lodCap(), waterIdsCache));
+                    lodCap(), this::waterIdsSnapshot));
         }
         ColorFrame f = colorFrame;
         if (f != null && f.width == s.width && f.height == s.height) {
@@ -3197,6 +3265,64 @@ public final class MapData {
         }
         liveTiles = next;
         return next;
+    }
+
+    /**
+     * The 2D path owns its own origin (world 0,0 aligned by tile size) and does not wait for a
+     * global Snapshot: tiles come from the per-tile cache or from Voxy storage on demand.
+     */
+    private LiveTileStore ensure2DStore() {
+        Path storage = findStorage();
+        int pb = effectivePixelBlocks();
+        LiveTileStore current = liveTiles;
+        if (current != null && current.matches(0L, 0L, pb)
+                && (tile2dStorage == null ? storage == null : tile2dStorage.equals(storage))) {
+            return current;
+        }
+        if (current != null) current.dispose();
+        Path cache = storage == null ? null
+                : worldCacheDir(storage).resolve("tiles").resolve("pb" + pb);
+        LiveTileStore next = new LiveTileStore(0L, 0L, pb, cache);
+        if (storage != null) {
+            next.setSource(new VoxyTileSource(storage, 0L, 0L, pb, lodCap(), this::waterIdsSnapshot));
+        }
+        liveTiles = next;
+        tile2dStorage = storage;
+        ensureWaterIdsAsync();
+        return next;
+    }
+
+    /** Loads the Voxy liquid id set without building the global Snapshot (needed by live tiles). */
+    public void ensureWaterIdsAsync() {
+        if (waterIdsLoaded || waterIdsLoading) return;
+        Path storage = findStorage();
+        if (storage == null) return;
+        waterIdsLoading = true;
+        loader.submit(() -> {
+            List<Object> handles = new ArrayList<>();
+            Object db = null;
+            try {
+                db = RocksBridge.openReadOnly(storage.toString(), handles);
+                if (db != null && handles.size() >= 3) {
+                    Set<Long> loaded = loadWaterIds(db, handles.get(2), new HashMap<>());
+                    boolean hadWater = !waterIdsCache.isEmpty();
+                    waterIdsCache = loaded;
+                    waterIdsLoaded = true;
+                    if (!hadWater && !loaded.isEmpty()) {
+                        Minecraft.getInstance().execute(() -> {
+                            LiveTileStore store = liveTiles;
+                            if (store != null) store.dropAllTiles();
+                        });
+                    }
+                }
+            } catch (Throwable t) {
+                // water ids are advisory; leave the previous/empty set
+            } finally {
+                for (Object h : handles) RocksBridge.close(h);
+                RocksBridge.close(db);
+                waterIdsLoading = false;
+            }
+        });
     }
 
     /** True once the render thread has created the live tile store for the current snapshot. */
@@ -3207,9 +3333,14 @@ public final class MapData {
     /** Consumer for the Voxy live-section bridge (called on its worker thread). */
     public void onLiveSection(long key, long[] raw) {
         if (!VoxyMapConfig.LIVE_TILES.get() || !VoxyMapConfig.TILE_RENDER.get()) return;
+        LiveTileStore store = liveTiles;
+        if (isTile2DMode()) {
+            if (store == null || !store.matches(0L, 0L, effectivePixelBlocks())) return;
+            store.applySection(key, raw, waterIdsCache);
+            return;
+        }
         Snapshot s = snap;
         if (s == null) return;
-        LiveTileStore store = liveTiles;
         // Never create/dispose stores (and their GPU textures) from the Voxy worker thread.
         // The render thread owns store creation; until it has caught up, new sections are dropped.
         if (store == null || !store.matches(s.minWX, s.minWZ, s.pixelBlocks)) return;
@@ -3219,9 +3350,11 @@ public final class MapData {
     private void releaseLiveTiles() {
         LiveTileStore current = liveTiles;
         liveTiles = null;
+        tile2dStorage = null;
+        waterIdsLoaded = false;
+        waterIdsCache = Set.of();
         if (current != null) current.dispose();
     }
-
     /** Build the 1-bit biome boundary mask + labels on the loader thread (overlay only). */
     public void ensureBiomeTexture() {
         // the 3D overlay needs the edge array even when the 2D texture already exists (e.g. the map
