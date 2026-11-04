@@ -3072,12 +3072,16 @@ public final class MapData {
             overrideRampHi = globalRampHi;
         } else {
             // tile-only mode: use one fixed world-wide ramp so colours stay consistent between
-            // independently coloured tiles (never normalise a single tile against itself)
+            // independently coloured tiles (never normalise a single tile against itself).
+            // Use the actual world height ceiling so datapack/tall worlds do not saturate.
+            int worldMax = sea + 512;
+            var level = Minecraft.getInstance().level;
+            if (level != null) worldMax = Math.max(worldMax, level.getMaxY());
             useRampOverride = true;
             overrideLo = sea;
-            overrideHi = sea + 512;
+            overrideHi = worldMax;
             overrideRampLo = sea;
-            overrideRampHi = sea + 512;
+            overrideRampHi = worldMax;
         }
         Snapshot s = new Snapshot(pixels, width, height, minWX, minWZ, pixelBlocks,
                 java.util.Map.of(), System.nanoTime());
@@ -3112,7 +3116,7 @@ public final class MapData {
         }
         if (globalRampSnap == s && fp.equals(globalRampFingerprint)) return;
         boolean adaptive = VoxyMapConfig.ADAPTIVE_COLOR_RAMP.get();
-        int lo = sea, hi = sea + 820;
+        int lo = sea, hi = worldMaxY(sea + 820);
         int minH = Integer.MAX_VALUE, maxH = Integer.MIN_VALUE, n = 0;
         for (long p : s.pixels) {
             int top = rawTop(p);
@@ -4374,7 +4378,7 @@ public final class MapData {
         // Tile colour jobs override these with the world-wide parameters, otherwise every tile
         // would normalise its own local min/max and neighbouring tiles would use different ramps.
         boolean adaptive = VoxyMapConfig.ADAPTIVE_COLOR_RAMP.get();
-        int lo = sea, hi = sea + 820;
+        int lo = sea, hi = worldMaxY(sea + 820);
         int rampLo = lo, rampHi = hi;
         if (useRampOverride) {
             lo = overrideLo;
@@ -4513,8 +4517,14 @@ public final class MapData {
     }
 
     /** Adaptive colour-ramp limits; mirrors the block in terrainFor. */
+    /** Maximum build Y of the current dimension, or a fallback when no level is present. */
+    private static int worldMaxY(int fallback) {
+        var level = Minecraft.getInstance().level;
+        return level != null ? Math.max(fallback, level.getMaxY()) : fallback;
+    }
+
     private static int[] rampParams(int[] topArr, boolean[] isWaterPix, int sea, int w, int h) {
-        int lo = sea, hi = sea + 820;
+        int lo = sea, hi = worldMaxY(sea + 820);
         if (VoxyMapConfig.ADAPTIVE_COLOR_RAMP.get()) {
             int minH = Integer.MAX_VALUE, maxH = Integer.MIN_VALUE, n = 0;
             for (int i = 0; i < w * h; i++) {

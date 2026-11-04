@@ -95,7 +95,7 @@ public class MapConfigScreen extends Screen {
         add(Group.DATA, "cacheKeepCount", VoxyMapConfig.CACHE_KEEP_COUNT, 1, 100, null);
         add(Group.DATA, "maxMapPixels", VoxyMapConfig.MAX_MAP_PIXELS, 10_000_000, 500_000_000, null);
         add(Group.DATA, "autoSeaLevel", VoxyMapConfig.AUTO_SEA_LEVEL, 0, 0, null, true);
-        add(Group.DATA, "seaLevelOverride", VoxyMapConfig.SEA_LEVEL_OVERRIDE, -64, 384, null);
+        add(Group.DATA, "seaLevelOverride", VoxyMapConfig.SEA_LEVEL_OVERRIDE, -2048, 2048, null);
         add(Group.RENDERING, "defaultStyle", VoxyMapConfig.DEFAULT_STYLE, 0, 0, MapStyles.NAMES, true);
         add(Group.RENDERING, "defaultZoom", VoxyMapConfig.DEFAULT_ZOOM, 0, 0, null);
         add(Group.RENDERING, "rememberZoom", VoxyMapConfig.REMEMBER_ZOOM, 0, 0, null);
