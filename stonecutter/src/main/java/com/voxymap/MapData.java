@@ -124,6 +124,9 @@ public final class MapData {
     private volatile LiveTileStore liveTiles;
     /** storage path the 2D tile store was created for (independent of the global snapshot) */
     private volatile Path tile2dStorage;
+    /** automatic source resyncs after first open (Voxy may still be flushing fine LOD sections) */
+    private volatile long tileResyncAtMs;
+    private int tileResyncStage;
     /** water block ids from the last mapping scan, shared with the live section decoder */
     private volatile Set<Long> waterIdsCache = Set.of();
     private volatile boolean waterIdsLoading;
@@ -2313,7 +2316,22 @@ public final class MapData {
             teleportRefreshPending = false;
             loadCurrentWorldUiState(); // saved map scale/style must be known before creating the store
             ensureWaterIdsAsync();
-            ensure2DStore();
+            LiveTileStore store = ensure2DStore();
+            long now = System.currentTimeMillis();
+            if (tileResyncAtMs > 0 && now >= tileResyncAtMs) {
+                // Voxy may still be flushing fine LOD sections when the map first opens. The
+                // first source index then contains only coarse sections (e.g. y=64 encoded as a
+                // 16-block voxel top at 79). Re-scan and replace coarse pixels once/twice.
+                tileResyncAtMs = 0;
+                store.invalidateSourceIndex();
+                store.markAllSourceUnfilled();
+                if (tileResyncStage < 3) {
+                    tileResyncAtMs = now + (tileResyncStage == 1 ? 10_000L : 20_000L);
+                    tileResyncStage++;
+                } else {
+                    tileResyncStage = 0;
+                }
+            }
             return;
         }
         if (!VoxyMapConfig.AUTO_REFRESH.get()) return;
@@ -3297,6 +3315,10 @@ public final class MapData {
         next.setCacheReady(waterIdsLoaded);
         liveTiles = next;
         tile2dStorage = storage;
+        if (tileResyncStage == 0) {
+            tileResyncStage = 1;
+            tileResyncAtMs = System.currentTimeMillis() + 4_000L;
+        }
         ensureWaterIdsAsync();
         return next;
     }
@@ -3370,6 +3392,8 @@ public final class MapData {
         LiveTileStore current = liveTiles;
         liveTiles = null;
         tile2dStorage = null;
+        tileResyncAtMs = 0;
+        tileResyncStage = 0;
         waterIdsLoaded = false;
         waterIdsCache = Set.of();
         if (current != null) current.dispose();

@@ -304,6 +304,13 @@ public final class LiveTileStore {
         if (src != null) src.invalidateIndex();
     }
 
+    /** Lets the next visible pass re-query storage and replace any coarse LOD pixels. */
+    public void markAllSourceUnfilled() {
+        for (LiveTile tile : tiles.values()) {
+            tile.sourceFilled = false;
+        }
+    }
+
     private void requestSourceTile(int tx, int tz, long key) {
         VoxyTileSource src = source;
         if (src == null || sourcePending.contains(key) || sourceEmpty.contains(key)) return;
