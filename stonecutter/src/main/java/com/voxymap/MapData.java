@@ -2959,10 +2959,15 @@ public final class MapData {
                 if (!fluid && y > solidY) solidY = y;
             }
             if (topY < 0 && solidY < 0) continue; // empty column
-            int topWorld = topY >= 0 ? (sy * 32 + topY) * scale + scale - 1 : NO_TOP;
+            int topWorld = topY >= 0
+                    ? (topFluid ? (sy * 32 + topY) * scale + scale - 1 : (sy * 32 + topY) * scale)
+                    : NO_TOP;
             // a solid column reaching the section ceiling is a buried slice, not terrain
             if (topY >= 0 && topY == 31 && !topFluid) topWorld = NO_TOP;
-            int solidWorld = solidY >= 0 ? (sy * 32 + solidY) * scale + scale - 1 : NO_SOLID;
+            // Use the voxel base for solid terrain: a lvl4 voxel covers 16 blocks, and its
+            // top would report y=79 for a flat y=64 surface. Water keeps the voxel top so the
+            // sea surface stays at the fluid height.
+            int solidWorld = solidY >= 0 ? (sy * 32 + solidY) * scale : NO_SOLID;
             long out = (((long) (topWorld + 32768)) << 24) | ((solidWorld + 32768) & 0xFFFF);
             if (topFluid) out |= (1L << 52);
             out |= ((long) (((topVox >>> 47) & 0x1FF))) << 53;
