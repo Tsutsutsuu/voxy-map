@@ -306,6 +306,12 @@ public final class LiveTileStore {
 
     /** Lets the next visible pass re-query storage and replace any coarse LOD pixels. */
     public void markAllSourceUnfilled() {
+        // Cancel/forget in-flight source requests from the old index. Without this, a request
+        // started before the rescan can finish with coarse pixels and set sourceFilled=true, so
+        // the fresh index is never queried for the tile.
+        resetGeneration.incrementAndGet();
+        sourcePending.clear();
+        sourceEmpty.clear();
         for (LiveTile tile : tiles.values()) {
             tile.sourceFilled = false;
         }
