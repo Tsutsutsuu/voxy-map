@@ -152,7 +152,8 @@ public final class MapData {
     private volatile Map<Integer, String> tileBiomeNames = Map.of();
     /** pixel-space origin/dimensions of the tile-derived biome overlay texture */
     private volatile int biomeTextureMinWX, biomeTextureMinWZ, biomeTextureWidth, biomeTextureHeight;
-    private volatile Snapshot tileBiomeSnapshot;
+    /** avoid submitting a failing snapshot build on every frame when the tile extent is too large */
+    private volatile long nextTileBiomeAttemptMs;
     private final AtomicBoolean buildingTextures = new AtomicBoolean();
     private final AtomicBoolean buildingBiome = new AtomicBoolean();
     /** set when a texture build was requested while another one was running (retried on completion) */
@@ -3231,26 +3232,34 @@ public final class MapData {
         int minTz = live.minTileZ(), maxTz = live.maxTileZ();
         long wpx = (long) (maxTx - minTx + 1) * LiveTileStore.TILE_PIXELS;
         long hpx = (long) (maxTz - minTz + 1) * LiveTileStore.TILE_PIXELS;
-        if (wpx <= 0 || hpx <= 0 || wpx * hpx > 160_000_000L) return false;
+        if (wpx <= 0 || hpx <= 0 || wpx * hpx > 64_000_000L) return false;
         int w = (int) wpx, h = (int) hpx;
-        int[] argb = new int[w * h];
-        for (LiveTileStore.LiveTile tile : live.tilesView()) {
-            int[] rgb = tile.rgb;
-            if (rgb == null) continue;
-            int ox = (tile.tx - minTx) * LiveTileStore.TILE_PIXELS;
-            int oz = (tile.tz - minTz) * LiveTileStore.TILE_PIXELS;
-            if (ox < 0 || oz < 0 || ox + LiveTileStore.TILE_PIXELS > w
-                    || oz + LiveTileStore.TILE_PIXELS > h) continue;
-            for (int z = 0; z < LiveTileStore.TILE_PIXELS; z++) {
-                System.arraycopy(rgb, z * LiveTileStore.TILE_PIXELS,
-                        argb, (oz + z) * w + ox, LiveTileStore.TILE_PIXELS);
-            }
-        }
         try {
             java.nio.file.Files.createDirectories(out.getParent());
             java.awt.image.BufferedImage img = new java.awt.image.BufferedImage(w, h,
                     java.awt.image.BufferedImage.TYPE_INT_ARGB);
-            img.setRGB(0, 0, w, h, argb, 0, w);
+            int[] argb;
+            var buffer = img.getRaster().getDataBuffer();
+            if (buffer instanceof java.awt.image.DataBufferInt intBuffer) {
+                argb = intBuffer.getData();
+            } else {
+                argb = new int[w * h];
+            }
+            for (LiveTileStore.LiveTile tile : live.tilesView()) {
+                int[] rgb = tile.rgb;
+                if (rgb == null) continue;
+                int ox = (tile.tx - minTx) * LiveTileStore.TILE_PIXELS;
+                int oz = (tile.tz - minTz) * LiveTileStore.TILE_PIXELS;
+                if (ox < 0 || oz < 0 || ox + LiveTileStore.TILE_PIXELS > w
+                        || oz + LiveTileStore.TILE_PIXELS > h) continue;
+                for (int z = 0; z < LiveTileStore.TILE_PIXELS; z++) {
+                    System.arraycopy(rgb, z * LiveTileStore.TILE_PIXELS,
+                            argb, (oz + z) * w + ox, LiveTileStore.TILE_PIXELS);
+                }
+            }
+            if (!(buffer instanceof java.awt.image.DataBufferInt)) {
+                img.setRGB(0, 0, w, h, argb, 0, w);
+            }
             javax.imageio.ImageIO.write(img, "png", out.toFile());
             return true;
         } catch (Throwable t) {
@@ -3391,13 +3400,6 @@ public final class MapData {
         return next;
     }
 
-    /** Ask the live probe to copy Voxy's already-loaded fine sections into the tile store. */
-    private void feedRuntimeSections() {
-        Minecraft mc = Minecraft.getInstance();
-        if (mc.player == null) return;
-        VoxyLiveProbe.feedLoadedSections(mc.player.getX(), mc.player.getZ(), 2048.0);
-    }
-
     /**
      * When the highest known land point changes, every tile must be re-coloured with the new
      * ramp. Debounce during loading so a rapidly increasing maximum does not cause a recolor
@@ -3427,7 +3429,7 @@ public final class MapData {
         biomeEdgeVersion = 0;
         biomeLabelsFlat = new int[0];
         biomeLabelsSnapshot = null;
-        tileBiomeSnapshot = null;
+        nextTileBiomeAttemptMs = 0L;
     }
 
     /** Loads the Voxy liquid ids from an already-open database (used by VoxyTileSource). */
@@ -3559,15 +3561,24 @@ public final class MapData {
     /** Builds the biome border texture/labels from the loaded tiles, without a global snapshot. */
     private void ensureTileBiomeTexture() {
         if (biomeTextureId != null && biomeEdgeVersion == BIOME_EDGE_VERSION) return;
+        long now = System.currentTimeMillis();
+        if (now < nextTileBiomeAttemptMs) return;
         LiveTileStore live = liveTiles;
         if (live == null) return;
-        Snapshot s = live.buildSnapshot(tileBiomeNames);
-        if (s == null) return;
         if (!buildingBiome.compareAndSet(false, true)) return;
         final int epochAtStart = worldEpoch;
+        final Map<Integer, String> names = tileBiomeNames;
         loader.submit(() -> {
             NativeImage bimg = null;
             try {
+                // Snapshotting is O(loaded tiles) and allocates a large array; keep it off the
+                // render thread so opening the overlay cannot freeze the current frame.
+                Snapshot s = live.buildSnapshot(names);
+                if (s == null) {
+                    nextTileBiomeAttemptMs = System.currentTimeMillis() + 5_000L;
+                    buildingBiome.set(false);
+                    return;
+                }
                 bimg = buildBiomeImage(s);
                 int[] edges = buildBiomeEdges(s);
                 int[] labels = buildBiomeLabels(s);
@@ -3580,21 +3591,21 @@ public final class MapData {
                 final NativeImage image = bimg;
                 final int[] finalEdges = edges;
                 final int[] finalLabels = labels;
+                final Snapshot snapshot = s;
                 Minecraft.getInstance().execute(() -> {
                     try {
-                        if (epochAtStart != worldEpoch) {
+                        if (epochAtStart != worldEpoch || liveTiles != live) {
                             if (image != null) image.close();
                             return;
                         }
                         biomeEdgePx = finalEdges;
                         biomeEdgeVersion = BIOME_EDGE_VERSION;
                         biomeLabelsFlat = finalLabels;
-                        biomeLabelsSnapshot = s;
-                        tileBiomeSnapshot = s;
+                        biomeLabelsSnapshot = snapshot;
                         biomeTextureMinWX = offX;
                         biomeTextureMinWZ = offZ;
-                        biomeTextureWidth = s.width;
-                        biomeTextureHeight = s.height;
+                        biomeTextureWidth = snapshot.width;
+                        biomeTextureHeight = snapshot.height;
                         if (image != null) {
                             releaseOne(Minecraft.getInstance(), biomeTextureId);
                             biomeImage = image;
@@ -3609,6 +3620,7 @@ public final class MapData {
                 });
             } catch (Throwable t) {
                 if (bimg != null) bimg.close();
+                nextTileBiomeAttemptMs = System.currentTimeMillis() + 5_000L;
                 buildingBiome.set(false);
                 t.printStackTrace();
             }

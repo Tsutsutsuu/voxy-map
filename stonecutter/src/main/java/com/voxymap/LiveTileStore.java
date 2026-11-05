@@ -167,7 +167,8 @@ public final class LiveTileStore {
         int minTz = minTileZ(), maxTz = maxTileZ();
         long wpx = (long) (maxTx - minTx + 1) * TILE_PIXELS;
         long hpx = (long) (maxTz - minTz + 1) * TILE_PIXELS;
-        if (wpx <= 0 || hpx <= 0 || wpx * hpx > 80_000_000L) return null;
+        if (wpx <= 0 || hpx <= 0 || wpx > 16_384L || hpx > 16_384L
+                || wpx * hpx > 32_000_000L) return null;
         int w = (int) wpx, h = (int) hpx;
         long minWX = tileMinWX(minTx), minWZ = tileMinWZ(minTz);
         long[] pixels = new long[w * h];

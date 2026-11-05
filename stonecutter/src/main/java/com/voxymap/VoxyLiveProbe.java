@@ -59,13 +59,8 @@ public final class VoxyLiveProbe {
     private static Method engineAcquire;
     private static Field engineDirtyCallback;
     private static Method engineSetDirtyCallback;
-    private static Field engineTrackerField;
-    private static Field trackerLoadedField;
-    private static Field trackerLruField;
     private static volatile boolean running;
     private static Thread worker;
-    private static Thread feedThread;
-    private static final Object feedLock = new Object();
 
     private static final AtomicLong events = new AtomicLong();
     private static final AtomicLong coalescedAdds = new AtomicLong();
@@ -220,12 +215,6 @@ public final class VoxyLiveProbe {
                 engineAcquire = null;
             }
             engineSetDirtyCallback = engineClass.getMethod("setDirtyCallback", callbackClass);
-            try {
-                engineTrackerField = engineClass.getDeclaredField("sectionTracker");
-                engineTrackerField.setAccessible(true);
-            } catch (Throwable ignored) {
-                engineTrackerField = null;
-            }
             try {
                 engineDirtyCallback = engineClass.getDeclaredField("dirtyCallback");
                 engineDirtyCallback.setAccessible(true);
@@ -427,126 +416,6 @@ public final class VoxyLiveProbe {
         if (old == null) {
             coalescedAdds.incrementAndGet();
             dirtyQueue.add(key);
-        }
-    }
-
-    /**
-     * Feed Voxy's already-loaded runtime sections into the tile store. The RocksDB storage can
-     * lag behind (or omit) fine LOD sections that the renderer already shows, which is why the map
-     * could keep a coarse y=79 column above an actual y=64 surface even after a storage rescan.
-     * Only fine levels near the player are submitted; this is a one-shot helper, not a per-tick scan.
-     */
-    public static void feedLoadedSections(double centerX, double centerZ, double radius) {
-        if (engine == null || !VoxyMapConfig.LIVE_TILES.get()) return;
-        synchronized (feedLock) {
-            if (feedThread != null && feedThread.isAlive()) return;
-            feedThread = new Thread(() -> {
-                try {
-                    initTrackerFields();
-                    Object tracker = engineTrackerField.get(engine);
-                    if (tracker == null) return;
-                    if (trackerLoadedField != null) {
-                        Object[] maps = (Object[]) trackerLoadedField.get(tracker);
-                        if (maps != null) {
-                            for (Object map : maps) collectLoadedKeys(map, centerX, centerZ, radius);
-                        }
-                    }
-                    if (trackerLruField != null) {
-                        collectLoadedKeys(trackerLruField.get(tracker), centerX, centerZ, radius);
-                    }
-                    // Reflecting private fastutil maps may be unavailable on some mappings. Also
-                    // probe the lvl0 section coordinates around the player directly; sections that
-                    // are not loaded simply return null from acquireIfExists.
-                    collectDirectSections(centerX, centerZ, Math.min(radius, 512.0));
-                } catch (Throwable ignored) {
-                    // Reflection is best-effort; the storage path still covers everything else.
-                }
-            }, "voxymap-runtime-feed");
-            feedThread.setDaemon(true);
-            feedThread.setPriority(Thread.MIN_PRIORITY);
-            feedThread.start();
-        }
-    }
-
-    private static void initTrackerFields() throws Exception {
-        if (engineTrackerField == null) return;
-        Object tracker = engineTrackerField.get(engine);
-        if (tracker == null) return;
-        Class<?> trackerClass = tracker.getClass();
-        if (trackerLoadedField == null) {
-            try {
-                trackerLoadedField = trackerClass.getDeclaredField("loadedSectionCache");
-                trackerLoadedField.setAccessible(true);
-            } catch (Throwable ignored) {
-            }
-        }
-        if (trackerLruField == null) {
-            try {
-                trackerLruField = trackerClass.getDeclaredField("lruSecondaryCache");
-                trackerLruField.setAccessible(true);
-            } catch (Throwable ignored) {
-            }
-        }
-    }
-
-    private static void collectDirectSections(double centerX, double centerZ, double radius) {
-        Minecraft mc = Minecraft.getInstance();
-        Level level = mc.level;
-        if (level == null) return;
-        int minSy = level.getMinSectionY();
-        int maxSy = level.getMaxSectionY();
-        int scx = (int) Math.floorDiv((long) Math.floor(centerX), 32L);
-        int scz = (int) Math.floorDiv((long) Math.floor(centerZ), 32L);
-        int r = Math.max(1, (int) Math.ceil(radius / 32.0));
-        for (int sz = scz - r; sz <= scz + r; sz++) {
-            for (int sx = scx - r; sx <= scx + r; sx++) {
-                for (int sy = minSy; sy <= maxSy; sy++) {
-                    long key = ((long) (sy & 0xFF) << 52)
-                            | ((long) (sz & 0xFFFFFF) << 28)
-                            | ((long) (sx & 0xFFFFFF) << 4);
-                    enqueueKey(key, 0, 0);
-                }
-            }
-        }
-    }
-
-    private static void collectLoadedKeys(Object map, double centerX, double centerZ, double radius) {
-        if (map == null) return;
-        try {
-            Object keySet = map.getClass().getMethod("keySet").invoke(map);
-            if (keySet == null) return;
-            Method keySetIterator = keySet.getClass().getMethod("iterator");
-            try {
-                keySetIterator.setAccessible(true);
-            } catch (Throwable ignored) {
-            }
-            Object iterator = keySetIterator.invoke(keySet);
-            if (iterator == null) return;
-            Method hasNext = iterator.getClass().getMethod("hasNext");
-            Method nextLong = iterator.getClass().getMethod("nextLong");
-            try {
-                hasNext.setAccessible(true);
-                nextLong.setAccessible(true);
-            } catch (Throwable ignored) {
-            }
-            int guard = 0;
-            while ((Boolean) hasNext.invoke(iterator)) {
-                long key = (Long) nextLong.invoke(iterator);
-                int lvl = (int) ((key >>> 60) & 0xF);
-                if (lvl > 1) continue; // fine sections are what the storage may be missing
-                int sx = (int) ((key << 36) >> 40);
-                int sz = (int) ((key << 12) >> 40);
-                int scale = 1 << lvl;
-                double wx = (double) sx * 32 * scale;
-                double wz = (double) sz * 32 * scale;
-                double reach = radius + 32.0 * scale;
-                if (wx < centerX - reach || wx > centerX + reach
-                        || wz < centerZ - reach || wz > centerZ + reach) continue;
-                enqueueKey(key, lvl, 0);
-                if (++guard > 20_000) return;
-            }
-        } catch (Throwable ignored) {
-            // fastutil maps are not thread-safe; a concurrent resize simply skips this pass.
         }
     }
 
