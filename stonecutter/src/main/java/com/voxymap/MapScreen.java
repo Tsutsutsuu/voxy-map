@@ -421,7 +421,15 @@ public class MapScreen extends Screen {
                 cam3dDirty = true;
             }
             if (data.isBiomeOverlay()) {
-                data.ensureBiomeTexture();
+                if (cam3d != null && data.isTile2DMode()) {
+                    int pb = Math.max(1, data.getPixelBlocks());
+                    int cx = (int) Math.floorDiv((long) cam3d.targetX, pb);
+                    int cz = (int) Math.floorDiv((long) cam3d.targetZ, pb);
+                    int half = Math.max(512, Math.min(2048, (int) (cam3d.distance / pb)));
+                    data.ensureBiomeTexture(cx, cz, half, half);
+                } else {
+                    data.ensureBiomeTexture();
+                }
             }
             int[] edgesNow = data.isBiomeOverlay() ? data.getBiomeEdgeSnapshot() : null;
             if (edgesNow != lastBiomeEdges) {

@@ -241,8 +241,28 @@ public final class Map3DSoft {
                     } else if (data.isTile2DMode()) {
                         rgb = data.getRgbAtWorld((int) wx, (int) wz);
                     }
-                    if (!data.isTile2DMode() && biomeEdges != null && mx + mz * mapW < biomeEdges.length) {
-                        rgb = blendOverlay(rgb, biomeEdges[mx + mz * mapW]);
+                    if (biomeEdges != null) {
+                        int ew;
+                        int eh;
+                        int ex;
+                        int ez;
+                        if (data.isTile2DMode()) {
+                            ew = data.getBiomeTextureWidth();
+                            eh = data.getBiomeTextureHeight();
+                            int gx = (int) Math.floorDiv((int) wx, pb);
+                            int gz = (int) Math.floorDiv((int) wz, pb);
+                            ex = gx - data.getBiomeTextureMinWX();
+                            ez = gz - data.getBiomeTextureMinWZ();
+                        } else {
+                            ew = mapW;
+                            eh = mapH;
+                            ex = mx;
+                            ez = mz;
+                        }
+                        if (ex >= 0 && ez >= 0 && ex < ew && ez < eh
+                                && ex + ez * ew < biomeEdges.length) {
+                            rgb = blendOverlay(rgb, biomeEdges[ex + ez * ew]);
+                        }
                     }
                     if (rdEnabled) {
                         // analytic render-distance box in world space: only the four sides of the
