@@ -3441,7 +3441,14 @@ public final class MapData {
         if (now - lastBiomeRefreshMs < 3000L) return;
         biomeContentVersion = version;
         lastBiomeRefreshMs = now;
-        invalidateTileBiomeCache();
+        markTileBiomeStale();
+    }
+
+    /** Keep the old overlay visible while a fresh snapshot/labels are built in the background. */
+    private void markTileBiomeStale() {
+        biomeEdgeVersion = 0;
+        biomeBuildGeneration++;
+        nextTileBiomeAttemptMs = 0L;
     }
 
     /** Drops the tile-derived biome overlay so a new map scale/store rebuilds it. */
