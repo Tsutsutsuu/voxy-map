@@ -309,8 +309,6 @@ public class MapScreen extends Screen {
             // the grid kept from the previous world must not be shown here
             data.dropSnapshotForWorldChange();
         }
-        // show the cached grid immediately; the fast lane below decides whether a refresh is needed
-        data.ensureMainTextures();
         data.onMapOpened();
     }
 
@@ -489,53 +487,9 @@ public class MapScreen extends Screen {
         g.pose().popMatrix();
     }
 
-    /** Layer 1: the map texture (nearest neighbour when zoomed in, the pre-filtered copy far out). */
+    /** Layer 1: the unified tile map. */
     private void drawMap(GuiGraphicsExtractor g, MapData data, double uiScale) {
-        if (data.isTile2DMode()) {
-            drawUnifiedTiles(g, data, uiScale);
-            return;
-        }
-        TileStore tiles = data.getTileStore();
-        if (VoxyMapConfig.TILE_RENDER.get() && tiles != null) {
-            // Show the pre-filtered whole-map copy first, then let tiles replace it. Without this
-            // the per-frame tile budget makes a freshly opened map visibly fill from top to bottom.
-            drawTilePreview(g, data);
-            drawMapTiles(g, data, tiles, uiScale);
-            drawLiveTiles(g, data, tiles);
-            return;
-        }
-        boolean mainReady = data.getTexture() != null;
-        // zoomed far out (or while the big texture is rebuilt) use the pre-filtered 1/4 copy
-        boolean useSmall = !mainReady || zoom * uiScale < 0.5;
-        Identifier tex = useSmall ? data.getTextureSmall() : data.getTexture();
-        if (tex == null) tex = data.getTexture();
-        if (tex == null) return;
-        if (data.getMapWidth() <= 0 || data.getMapHeight() <= 0) return;
-        // real screen-space ratio: 1 texture pixel per physical pixel or larger uses
-        // nearest neighbour; smaller uses linear (pre-filtered copy when far out)
-        int texW = data.getTextureWidth();
-        int texH = data.getTextureHeight();
-        if (texW <= 0 || texH <= 0) {
-            // the big texture was released on close (releaseTexturesOnClose) while the 1/4 copy is
-            // still registered: keep drawing it at the map's size instead of returning early, which
-            // used to leave the reopened map black until the big texture finished uploading
-            texW = data.getMapWidth();
-            texH = data.getMapHeight();
-        }
-        if (texW <= 0 || texH <= 0) return;
-        double x0 = width / 2.0 - centerPx() * zoom;
-        double y0 = height / 2.0 - centerPz() * zoom;
-        double w = texW * zoom;
-        double h = texH * zoom;
-        // sample the ACTUAL texture size: while a new map scale is still uploading the geometry and
-        // the texture can briefly disagree, and using the map size then tiles the image
-        int srcW = useSmall ? Math.max(1, texW / 4) : texW;
-        int srcH = useSmall ? Math.max(1, texH / 4) : texH;
-        // GUI_TEXTURED is opaque; use the premultiplied-alpha pipeline so unexplored (alpha 0)
-        // pixels let the background through instead of drawing black
-        g.blit(RenderPipelines.GUI_TEXTURED_PREMULTIPLIED_ALPHA, tex, (int) Math.round(x0), (int) Math.round(y0),
-                0f, 0f, Math.max(1, (int) Math.round(w)), Math.max(1, (int) Math.round(h)),
-                srcW, srcH, srcW, srcH);
+        drawUnifiedTiles(g, data, uiScale);
     }
 
     /** Migration path: one store renders both the seeded base tiles and live-updated tiles. */
@@ -602,112 +556,13 @@ public class MapScreen extends Screen {
     }
 
     /** Event-fed tiles outside the base snapshot; the base tile always wins where it has data. */
-    private void drawLiveTiles(GuiGraphicsExtractor g, MapData data, TileStore base) {
-        if (!VoxyMapConfig.LIVE_TILES.get()) return;
-        LiveTileStore live = data.getLiveTiles();
-        if (live == null) return;
-        live.beginFrame();
-        int pb = Math.max(1, data.getPixelBlocks());
-        double worldPerScreenPx = pb / Math.max(1.0e-6, zoom);
-        double left = centerX - (width / 2.0) * worldPerScreenPx;
-        double right = centerX + (width / 2.0) * worldPerScreenPx;
-        double top = centerZ - (height / 2.0) * worldPerScreenPx;
-        double bottom = centerZ + (height / 2.0) * worldPerScreenPx;
-        int tx0 = live.tileIndexX(left), tx1 = live.tileIndexX(right);
-        int tz0 = live.tileIndexZ(top), tz1 = live.tileIndexZ(bottom);
-        for (int tz = tz0; tz <= tz1; tz++) {
-            for (int tx = tx0; tx <= tx1; tx++) {
-                if (base != null && base.hasData(tx, tz)) continue;
-                LiveTileStore.LiveTile tile = live.get(tx, tz);
-                if (tile == null) continue;
-                Identifier tex = live.textureFor(tile, data.getStyle(), data.seaLevel(), data.getColorEpoch());
-                if (tex == null) continue;
-                double sx = width / 2.0 + (tile.minWX - centerX) * zoom / pb;
-                double sy = height / 2.0 + (tile.minWZ - centerZ) * zoom / pb;
-                double sw = LiveTileStore.TILE_PIXELS * zoom;
-                double sh = LiveTileStore.TILE_PIXELS * zoom;
-                if (sx + sw < 0 || sy + sh < 0 || sx > width || sy > height) continue;
-                var pose = g.pose();
-                pose.pushMatrix();
-                pose.translate((float) sx, (float) sy);
-                pose.scale((float) zoom, (float) zoom);
-                g.blit(RenderPipelines.GUI_TEXTURED_PREMULTIPLIED_ALPHA, tex,
-                        0, 0, 0f, 0f, LiveTileStore.TILE_PIXELS, LiveTileStore.TILE_PIXELS,
-                        LiveTileStore.TILE_PIXELS, LiveTileStore.TILE_PIXELS,
-                        LiveTileStore.TILE_PIXELS, LiveTileStore.TILE_PIXELS);
-                pose.popMatrix();
-            }
-        }
-    }
+    
 
     /** Cheap whole-map backdrop used until the visible tile textures have been created. */
-    private void drawTilePreview(GuiGraphicsExtractor g, MapData data) {
-        int mapW = data.getMapWidth(), mapH = data.getMapHeight();
-        if (mapW <= 0 || mapH <= 0) return;
-        Identifier tex = data.getTextureSmall();
-        boolean small = tex != null;
-        if (tex == null) tex = data.getTexture();
-        if (tex == null) return;
-        int srcW = small ? Math.max(1, mapW / 4) : mapW;
-        int srcH = small ? Math.max(1, mapH / 4) : mapH;
-        double x0 = width / 2.0 - centerPx() * zoom;
-        double y0 = height / 2.0 - centerPz() * zoom;
-        var pose = g.pose();
-        pose.pushMatrix();
-        pose.translate((float) x0, (float) y0);
-        pose.scale((float) zoom, (float) zoom);
-        g.blit(RenderPipelines.GUI_TEXTURED_PREMULTIPLIED_ALPHA, tex,
-                0, 0, 0f, 0f, mapW, mapH, srcW, srcH, srcW, srcH);
-        pose.popMatrix();
-    }
+    
 
     /** Draws only the tiles intersecting the viewport, one independent texture per tile. */
-    private void drawMapTiles(GuiGraphicsExtractor g, MapData data, TileStore tiles, double uiScale) {
-        tiles.beginFrame();
-        boolean useSmall = zoom * uiScale < 0.5;
-        int pb = Math.max(1, data.getPixelBlocks());
-        double worldPerScreenPx = pb / Math.max(1.0e-6, zoom);
-        double left = centerX - (width / 2.0) * worldPerScreenPx;
-        double right = centerX + (width / 2.0) * worldPerScreenPx;
-        double top = centerZ - (height / 2.0) * worldPerScreenPx;
-        double bottom = centerZ + (height / 2.0) * worldPerScreenPx;
-        int tx0 = Math.max(0, tiles.tileIndexFromWorldX(left));
-        int tx1 = Math.min(tiles.tilesX() - 1, tiles.tileIndexFromWorldX(right));
-        int tz0 = Math.max(0, tiles.tileIndexFromWorldZ(top));
-        int tz1 = Math.min(tiles.tilesY() - 1, tiles.tileIndexFromWorldZ(bottom));
-        for (int tz = tz0; tz <= tz1; tz++) {
-            for (int tx = tx0; tx <= tx1; tx++) {
-                TileStore.MapTile tile = tiles.getTile(tx, tz);
-                if (tile == null) continue;
-                // Keep the tile's exact double position and scale through the pose matrix instead
-                // of rounding every tile independently: independent rounding leaves 1px seams and
-                // makes panning jump in GUI-pixel steps (very visible at GUI scale 4).
-                double sx = width / 2.0 + (tile.minWX - centerX) * zoom / pb;
-                double sy = height / 2.0 + (tile.minWZ - centerZ) * zoom / pb;
-                double sw = tile.width * zoom;
-                double sh = tile.height * zoom;
-                if (sx + sw < 0 || sy + sh < 0 || sx > width || sy > height) continue;
-                var pose = g.pose();
-                pose.pushMatrix();
-                pose.translate((float) sx, (float) sy);
-                if (useSmall) {
-                    // 1/4 box-filtered copy plus a fractional scale so the destination still spans
-                    // exactly this tile (no seams when the small path is selected).
-                    pose.scale((float) (zoom * tile.width / tile.smallWidth),
-                            (float) (zoom * tile.height / tile.smallHeight));
-                    g.blit(RenderPipelines.GUI_TEXTURED_PREMULTIPLIED_ALPHA, tile.textureSmall,
-                            0, 0, 0f, 0f, tile.smallWidth, tile.smallHeight,
-                            tile.smallWidth, tile.smallHeight, tile.smallWidth, tile.smallHeight);
-                } else {
-                    pose.scale((float) zoom, (float) zoom);
-                    g.blit(RenderPipelines.GUI_TEXTURED_PREMULTIPLIED_ALPHA, tile.texture,
-                            0, 0, 0f, 0f, tile.width, tile.height,
-                            tile.width, tile.height, tile.width, tile.height);
-                }
-                pose.popMatrix();
-            }
-        }
-    }
+    
 
     /** Layer 2: things drawn on top of the map - biome boundaries, player marker, render-distance box. */
     private void drawMapOverlays(GuiGraphicsExtractor g, MapData data) {
@@ -735,7 +590,9 @@ public class MapScreen extends Screen {
     }
 
     private void drawTileBiomeOverlay(GuiGraphicsExtractor g, MapData data) {
-        data.ensureBiomeTexture();
+        int halfW = (int) Math.ceil(width / (2.0 * Math.max(1.0e-6, zoom))) + 32;
+        int halfH = (int) Math.ceil(height / (2.0 * Math.max(1.0e-6, zoom))) + 32;
+        data.ensureBiomeTexture((int) Math.round(centerPx()), (int) Math.round(centerPz()), halfW, halfH);
         Identifier tex = data.getBiomeTexture();
         int w = data.getBiomeTextureWidth();
         int h = data.getBiomeTextureHeight();

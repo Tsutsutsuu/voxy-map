@@ -189,6 +189,37 @@ public final class LiveTileStore {
                 biomeNames == null ? java.util.Map.of() : biomeNames, System.nanoTime());
     }
 
+    /** Snapshot of a viewport-sized map-pixel rectangle (used by the 2D biome overlay). */
+    public MapData.Snapshot buildSnapshotRegion(int centerPxX, int centerPzX, int halfW, int halfH,
+                                                java.util.Map<Integer, String> biomeNames) {
+        int w = halfW * 2;
+        int h = halfH * 2;
+        if (w <= 0 || h <= 0 || w > 4096 || h > 4096 || (long) w * h > 10_000_000L) return null;
+        int minPxX = centerPxX - halfW;
+        int minPzX = centerPzX - halfH;
+        long[] pixels = new long[w * h];
+        java.util.Arrays.fill(pixels, VoxyMerge.LONG_EMPTY);
+        for (LiveTile tile : tiles.values()) {
+            int tilePxX = (int) Math.floorDiv(tile.minWX, pixelBlocks);
+            int tilePzX = (int) Math.floorDiv(tile.minWZ, pixelBlocks);
+            int ox = tilePxX - minPxX;
+            int oz = tilePzX - minPzX;
+            int sx0 = Math.max(0, -ox);
+            int sz0 = Math.max(0, -oz);
+            int sx1 = Math.min(TILE_PIXELS, w - ox);
+            int sz1 = Math.min(TILE_PIXELS, h - oz);
+            if (sx0 >= sx1 || sz0 >= sz1) continue;
+            for (int z = sz0; z < sz1; z++) {
+                System.arraycopy(tile.pixels, z * TILE_PIXELS + sx0,
+                        pixels, (oz + z) * w + ox + sx0, sx1 - sx0);
+            }
+        }
+        long minWX = (long) minPxX * pixelBlocks;
+        long minWZ = (long) minPzX * pixelBlocks;
+        return new MapData.Snapshot(pixels, w, h, minWX, minWZ, pixelBlocks,
+                biomeNames == null ? java.util.Map.of() : biomeNames, System.nanoTime());
+    }
+
     /** Read-only view used by the PNG exporter. */
     public java.util.Collection<LiveTile> tilesView() {
         return java.util.List.copyOf(tiles.values());

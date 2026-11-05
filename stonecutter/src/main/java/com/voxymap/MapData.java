@@ -116,11 +116,7 @@ public final class MapData {
     private volatile int mapScale = 2;
     /** Per-world zoom level, restored on reopen when rememberZoom is on. */
     private volatile double zoom = 0.5;
-    private volatile Identifier textureId;
-    private volatile Identifier textureIdSmall;
-    /** Lazy 2D tile view of {@link #colorFrame}; null when no colour frame exists yet. */
-    private volatile TileStore tileStore;
-    /** Event-driven overlay tiles for areas the global snapshot does not cover yet. */
+    /** Event-driven overlay tiles for the unified 2D map. */
     private volatile LiveTileStore liveTiles;
     /** storage path the 2D tile store was created for (independent of the global snapshot) */
     private volatile Path tile2dStorage;
@@ -134,9 +130,7 @@ public final class MapData {
     private volatile Set<Long> waterIdsCache = Set.of();
     private volatile boolean waterIdsLoading;
     private volatile boolean waterIdsLoaded;
-    /** live textures, kept so incremental refreshes can patch only the changed rows */
-    private volatile DynamicTexture bigTex;
-    private volatile DynamicTexture smallTex;
+
     /**
      * Immutable rendered colour buffer. The pixels, their dimensions and the epoch are published as
      * one volatile reference: readers (LOD build, 3D rasteriser) never see a new array with stale
@@ -157,12 +151,10 @@ public final class MapData {
     private int biomeContentVersion = -1;
     private long lastBiomeRefreshMs;
     private int biomeBuildGeneration;
-    private final AtomicBoolean buildingTextures = new AtomicBoolean();
+    /** viewport (map pixels) the current biome snapshot was built for */
+    private int biomeViewCenterPxX, biomeViewCenterPzX, biomeViewHalfW, biomeViewHalfH;
+    private long lastBiomeViewBuildMs;
     private final AtomicBoolean buildingBiome = new AtomicBoolean();
-    /** set when a texture build was requested while another one was running (retried on completion) */
-    private volatile boolean textureBuildPending;
-    /** actual size of the currently registered map texture */
-    private volatile int texW, texH;
     private volatile boolean loading;
     private volatile boolean styleChanging;
     private volatile long styleChangeStartMs;
@@ -194,7 +186,6 @@ public final class MapData {
     /** temporary override for the contour setting (the 3D view hides them); null = use config */
     public static volatile Boolean contourOverride;
     /** bumped on every texture upload request; stale async builds compare against it */
-    private volatile int texEpoch;
     /** 3D view: skip building biome labels during colour renders */
     public volatile boolean skipBiomeLabels;
 
@@ -374,21 +365,13 @@ public final class MapData {
         return style;
     }
 
-    public int getTextureWidth() {
-        return texW;
-    }
+    
 
-    public int getTextureHeight() {
-        return texH;
-    }
+    
 
-    public Identifier getTexture() {
-        return textureId;
-    }
+    
 
-    public Identifier getTextureSmall() {
-        return textureIdSmall;
-    }
+    
 
     public Identifier getBiomeTexture() {
         return biomeTextureId;
@@ -453,10 +436,7 @@ public final class MapData {
     }
 
     public boolean isReady() {
-        if (isTile2DMode()) {
-            return liveTiles != null;
-        }
-        return snap != null && textureId != null;
+        return liveTiles != null;
     }
 
     /** True when the unified 2D renderer is the active map path. */
@@ -902,7 +882,6 @@ public final class MapData {
                 + " pending=" + isInitialRefreshPending() + " newWorld=" + isNewWorldNow());
         long secs = sessionStartMs == 0 ? 0 : (System.currentTimeMillis() - sessionStartMs) / 1000L;
         out.add("session: " + secs + "s  delay=" + VoxyMapConfig.INITIAL_REFRESH_DELAY_MINUTES.get() + "min");
-        out.add("tex: map=" + (textureId != null) + " small=" + (textureIdSmall != null) + " biome=" + (biomeTextureId != null));
         out.add("labels: " + (biomeLabelsFlat.length / 3) + "  biomes: " + (s == null ? 0 : s.biomeNames.size()));
         VoxyIndex idx = sectionIndex;
         out.add("refresh: " + (lastRefreshIncremental ? "incremental" : "full")
@@ -915,10 +894,6 @@ public final class MapData {
                 + " age=" + String.format(java.util.Locale.ROOT, "%.1f", snapshotAgeMinutes()) + "min"
                 + " still=" + stillSec + "s");
         Runtime rt = Runtime.getRuntime();
-        TileStore ts = tileStore;
-        out.add(ts == null ? "tiles: none"
-                : "tiles: " + ts.createdCount() + " textures, " + ts.emptyCount() + " empty, grid "
-                + ts.tilesX() + "x" + ts.tilesY() + " (" + TileStore.TILE_PIXELS + "px)");
         LiveTileStore live = liveTiles;
         out.add(live == null ? "live tiles: none"
                 : "live tiles: " + live.tileCount() + " (seed=" + live.seedTileCount()
@@ -1225,7 +1200,7 @@ public final class MapData {
                         handedToMainThread = true;
                         mc.execute(() -> {
                             try {
-                                if (textureId == null) uploadTexture(kept, keptRgb);
+                                uploadTexture(kept, keptRgb);
                                 progress = 100;
                                 Minecraft m = Minecraft.getInstance();
                                 if (m.player != null) {
@@ -1694,11 +1669,9 @@ public final class MapData {
         Minecraft mc = Minecraft.getInstance();
         mc.execute(() -> {
             try {
-                if (textureId == null) {
-                    ColorFrame f = colorFrame;
-                    if (f != null && f.width == s.width && f.height == s.height) {
-                        uploadTexture(s, f.rgb);
-                    }
+                ColorFrame f = colorFrame;
+                if (f != null && f.width == s.width && f.height == s.height) {
+                    uploadTexture(s, f.rgb);
                 }
                 progress = 100;
             } finally {
@@ -1895,7 +1868,6 @@ public final class MapData {
                         ColorFrame prevFrame = colorFrame;
                         colorFrame = new ColorFrame(patch.rgb, built.width, built.height,
                                 prevFrame == null ? 1 : prevFrame.epoch + 1);
-                        texEpoch++;
                         lastRenderedStyle = renderStyle;
                         rgb = patch.rgb;
                         progress = 95;
@@ -1908,7 +1880,6 @@ public final class MapData {
                         t = System.nanoTime();
                         saveSectionIndex(storage, built, newIndex);
                         report.cacheVxiMs = (System.nanoTime() - t) / 1_000_000L;
-                        patchTexturesAsync(patch.x0, patch.z0, patch.x1, patch.z1, rgb, built.width, built.height);
                         handed = true;
                         Minecraft.getInstance().execute(() -> {
                             try {
@@ -2132,8 +2103,6 @@ public final class MapData {
         if (needsWorldReload()) dropSnapshotForWorldChange();
         if (gentlePublished) {
             gentlePublished = false;
-            ColorFrame f = colorFrame;
-            if (f != null && textureId != null && !loading) buildTexturesAsync(f.width, f.height, f.rgb);
         }
         // a fresh world still inside its SeedGen delay waits for the dialog / delay
         if (isInitialRefreshPending() && isNewWorldNow()) return;
@@ -3279,28 +3248,16 @@ public final class MapData {
     /** Release all map textures (frees ~560 MB of VRAM when the map is closed). */
     public void releaseTextures() {
         Minecraft mc = Minecraft.getInstance();
-        TileStore ts = tileStore;
-        tileStore = null;
-        if (ts != null) ts.dispose();
         LiveTileStore live = liveTiles;
         if (live != null) live.disposeTextures();
-        // the 1/4 texture is kept on purpose: ~5 MB of VRAM, and reopening shows it instantly
-        releaseOne(mc, textureId);
-        textureId = null;
-        bigTex = null;
-        texW = 0;
-        texH = 0;
         releaseOne(mc, biomeTextureId);
         biomeTextureId = null;
         biomeImage = null;
     }
 
-    /** Releases every texture including the small one (used when the world changes). */
+    /** Kept for callers that still use the generic name. */
     public void releaseAllTextures() {
         releaseTextures();
-        releaseOne(Minecraft.getInstance(), textureIdSmall);
-        textureIdSmall = null;
-        smallTex = null;
     }
 
     private static void releaseOne(Minecraft mc, Identifier id) {
@@ -3309,41 +3266,13 @@ public final class MapData {
         if (texture != null) texture.close();
         mc.getTextureManager().release(id);
     }
-
-    /** Re-upload the main textures from the last rendered grid (background, used when reopening). */
-    public void ensureMainTextures() {
-        if (isTile2DMode()) return; // tiles are drawn directly; no global preview texture
-        ensureTileStore();
-        if (textureId != null) return;
-        ColorFrame f = colorFrame;
-        if (snap == null || f == null) return;
-        buildTexturesAsync(f.width, f.height, f.rgb);
-    }
-
     /**
      * Publishes a tile view for the current colour frame. Creating the store is cheap; individual
      * tile images/textures are cut lazily by {@link TileStore#getTile(int, int)}.
      */
-    public void ensureTileStore() {
-        ColorFrame f = colorFrame;
-        Snapshot s = snap;
-        if (f == null || s == null) return;
-        TileStore current = tileStore;
-        if (current != null && current.frame() == f) return;
-        if (current != null && current.matches(s.width, s.height, s.minWX, s.minWZ, s.pixelBlocks)) {
-            current.updateFrame(f, s.pixels);
-            return;
-        }
-        TileStore next = new TileStore(f, s.pixels, s.width, s.height, s.minWX, s.minWZ, s.pixelBlocks,
-                f.epoch);
-        tileStore = next;
-        if (current != null) current.dispose();
-    }
+    
 
-    public TileStore getTileStore() {
-        ensureTileStore();
-        return tileStore;
-    }
+    
 
     /**
      * Live overlay store. It shares the base snapshot's origin/pixel scale so tile indices line up;
@@ -3546,7 +3475,7 @@ public final class MapData {
     /** Build the 1-bit biome boundary mask + labels on the loader thread (overlay only). */
     public void ensureBiomeTexture() {
         if (isTile2DMode()) {
-            ensureTileBiomeTexture();
+            ensureTileBiomeTexture(0, 0, 2048, 2048);
             return;
         }
         // the 3D overlay needs the edge array even when the 2D texture already exists (e.g. the map
@@ -3591,23 +3520,40 @@ public final class MapData {
         });
     }
 
+    public void ensureBiomeTexture(int centerPxX, int centerPzX, int halfW, int halfH) {
+        if (isTile2DMode()) {
+            ensureTileBiomeTexture(centerPxX, centerPzX, halfW, halfH);
+            return;
+        }
+        ensureBiomeTexture();
+    }
+
     /** Builds the biome border texture/labels from the loaded tiles, without a global snapshot. */
-    private void ensureTileBiomeTexture() {
-        if (biomeTextureId != null && biomeEdgeVersion == BIOME_EDGE_VERSION) return;
+    private void ensureTileBiomeTexture(int centerPxX, int centerPzX, int halfW, int halfH) {
         long now = System.currentTimeMillis();
+        boolean sameView = centerPxX == biomeViewCenterPxX && centerPzX == biomeViewCenterPzX
+                && halfW == biomeViewHalfW && halfH == biomeViewHalfH;
+        if (biomeTextureId != null && biomeEdgeVersion == BIOME_EDGE_VERSION && sameView) return;
         if (now < nextTileBiomeAttemptMs) return;
         LiveTileStore live = liveTiles;
         if (live == null) return;
+        if (biomeTextureId != null && biomeEdgeVersion == BIOME_EDGE_VERSION && !sameView) {
+            if (now - lastBiomeViewBuildMs < 500L) return;
+            markTileBiomeStale();
+        }
         if (!buildingBiome.compareAndSet(false, true)) return;
+        lastBiomeViewBuildMs = now;
         final int epochAtStart = worldEpoch;
         final int generationAtStart = biomeBuildGeneration;
         final Map<Integer, String> names = tileBiomeNames;
+        final int reqCenterX = centerPxX, reqCenterZ = centerPzX;
+        final int reqHalfW = Math.max(32, Math.min(2048, halfW));
+        final int reqHalfH = Math.max(32, Math.min(2048, halfH));
         loader.submit(() -> {
             NativeImage bimg = null;
             try {
-                // Snapshotting is O(loaded tiles) and allocates a large array; keep it off the
-                // render thread so opening the overlay cannot freeze the current frame.
-                Snapshot s = live.buildSnapshot(names);
+                // Only snapshot the visible region; a full explored-map rectangle can be huge.
+                Snapshot s = live.buildSnapshotRegion(reqCenterX, reqCenterZ, reqHalfW, reqHalfH, names);
                 if (s == null) {
                     nextTileBiomeAttemptMs = System.currentTimeMillis() + 5_000L;
                     buildingBiome.set(false);
@@ -3641,6 +3587,10 @@ public final class MapData {
                         biomeTextureMinWZ = offZ;
                         biomeTextureWidth = snapshot.width;
                         biomeTextureHeight = snapshot.height;
+                        biomeViewCenterPxX = reqCenterX;
+                        biomeViewCenterPzX = reqCenterZ;
+                        biomeViewHalfW = reqHalfW;
+                        biomeViewHalfH = reqHalfH;
                         if (image != null) {
                             releaseOne(Minecraft.getInstance(), biomeTextureId);
                             biomeImage = image;
@@ -3681,198 +3631,18 @@ public final class MapData {
     private void uploadTexture(Snapshot s, int[] rgb) {
         ColorFrame prev = colorFrame;
         colorFrame = new ColorFrame(rgb, s.width, s.height, prev == null ? 1 : prev.epoch + 1);
-        if (!isTile2DMode()) {
-            ensureTileStore();
-        } else {
-            // create the live store as soon as a colour frame exists, even while the map is
-            // closed, so Voxy events for newly explored chunks are not dropped until first open
-            getLiveTiles();
-        }
-        texEpoch++;
-        Minecraft mc = Minecraft.getInstance();
-        // a rebuilt grid invalidates the biome overlay: drop it so ensureBiomeTexture regenerates it
-        releaseOne(mc, biomeTextureId);
+        // The tile renderer is the only 2D consumer now; no global texture upload is needed.
+        getLiveTiles();
+        releaseOne(Minecraft.getInstance(), biomeTextureId);
         biomeTextureId = null;
         biomeImage = null;
-        if (isTile2DMode()) {
-            return; // the unified 2D renderer never needs a global texture
-        }
-        buildTexturesAsync(s.width, s.height, rgb);
+        nextTileBiomeAttemptMs = 0L;
     }
-
-    /** Builds the NativeImages on the loader thread; only the GPU upload runs on the main thread. */
-    private void buildTexturesAsync(int w, int h, int[] rgb) {
-        if (!buildingTextures.compareAndSet(false, true)) {
-            // a build is already running with an older colour buffer: remember to start a fresh one
-            // when it finishes instead of silently leaving the map with stale colours
-            textureBuildPending = true;
-            return;
-        }
-        final int epoch = texEpoch;
-        final int worldEpochAtStart = worldEpoch;
-        loader.submit(() -> {
-            try {
-                boolean needBig = !isTile2DMode();
-                NativeImage big = needBig ? buildImage(rgb, w, h) : null;
-                NativeImage small = buildSmall(rgb, w, h);
-                Minecraft.getInstance().execute(() -> {
-                    try {
-                        if (epoch == texEpoch && worldEpochAtStart == worldEpoch) {
-                            registerTextures(big, small);
-                        } else {
-                            if (big != null) big.close();
-                            small.close();
-                        }
-                    } finally {
-                        buildingTextures.set(false);
-                    }
-                    if (textureBuildPending) {
-                        textureBuildPending = false;
-                        // only rebuild when this build was stale (a newer colour arrived) or no
-                        // texture exists yet; otherwise the finished build is already the newest
-                        boolean hasNeeded = needBig ? textureId != null : textureIdSmall != null;
-                        if (epoch != texEpoch || !hasNeeded) {
-                            ColorFrame f = colorFrame;
-                            if (f != null && snap != null) {
-                                buildTexturesAsync(f.width, f.height, f.rgb);
-                            }
-                        }
-                    }
-                });
-            } catch (Throwable t) {
-                buildingTextures.set(false);
-                textureBuildPending = false;
-                t.printStackTrace();
-            }
-        });
-    }
-
-    private static NativeImage buildImage(int[] rgb, int w, int h) {
-        NativeImage img = new NativeImage(w, h, false);
-        for (int i = 0; i < rgb.length; i++) {
-            int c = rgb[i];
-            int a = (c >>> 24) & 0xFF;
-            int r = (c >> 16) & 0xFF, g = (c >> 8) & 0xFF, b = c & 0xFF;
-            img.setPixelABGR(i % w, i / w, (a << 24) | (b << 16) | (g << 8) | r);
-        }
-        return img;
-    }
-
-    /** 1/4 resolution box-filtered copy: used when zoomed far out so bilinear sampling has no aliasing. */
-    private static NativeImage buildSmall(int[] rgb, int w, int h) {
-        int sw = Math.max(1, w / 4);
-        int sh = Math.max(1, h / 4);
-        NativeImage small = new NativeImage(sw, sh, false);
-        for (int z = 0; z < sh; z++) {
-            for (int x = 0; x < sw; x++) {
-                int r = 0, g = 0, b = 0, a = 0, n = 0;
-                for (int dz = 0; dz < 4; dz++) {
-                    for (int dx = 0; dx < 4; dx++) {
-                        int i = (z * 4 + dz) * w + (x * 4 + dx);
-                        if (i >= rgb.length) continue;
-                        int c = rgb[i];
-                        int ca = (c >>> 24) & 0xFF;
-                        if (ca == 0) continue;
-                        r += (c >> 16) & 0xFF;
-                        g += (c >> 8) & 0xFF;
-                        b += c & 0xFF;
-                        a += ca;
-                        n++;
-                    }
-                }
-                int alpha = n == 0 ? 0 : a / n;
-                small.setPixelABGR(x, z, (alpha << 24) | ((b / Math.max(1, n)) << 16)
-                        | ((g / Math.max(1, n)) << 8) | (r / Math.max(1, n)));
-            }
-        }
-        return small;
-    }
-
-    private void registerTextures(NativeImage big, NativeImage small) {
-        Minecraft mc = Minecraft.getInstance();
-        // replace cleanly: drop the previous texture objects before registering the new ones
-        releaseOne(mc, textureId);
-        textureId = null;
-        bigTex = null;
-        releaseOne(mc, textureIdSmall);
-        textureIdSmall = null;
-        smallTex = null;
-        if (big != null) {
-            DynamicTexture tex = new DynamicTexture(() -> "voxymap_img", big);
-            Identifier id = Identifier.fromNamespaceAndPath("voxymap", "map");
-            Minecraft.getInstance().getTextureManager().register(id, tex);
-            textureId = id;
-            bigTex = tex;
-            texW = big.getWidth();
-            texH = big.getHeight();
-        }
-        if (small != null) {
-            DynamicTexture stex = new DynamicTexture(() -> "voxymap_small", small);
-            Identifier sid = Identifier.fromNamespaceAndPath("voxymap", "map_small");
-            Minecraft.getInstance().getTextureManager().register(sid, stex);
-            textureIdSmall = sid;
-            smallTex = stex;
-        }
-    }
-
     /**
      * Incremental colour update: patches only the given pixel rectangle into the live NativeImages
      * and uploads them on the main thread. The 1/4 texture is small enough to refresh fully.
      */
-    private void patchTexturesAsync(int x0, int z0, int x1, int z1, int[] rgb, int w, int h) {
-        if (!buildingTextures.compareAndSet(false, true)) {
-            textureBuildPending = true;
-            return;
-        }
-        final int epoch = texEpoch;
-        final int worldEpochAtStart = worldEpoch;
-        loader.submit(() -> {
-            DynamicTexture bt = bigTex;
-            DynamicTexture st = smallTex;
-            NativeImage big = bt == null ? null : bt.getPixels();
-            if (big == null || big.getWidth() != w || big.getHeight() != h) {
-                // no live texture (map closed / released): rebuild it from the published colour frame
-                buildingTextures.set(false);
-                Minecraft.getInstance().execute(() -> {
-                    if (epoch == texEpoch && worldEpochAtStart == worldEpoch) {
-                        ColorFrame f = colorFrame;
-                        if (f != null) buildTexturesAsync(f.width, f.height, f.rgb);
-                    }
-                });
-                return;
-            }
-            try {
-                for (int z = z0; z <= z1; z++) {
-                    int row = z * w;
-                    for (int x = x0; x <= x1; x++) {
-                        int c = rgb[row + x];
-                        big.setPixelABGR(x, z, 0xFF000000 | ((c & 0xFF) << 16) | (((c >> 8) & 0xFF) << 8)
-                                | ((c >> 16) & 0xFF));
-                    }
-                }
-                NativeImage small = st == null ? null : st.getPixels();
-                if (small != null) writeSmall(small, rgb, w, h);
-                Minecraft.getInstance().execute(() -> {
-                    try {
-                        if (epoch == texEpoch && worldEpochAtStart == worldEpoch) {
-                            if (bt != null) bt.upload();
-                            if (st != null) st.upload();
-                        }
-                    } finally {
-                        buildingTextures.set(false);
-                    }
-                    if (textureBuildPending) {
-                        textureBuildPending = false;
-                        ColorFrame f = colorFrame;
-                        if (f != null) buildTexturesAsync(f.width, f.height, f.rgb);
-                    }
-                });
-            } catch (Throwable t) {
-                buildingTextures.set(false);
-                t.printStackTrace();
-            }
-        });
-    }
+    
 
     /** Writes the 1/4 box-filtered version into an existing small image. */
     private static void writeSmall(NativeImage small, int[] rgb, int w, int h) {
