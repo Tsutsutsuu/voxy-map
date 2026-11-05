@@ -852,7 +852,7 @@ public class MapScreen extends Screen {
                 > VoxyMapConfig.LOD_ZOOM_REBUILD_PCT.get() / 100.0;
         boolean upToDate = mesh3d != null
                 && builtPixelBlocks == data.getPixelBlocks()
-                && builtColorEpoch == data.getColorEpoch()
+                && builtColorEpoch == data.getMeshEpoch()
                 && builtStepA == stepNear && builtStepB == stepMid && builtStepC == stepFar
                 && builtVScale3d == wantVScale
                 && builtLodDebug == wantLodDebug
@@ -864,7 +864,7 @@ public class MapScreen extends Screen {
                 && Math.abs(targetX - builtTargetX) < VoxyMapConfig.LOD_REBUILD_DISTANCE.get()
                 && Math.abs(targetZ - builtTargetZ) < VoxyMapConfig.LOD_REBUILD_DISTANCE.get();
         if (upToDate || building3d) return;
-        int epochNow = data.getColorEpoch();
+        int epochNow = data.getMeshEpoch();
         if (mesh3d != null && epochNow != builtColorEpoch) {
             long nowNs = System.nanoTime();
             if (epochNow != pendingMeshEpoch) {
@@ -882,7 +882,7 @@ public class MapScreen extends Screen {
         double camDist = cam3d != null ? cam3d.distance : 1500.0;
         // fixed layer radii (spherical): the detail size does not change with zoom
         double[] radii = {nearRadius, midRadius, 1.0e9};
-        final int colorEpoch0 = data.getColorEpoch();
+        final int colorEpoch0 = data.getMeshEpoch();
         final int pixelBlocks0 = data.getPixelBlocks();
         final double ftargetX = targetX;
         final double ftargetZ = targetZ;

@@ -619,12 +619,20 @@ public final class MapData {
 
     /** Increments whenever the rendered colour buffer is replaced. */
     public int getColorEpoch() {
+        // Tile colours use version-based invalidation inside LiveTileStore. Feeding a live content
+        // counter into the tile style hash would make every tile texture stale on every frame.
+        if (isTile2DMode()) return 0;
+        ColorFrame f = colorFrame;
+        return f == null ? 0 : f.epoch;
+    }
+
+    /** Dynamic revision of tile data/colours, used only by the 3D mesh rebuild check. */
+    public int getMeshEpoch() {
         if (isTile2DMode()) {
             LiveTileStore live = liveTiles;
             return live == null ? 0 : live.contentVersion() * 31 + live.rampVersion() * 7 + live.colorVersion();
         }
-        ColorFrame f = colorFrame;
-        return f == null ? 0 : f.epoch;
+        return getColorEpoch();
     }
 
     /** The colour buffer together with the dimensions it was rendered at (null before first render). */
