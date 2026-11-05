@@ -742,10 +742,15 @@ public class MapScreen extends Screen {
         if (tex == null || w <= 0 || h <= 0) return;
         double x0 = width / 2.0 + (data.getBiomeTextureMinWX() - centerPx()) * zoom;
         double y0 = height / 2.0 + (data.getBiomeTextureMinWZ() - centerPz()) * zoom;
+        // Same exact double-pose path as the map tiles: rounding the blit position independently
+        // makes the overlay slide by one GUI pixel while the tiles move continuously.
+        var pose = g.pose();
+        pose.pushMatrix();
+        pose.translate((float) x0, (float) y0);
+        pose.scale((float) zoom, (float) zoom);
         g.blit(RenderPipelines.GUI_TEXTURED, tex,
-                (int) Math.round(x0), (int) Math.round(y0),
-                0f, 0f, Math.max(1, (int) Math.round(w * zoom)), Math.max(1, (int) Math.round(h * zoom)),
-                w, h, w, h);
+                0, 0, 0f, 0f, w, h, w, h, w, h);
+        pose.popMatrix();
     }
 
     private void drawPlayerArrow(GuiGraphicsExtractor g) {
