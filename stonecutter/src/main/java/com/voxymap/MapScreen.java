@@ -761,7 +761,7 @@ public class MapScreen extends Screen {
         LiveTileStore live = data.getLiveTiles();
         if (live == null) return;
         double tileScreen = LiveTileStore.TILE_PIXELS * zoom;
-        if (tileScreen < 24) return; // too dense to be readable
+        if (tileScreen < 8) return; // too dense to be readable
         int pb = Math.max(1, data.getPixelBlocks());
         double worldPerScreenPx = pb / Math.max(1.0e-6, zoom);
         double left = centerX - (width / 2.0) * worldPerScreenPx;

@@ -154,6 +154,9 @@ public final class MapData {
     private volatile int biomeTextureMinWX, biomeTextureMinWZ, biomeTextureWidth, biomeTextureHeight;
     /** avoid submitting a failing snapshot build on every frame when the tile extent is too large */
     private volatile long nextTileBiomeAttemptMs;
+    private int biomeContentVersion = -1;
+    private long lastBiomeRefreshMs;
+    private int biomeBuildGeneration;
     private final AtomicBoolean buildingTextures = new AtomicBoolean();
     private final AtomicBoolean buildingBiome = new AtomicBoolean();
     /** set when a texture build was requested while another one was running (retried on completion) */
@@ -719,7 +722,12 @@ public final class MapData {
     }
 
     public void setBiomeOverlay(boolean value) {
-        if (value && !biomeOverlay && isTile2DMode()) invalidateTileBiomeCache();
+        if (value && !biomeOverlay && isTile2DMode()) {
+            invalidateTileBiomeCache();
+            LiveTileStore store = liveTiles;
+            biomeContentVersion = store == null ? -1 : store.contentVersion();
+            lastBiomeRefreshMs = System.currentTimeMillis();
+        }
         biomeOverlay = value;
         saveUiState();
     }
@@ -2346,6 +2354,7 @@ public final class MapData {
                 }
             }
             maybeRecolorForTileRamp(store, now);
+            maybeRefreshTileBiome(store, now);
             return;
         }
         if (!VoxyMapConfig.AUTO_REFRESH.get()) return;
@@ -3390,6 +3399,8 @@ public final class MapData {
         liveTiles = next;
         appliedTileRampVersion = next.rampVersion();
         lastTileRampRecolorMs = 0;
+        biomeContentVersion = next.contentVersion();
+        lastBiomeRefreshMs = System.currentTimeMillis();
         tile2dStorage = storage;
         invalidateTileBiomeCache();
         if (tileResyncStage == 0) {
@@ -3419,6 +3430,20 @@ public final class MapData {
         store.invalidateAllColors();
     }
 
+    /** Rebuilds the biome overlay/labels at a low frequency while tiles keep updating. */
+    private void maybeRefreshTileBiome(LiveTileStore store, long now) {
+        if (!biomeOverlay) {
+            biomeContentVersion = store.contentVersion();
+            return;
+        }
+        int version = store.contentVersion();
+        if (version == biomeContentVersion) return;
+        if (now - lastBiomeRefreshMs < 3000L) return;
+        biomeContentVersion = version;
+        lastBiomeRefreshMs = now;
+        invalidateTileBiomeCache();
+    }
+
     /** Drops the tile-derived biome overlay so a new map scale/store rebuilds it. */
     private void invalidateTileBiomeCache() {
         Minecraft mc = Minecraft.getInstance();
@@ -3430,6 +3455,7 @@ public final class MapData {
         biomeLabelsFlat = new int[0];
         biomeLabelsSnapshot = null;
         nextTileBiomeAttemptMs = 0L;
+        biomeBuildGeneration++;
     }
 
     /** Loads the Voxy liquid ids from an already-open database (used by VoxyTileSource). */
@@ -3567,6 +3593,7 @@ public final class MapData {
         if (live == null) return;
         if (!buildingBiome.compareAndSet(false, true)) return;
         final int epochAtStart = worldEpoch;
+        final int generationAtStart = biomeBuildGeneration;
         final Map<Integer, String> names = tileBiomeNames;
         loader.submit(() -> {
             NativeImage bimg = null;
@@ -3594,7 +3621,8 @@ public final class MapData {
                 final Snapshot snapshot = s;
                 Minecraft.getInstance().execute(() -> {
                     try {
-                        if (epochAtStart != worldEpoch || liveTiles != live) {
+                        if (epochAtStart != worldEpoch || liveTiles != live
+                                || generationAtStart != biomeBuildGeneration) {
                             if (image != null) image.close();
                             return;
                         }

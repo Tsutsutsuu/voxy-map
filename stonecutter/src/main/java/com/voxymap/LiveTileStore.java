@@ -125,6 +125,7 @@ public final class LiveTileStore {
     /** highest known non-water terrain top, used by the land max-point colour ramp */
     private final AtomicInteger maxLandY = new AtomicInteger(Integer.MIN_VALUE);
     private final AtomicInteger rampVersion = new AtomicInteger();
+    private final AtomicInteger contentVersion = new AtomicInteger();
     private volatile long lastRampChangeMs;
 
     public LiveTileStore(long minWX, long minWZ, int pixelBlocks, Path cacheDir) {
@@ -228,6 +229,7 @@ public final class LiveTileStore {
         sourcePending.clear();
         maxLandY.set(Integer.MIN_VALUE);
         rampVersion.incrementAndGet();
+        contentVersion.incrementAndGet();
         lastRampChangeMs = System.currentTimeMillis();
         minTileX.set(Integer.MAX_VALUE);
         maxTileX.set(Integer.MIN_VALUE);
@@ -350,6 +352,11 @@ public final class LiveTileStore {
         return rampVersion.get();
     }
 
+    /** Increments whenever terrain pixels change; biome overlay/labels rebuild on this cheaply. */
+    public int contentVersion() {
+        return contentVersion.get();
+    }
+
     public long lastRampChangeMs() {
         return lastRampChangeMs;
     }
@@ -454,6 +461,7 @@ public final class LiveTileStore {
                 markBounds(tx, tz);
                 invalidateNeighborColors(tx, tz);
                 observeTile(tile);
+                contentVersion.incrementAndGet();
             } else {
                 previous.sourceFilled = true;
                 fillMissing(previous, pixels);
@@ -525,6 +533,7 @@ public final class LiveTileStore {
             tile.textureDirty = true;
             tile.colorPending = false;
             observeTile(tile);
+            contentVersion.incrementAndGet();
             invalidateNeighborColors(tile.tx, tile.tz);
         }
     }
@@ -605,6 +614,7 @@ public final class LiveTileStore {
                         markBounds(tx, tz);
                         invalidateNeighborColors(tx, tz);
                         observeTile(cached);
+                        contentVersion.incrementAndGet();
                     }
                 });
             });
@@ -634,6 +644,7 @@ public final class LiveTileStore {
                     markBounds(tx, tz);
                     invalidateNeighborColors(tx, tz);
                     observeTile(result);
+                    contentVersion.incrementAndGet();
                 }
             });
         });
@@ -857,6 +868,7 @@ public final class LiveTileStore {
             t.textureDirty = true;
             t.colorPending = false;
             observeTile(t);
+            contentVersion.incrementAndGet();
             invalidateNeighborColors(t.tx, t.tz);
         }
     }
@@ -1012,6 +1024,7 @@ public final class LiveTileStore {
             }
             if (tiles.remove(key(tile.tx, tile.tz), tile)) {
                 tile.dispose();
+                contentVersion.incrementAndGet();
                 if (tile.seedEpoch < 0) {
                     liveOnlyTileCount.decrementAndGet();
                 } else {
