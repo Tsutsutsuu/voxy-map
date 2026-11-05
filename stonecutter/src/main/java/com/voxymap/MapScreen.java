@@ -728,6 +728,9 @@ public class MapScreen extends Screen {
                 }
             }
         }
+        if (data.isTile2DMode()) {
+            drawTileLoadingLabels(g, data);
+        }
         drawPlayerArrow(g);
         if (data.isRenderDistanceOverlay()) {
             drawRenderDistanceBox(g);
@@ -751,6 +754,41 @@ public class MapScreen extends Screen {
         g.blit(RenderPipelines.GUI_TEXTURED, tex,
                 0, 0, 0f, 0f, w, h, w, h, w, h);
         pose.popMatrix();
+    }
+
+    private void drawTileLoadingLabels(GuiGraphicsExtractor g, MapData data) {
+        LiveTileStore live = data.getLiveTiles();
+        if (live == null) return;
+        double tileScreen = LiveTileStore.TILE_PIXELS * zoom;
+        if (tileScreen < 24) return; // too dense to be readable
+        int pb = Math.max(1, data.getPixelBlocks());
+        double worldPerScreenPx = pb / Math.max(1.0e-6, zoom);
+        double left = centerX - (width / 2.0) * worldPerScreenPx;
+        double right = centerX + (width / 2.0) * worldPerScreenPx;
+        double top = centerZ - (height / 2.0) * worldPerScreenPx;
+        double bottom = centerZ + (height / 2.0) * worldPerScreenPx;
+        int tx0 = live.tileIndexX(left), tx1 = live.tileIndexX(right);
+        int tz0 = live.tileIndexZ(top), tz1 = live.tileIndexZ(bottom);
+        float labelScale = Minecraft.getInstance().getWindow().getGuiScale() >= 4.0 ? 0.5f : 1.0f;
+        for (int tz = tz0; tz <= tz1; tz++) {
+            for (int tx = tx0; tx <= tx1; tx++) {
+                LiveTileStore.LiveTile tile = live.get(tx, tz);
+                if (tile == null) continue;
+                int progress = live.progressPercent(tile);
+                if (progress >= 100) continue;
+                double sx = width / 2.0 + (tile.minWX - centerX) * zoom / pb + tileScreen / 2.0;
+                double sy = height / 2.0 + (tile.minWZ - centerZ) * zoom / pb + tileScreen / 2.0;
+                if (sx < 0 || sx > width || sy < 0 || sy > height) continue;
+                Component text = Component.literal(progress + "%");
+                g.pose().pushMatrix();
+                g.pose().translate((float) sx, (float) sy);
+                g.pose().scale(labelScale, labelScale);
+                int tw = font.width(text);
+                g.fill(-tw / 2 - 2, -6, tw / 2 + 2, 7, 0x99000000);
+                g.text(font, text, -tw / 2, -4, 0xFFFFFFFF, true);
+                g.pose().popMatrix();
+            }
+        }
     }
 
     private void drawPlayerArrow(GuiGraphicsExtractor g) {

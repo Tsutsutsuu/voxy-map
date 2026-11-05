@@ -68,6 +68,8 @@ public final class LiveTileStore {
         int textureEpoch = -1;
         /** highest non-water top in this tile; lets the global max shrink again after refinement */
         volatile int tileMaxLand = Integer.MIN_VALUE;
+        /** number of columns with any data, used by the tile loading-progress labels */
+        volatile int filledPixels;
 
         LiveTile(int tx, int tz, long minWX, long minWZ) {
             this.tx = tx;
@@ -365,10 +367,13 @@ public final class LiveTileStore {
     private void observeTile(LiveTile tile) {
         if (tile == null) return;
         int max = Integer.MIN_VALUE;
+        int filled = 0;
         for (long packed : tile.pixels) {
+            if (packed != VoxyMerge.LONG_EMPTY) filled++;
             int top = landTopOfPacked(packed);
             if (top > max) max = top;
         }
+        tile.filledPixels = filled;
         if (max == tile.tileMaxLand) return;
         tile.tileMaxLand = max;
         refreshGlobalLandMax();
@@ -385,6 +390,17 @@ public final class LiveTileStore {
         maxLandY.set(max);
         rampVersion.incrementAndGet();
         lastRampChangeMs = System.currentTimeMillis();
+    }
+
+    public int progressPercent(LiveTile tile) {
+        if (tile == null) return 0;
+        if (tile.texture != null && !tile.textureDirty && tile.rgb != null) return 100;
+        if (tile.rgb == null) {
+            int fill = tile.filledPixels * 100 / (TILE_PIXELS * TILE_PIXELS);
+            if (!tile.sourceFilled) return Math.min(55, 5 + fill * 50 / 100);
+            return 55 + Math.min(30, fill * 30 / 100);
+        }
+        return 85;
     }
 
     /** Rebuilds the lazy source's section index after a manual refresh. */
@@ -449,7 +465,7 @@ public final class LiveTileStore {
         }
         long key = key(tx, tz);
         if (sourcePending.contains(key) || sourceEmpty.contains(key)) return;
-        if (sourceFillRequestsThisFrame.get() >= 16) return;
+        if (sourceFillRequestsThisFrame.get() >= 32) return;
         sourceFillRequestsThisFrame.incrementAndGet();
         sourcePending.add(key);
         final int generation = resetGeneration.get();
@@ -546,13 +562,13 @@ public final class LiveTileStore {
         if (existing != null) {
             if (!existing.sourceFilled) requestSourceFill(tx, tz, existing);
             if (existing.seedEpoch < 0 && seedPixels != null && seedRgb != null
-                    && seedCreatesThisFrame.get() < 16) {
+                    && seedCreatesThisFrame.get() < 24) {
                 seedCreatesThisFrame.incrementAndGet();
                 seedExisting(existing);
             }
             return existing;
         }
-        if (seedRequestsThisFrame.get() >= 16) return null;
+        if (seedRequestsThisFrame.get() >= 24) return null;
         long key = key(tx, tz);
         if (!seedPending.add(key)) return null;
         seedRequestsThisFrame.incrementAndGet();
@@ -851,7 +867,7 @@ public final class LiveTileStore {
             }
             if (tile.rgb == null) return tile.texture;
             if (tile.texture == null || tile.textureDirty || tile.textureEpoch != styleHash) {
-                if (createdThisFrame.get() >= 6) return tile.texture;
+                if (createdThisFrame.get() >= 8) return tile.texture;
                 buildTexture(tile, styleHash);
             }
             return tile.texture;
@@ -860,7 +876,7 @@ public final class LiveTileStore {
             if (tile.seedEpoch != seedEpoch) refreshSeed(tile);
             if (tile.rgb == null) return tile.texture;
             if (tile.texture == null || tile.textureDirty || tile.textureEpoch != styleHash) {
-                if (createdThisFrame.get() >= 6) return tile.texture;
+                if (createdThisFrame.get() >= 8) return tile.texture;
                 buildTexture(tile, styleHash);
             }
             return tile.texture;
@@ -869,13 +885,13 @@ public final class LiveTileStore {
             return tile.texture;
         }
         if (tile.version != tile.coloredVersion || tile.colorStyleHash != styleHash) {
-            if (!tile.colorPending && colorRequestsThisFrame.get() < 4) {
+            if (!tile.colorPending && colorRequestsThisFrame.get() < 8) {
                 requestColor(tile, styleHash);
             }
             return tile.texture;
         }
         if (tile.rgb == null) return tile.texture;
-        if (createdThisFrame.get() >= 6) return tile.texture;
+        if (createdThisFrame.get() >= 8) return tile.texture;
         buildTexture(tile, styleHash);
         return tile.texture;
     }

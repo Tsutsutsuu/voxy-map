@@ -18,7 +18,7 @@ import java.util.function.Consumer;
  * cached data, it scans the Voxy section keys (built once) and decodes only the sections that
  * intersect that tile. This lets the tile map grow beyond the original global Snapshot rectangle.
  *
- * <p>One dedicated I/O thread; callbacks are forwarded to the client thread.</p>
+ * <p>A small dedicated I/O pool; callbacks are forwarded to the client thread.</p>
  */
 public final class VoxyTileSource {
     private final Path storage;
@@ -26,14 +26,15 @@ public final class VoxyTileSource {
     private final int pixelBlocks;
     private final int maxLod;
     private final java.util.function.Supplier<Set<Long>> waterIds;
-    private final ExecutorService io = Executors.newSingleThreadExecutor(r -> {
+    private final ExecutorService io = Executors.newFixedThreadPool(2, r -> {
         Thread t = new Thread(r, "voxymap-tile-source");
         t.setDaemon(true);
         return t;
     });
     private final AtomicBoolean closed = new AtomicBoolean();
-    private boolean indexed;
-    private final java.util.HashMap<Long, KeyList> byTile = new java.util.HashMap<>();
+    private volatile boolean indexed;
+    private final java.util.concurrent.ConcurrentHashMap<Long, KeyList> byTile =
+            new java.util.concurrent.ConcurrentHashMap<>();
     private Object db;
     private final List<Object> handles = new ArrayList<>();
     private Object sectionsHandle;
@@ -79,12 +80,19 @@ public final class VoxyTileSource {
         });
     }
 
-    private void ensureIndex() throws Exception {
+    private synchronized void ensureIndex() throws Exception {
         if (indexed) return;
-        indexed = true;
-        if (!RocksBridge.available() || storage == null) return;
-        db = RocksBridge.openReadOnly(storage.toString(), handles);
-        if (db == null || handles.size() < 3) return;
+        if (!RocksBridge.available() || storage == null) {
+            indexed = true;
+            return;
+        }
+        if (db == null) {
+            db = RocksBridge.openReadOnly(storage.toString(), handles);
+            if (db == null || handles.size() < 3) {
+                indexed = true;
+                return;
+            }
+        }
         sectionsHandle = handles.get(1);
         // The tile source must not decode water as solid just because the async global liquid-id
         // load has not finished yet: read the same mapping table directly from this connection.
@@ -124,6 +132,7 @@ public final class VoxyTileSource {
         } finally {
             RocksBridge.close(it);
         }
+        indexed = true;
     }
 
     private static long tileKey(int tx, int tz) {
@@ -194,17 +203,21 @@ public final class VoxyTileSource {
 
     public void close() {
         if (!closed.compareAndSet(false, true)) return;
-        io.submit(() -> {
-            closeDb();
-        });
         io.shutdown();
+        try {
+            io.awaitTermination(2, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        closeDb();
     }
 
     /** Rebuilds the section index on the next request (manual refresh after new exploration). */
     public void invalidateIndex() {
         if (closed.get()) return;
+        // Do not close the RocksDB connection here: decode tasks may still be reading it. Reusing
+        // the connection is safe and avoids a close/reopen race now that requests use a pool.
         io.submit(() -> {
-            closeDb();
             byTile.clear();
             indexed = false;
         });
