@@ -53,6 +53,8 @@ public class MapScreen extends Screen {
     private int builtStepB = -1;
     private int builtStepC = -1;
     private int builtColorEpoch = -1;
+    private int pendingMeshEpoch = -1;
+    private long pendingMeshSinceNs;
     private int builtPixelBlocks = -1;
     private double builtVScale3d = -1.0;
     private double builtCenterX = Double.NaN;
@@ -817,7 +819,7 @@ public class MapScreen extends Screen {
 
     private void ensureMesh3d() {
         MapData data = MapData.INSTANCE;
-        if (!data.isReady() || data.getMapWidth() <= 0) return;
+        if (!data.isReady()) return;
         int stepNear = Math.max(1, VoxyMapConfig.LOD_STEP_NEAR.get());
         int stepMid = Math.max(stepNear, VoxyMapConfig.LOD_STEP_MID.get());
         int stepFar = Math.max(stepMid, VoxyMapConfig.LOD_STEP_FAR.get());
@@ -862,6 +864,17 @@ public class MapScreen extends Screen {
                 && Math.abs(targetX - builtTargetX) < VoxyMapConfig.LOD_REBUILD_DISTANCE.get()
                 && Math.abs(targetZ - builtTargetZ) < VoxyMapConfig.LOD_REBUILD_DISTANCE.get();
         if (upToDate || building3d) return;
+        int epochNow = data.getColorEpoch();
+        if (mesh3d != null && epochNow != builtColorEpoch) {
+            long nowNs = System.nanoTime();
+            if (epochNow != pendingMeshEpoch) {
+                pendingMeshEpoch = epochNow;
+                pendingMeshSinceNs = nowNs;
+            }
+            // Wait for tile colours/data to settle before rebuilding the whole mesh. Without this
+            // every single tile colour completion rebuilt the mesh while the 3D view was loading.
+            if (nowNs - pendingMeshSinceNs < 500_000_000L) return;
+        }
         if (System.nanoTime() < meshRetryAtNs) return;
         building3d = true;
         // detail is expressed as "every N x N map pixels get one vertex"
@@ -895,6 +908,7 @@ public class MapScreen extends Screen {
             final Map3D.Mesh built = mesh;
             Minecraft.getInstance().execute(() -> {
                 try {
+                    pendingMeshEpoch = -1;
                     if (built != null) {
                         mesh3d = built;
                         builtStepA = fStepA;
@@ -1376,7 +1390,7 @@ public class MapScreen extends Screen {
         int d3x = selX - 6 - d3w;
         float d3hov = busy ? 0f
                 : hoverAmount("view3d", mouseX >= d3x && mouseX <= d3x + d3w && mouseY >= selY && mouseY <= selY + 20);
-        drawButton(g, d3x, selY, d3w, d3, d3hov, !busy && !data.isTile2DMode());
+        drawButton(g, d3x, selY, d3w, d3, d3hov, !busy);
         if (view3d && !busy) {
             g.fill(d3x, selY, d3x + d3w, selY + 1, COL_ACCENT);
         }
@@ -1559,7 +1573,7 @@ public class MapScreen extends Screen {
         var player = Minecraft.getInstance().player;
         if (player == null || cam3d == null) return;
         MapData data = MapData.INSTANCE;
-        if (!data.isReady() || data.getMapWidth() <= 0) return;
+        if (!data.isReady()) return;
         double px = player.getX();
         double pz = player.getZ();
         int bx = (int) Math.floor(px);
@@ -2270,7 +2284,7 @@ public class MapScreen extends Screen {
         int d3wm = font.width(d3m) + 12;
         if (button == 0 && mx >= selX2 - 6 - d3wm && mx <= selX2 - 6 && my >= selY2 && my <= selY2 + 20) {
             // match the painted disabled state: no switching while a style change is running
-            if (!data.isLoading() && !data.isStyleChanging() && !data.isTile2DMode()) {
+            if (!data.isLoading() && !data.isStyleChanging()) {
                 toggle3D();
             }
             return true;

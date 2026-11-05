@@ -191,12 +191,12 @@ public final class Map3DSoft {
         float area = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0);
         if (Math.abs(area) < 1e-6f) return;
         float invArea = 1f / area;
-        int mapW = data.getMapWidth();
-        int mapH = data.getMapHeight();
+        int mapW = data.getRenderWidthPx();
+        int mapH = data.getRenderHeightPx();
         if (mapW <= 0 || mapH <= 0) return;
         int pb = data.getPixelBlocks();
-        long minWX = data.getMinWX();
-        long minWZ = data.getMinWZ();
+        long minWX = data.getRenderMinWX();
+        long minWZ = data.getRenderMinWZ();
         for (int y = minY; y <= maxY; y++) {
             if (rowStride > 1 && (y - rowPhase) % rowStride != 0) continue;
             float cy = y + 0.5f;
@@ -232,14 +232,16 @@ public final class Map3DSoft {
                     fb.color[di] = 0xFF000000 | (r << 16) | (g << 8) | b;
                 } else {
                     int rgb = 0;
-                    if (colors != null) {
+                    if (colors != null && !data.isTile2DMode()) {
                         int cw = colors.width;
                         int ch = colors.height;
                         int ccol = mx < cw ? mx : cw - 1;
                         int crow = mz < ch ? mz : ch - 1;
                         if (ccol >= 0 && crow >= 0) rgb = colors.rgb[crow * cw + ccol];
+                    } else if (data.isTile2DMode()) {
+                        rgb = data.getRgbAtWorld((int) wx, (int) wz);
                     }
-                    if (biomeEdges != null && mx + mz * mapW < biomeEdges.length) {
+                    if (!data.isTile2DMode() && biomeEdges != null && mx + mz * mapW < biomeEdges.length) {
                         rgb = blendOverlay(rgb, biomeEdges[mx + mz * mapW]);
                     }
                     if (rdEnabled) {

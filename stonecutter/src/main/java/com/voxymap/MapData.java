@@ -447,6 +447,7 @@ public final class MapData {
     }
 
     public int getMapWidth() {
+        if (isTile2DMode()) return getRenderWidthPx();
         Snapshot s = snap;
         return s == null ? 0 : s.width;
     }
@@ -461,6 +462,7 @@ public final class MapData {
     }
 
     public int getMapHeight() {
+        if (isTile2DMode()) return getRenderHeightPx();
         Snapshot s = snap;
         return s == null ? 0 : s.height;
     }
@@ -617,6 +619,10 @@ public final class MapData {
 
     /** Increments whenever the rendered colour buffer is replaced. */
     public int getColorEpoch() {
+        if (isTile2DMode()) {
+            LiveTileStore live = liveTiles;
+            return live == null ? 0 : live.contentVersion() * 31 + live.rampVersion() * 7 + live.colorVersion();
+        }
         ColorFrame f = colorFrame;
         return f == null ? 0 : f.epoch;
     }
@@ -783,7 +789,6 @@ public final class MapData {
                     }
                     String savedView3d = props.getProperty("view3d");
                     if (savedView3d != null) view3d = Boolean.parseBoolean(savedView3d);
-                    if (isTile2DMode()) view3d = false; // per-tile 3D mesh is not implemented yet
                     String sYaw = props.getProperty("view3dYaw");
                     String sPitch = props.getProperty("view3dPitch");
                     String sDist = props.getProperty("view3dDistance");

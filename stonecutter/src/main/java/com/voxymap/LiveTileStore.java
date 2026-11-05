@@ -124,6 +124,7 @@ public final class LiveTileStore {
     private final AtomicInteger maxLandY = new AtomicInteger(Integer.MIN_VALUE);
     private final AtomicInteger rampVersion = new AtomicInteger();
     private final AtomicInteger contentVersion = new AtomicInteger();
+    private final AtomicInteger colorVersion = new AtomicInteger();
     private volatile long lastRampChangeMs;
 
     public LiveTileStore(long minWX, long minWZ, int pixelBlocks, Path cacheDir) {
@@ -236,6 +237,7 @@ public final class LiveTileStore {
             tile.textureEpoch = -1;
         }
         colorRequestsThisFrame.set(0);
+        colorVersion.incrementAndGet();
     }
 
     /** Drops every tile so the next frame rebuilds them from cache/Voxy storage (manual refresh). */
@@ -384,6 +386,10 @@ public final class LiveTileStore {
     /** Increments whenever terrain pixels change; biome overlay/labels rebuild on this cheaply. */
     public int contentVersion() {
         return contentVersion.get();
+    }
+
+    public int colorVersion() {
+        return colorVersion.get();
     }
 
     public long lastRampChangeMs() {
@@ -970,6 +976,7 @@ public final class LiveTileStore {
             tile.coloredVersion = version;
             tile.colorStyleHash = styleHash;
             tile.textureDirty = true;
+            colorVersion.incrementAndGet();
         });
     }
 
