@@ -28,6 +28,17 @@ public final class MapStyles {
     private static final int[][] WATER_SOFT = {
             {0, 150, 185, 210}, {500, 70, 120, 180}, {1000, 30, 60, 120},
     };
+    // Lowland gradients: deliberately only a little darker than the beach/coast colour, so a
+    // below-sea basin reads as a subtle depression instead of a dark green hole.
+    private static final int[][] LOW_GRADIENT = {
+            {0, 200, 198, 166}, {500, 188, 184, 150}, {1000, 176, 170, 138},
+    };
+    private static final int[][] LOW_TURBO = {
+            {0, 63, 116, 155}, {500, 56, 103, 136}, {1000, 47, 88, 112},
+    };
+    private static final int[][] LOW_SOFT = {
+            {0, 198, 210, 194}, {500, 186, 200, 184}, {1000, 174, 188, 172},
+    };
 
     private MapStyles() {
     }
@@ -36,7 +47,7 @@ public final class MapStyles {
         // Below-sea-level land is rare in vanilla terrain; use one flat band per palette instead
         // of stretching the normal elevation ramp into negative heights. Water pixels never reach
         // this method, so only dry lowlands/cave mouths are affected.
-        if (y < sea) return belowSeaColor(style);
+        if (y < sea) return belowSeaColor(style, y, sea, lo);
         int hh = adaptive ? (int) (((long) (y - lo)) * 820L / Math.max(1, hi - lo)) : (y - sea);
         switch (style) {
             case "gmt":
@@ -79,24 +90,29 @@ public final class MapStyles {
     }
 
     /**
-     * Single flat colour for dry land below sea level, matched to each palette's existing
-     * low-elevation/coastal hue. Kept separate from the stretched land ramp.
+     * Below-sea land: non-gradient palettes use one flat colour barely darker than their beach
+     * colour; gradient palettes continue their palette with a shallow lowland gradient.
      */
-    private static int belowSeaColor(String style) {
+    private static int belowSeaColor(String style, int y, int sea, int lo) {
         switch (style) {
-            case "gmt":
-                return rgb(92, 124, 112);       // muted teal-green lowland
-            case "nautical":
-                return rgb(138, 152, 136);      // olive-grey seabed/coastal
             case "gradient":
-                return rgb(122, 138, 108);      // muted olive from the low gradient stops
+                return grad(LOW_GRADIENT, lowlandT(y, sea, lo));
             case "gradient-turbo":
-                return rgb(52, 86, 80);         // dark blue-green lowland
+                return grad(LOW_TURBO, lowlandT(y, sea, lo));
             case "gradient-soft":
-                return rgb(136, 156, 140);      // soft pale lowland green
+                return grad(LOW_SOFT, lowlandT(y, sea, lo));
+            case "gmt":
+                return rgb(138, 184, 176);      // just below the GMT coast teal
+            case "nautical":
+                return rgb(232, 226, 210);      // slightly darker nautical beach
             default: // current
-                return rgb(88, 112, 76);        // dark lowland green
+                return rgb(198, 188, 152);      // slightly darker current beach sand
         }
+    }
+
+    private static float lowlandT(int y, int sea, int lo) {
+        int span = Math.max(32, sea - Math.min(lo, sea - 32));
+        return Math.max(0f, Math.min(1f, (sea - y) / (float) span));
     }
 
     public static int waterColor(String style, int depth) {
