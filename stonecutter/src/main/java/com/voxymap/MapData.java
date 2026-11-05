@@ -2495,7 +2495,7 @@ public final class MapData {
      * paired with a rebuilt snapshot again (that mismatch is what left black blocks on the map when
      * a refresh ran out of memory before it could re-render the colours).
      */
-    private static final int COLOR_CACHE_VERSION = 10;
+    private static final int COLOR_CACHE_VERSION = 11;
 
     /** everything that changes the produced pixels; changing any of these invalidates the .vxc */
     private static String colorCacheKey(String style, int sea) {
