@@ -490,10 +490,20 @@ public final class VoxyLiveProbe {
         try {
             Object keySet = map.getClass().getMethod("keySet").invoke(map);
             if (keySet == null) return;
-            Object iterator = keySet.getClass().getMethod("iterator").invoke(keySet);
+            Method keySetIterator = keySet.getClass().getMethod("iterator");
+            try {
+                keySetIterator.setAccessible(true);
+            } catch (Throwable ignored) {
+            }
+            Object iterator = keySetIterator.invoke(keySet);
             if (iterator == null) return;
             Method hasNext = iterator.getClass().getMethod("hasNext");
             Method nextLong = iterator.getClass().getMethod("nextLong");
+            try {
+                hasNext.setAccessible(true);
+                nextLong.setAccessible(true);
+            } catch (Throwable ignored) {
+            }
             int guard = 0;
             while ((Boolean) hasNext.invoke(iterator)) {
                 long key = (Long) nextLong.invoke(iterator);
