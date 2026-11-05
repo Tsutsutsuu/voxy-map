@@ -213,6 +213,9 @@ public class MapConfigScreen extends Screen {
             ((VoxyMapConfig.Value<Object>) it.value()).set(draft.get(it));
         }
         VoxyMapConfig.save();
+        // Rendering changes must re-colour existing tiles; otherwise the ramp toggle only
+        // affects tiles loaded after the config screen closes.
+        MapData.INSTANCE.requestColorRerender();
     }
 
     private void resetDraft() {

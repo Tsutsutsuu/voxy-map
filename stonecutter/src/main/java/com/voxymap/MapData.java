@@ -3076,17 +3076,24 @@ public final class MapData {
             overrideRampLo = globalRampLo;
             overrideRampHi = globalRampHi;
         } else {
-            // tile-only mode: use one fixed world-wide ramp so colours stay consistent between
-            // independently coloured tiles (never normalise a single tile against itself).
-            // Use the actual world height ceiling so datapack/tall worlds do not saturate.
+            // Tile-only mode: derive the ramp from the highest dry land already loaded in the
+            // tile store. This restores the "landMaxRamp" option (previously the fixed world
+            // build ceiling made the toggle ineffective).
             int worldMax = sea + 512;
             var level = Minecraft.getInstance().level;
             if (level != null) worldMax = Math.max(worldMax, level.getMaxY());
+            LiveTileStore live = liveTiles;
+            boolean maxRamp = VoxyMapConfig.MIN_MAX_RAMP.get() || VoxyMapConfig.ADAPTIVE_COLOR_RAMP.get();
+            int hi = worldMax;
+            if (maxRamp && live != null) {
+                int knownMax = live.maxLandTop(sea);
+                hi = Math.max(sea + 40, knownMax);
+            }
             useRampOverride = true;
             overrideLo = sea;
-            overrideHi = worldMax;
+            overrideHi = hi;
             overrideRampLo = sea;
-            overrideRampHi = worldMax;
+            overrideRampHi = hi;
         }
         Snapshot s = new Snapshot(pixels, width, height, minWX, minWZ, pixelBlocks,
                 java.util.Map.of(), System.nanoTime());
