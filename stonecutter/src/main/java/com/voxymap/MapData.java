@@ -127,6 +127,9 @@ public final class MapData {
     /** automatic source resyncs after first open (Voxy may still be flushing fine LOD sections) */
     private volatile long tileResyncAtMs;
     private int tileResyncStage;
+    /** highest-point colour ramp changes trigger a full tile recolour */
+    private int appliedTileRampVersion = -1;
+    private long lastTileRampRecolorMs;
     /** water block ids from the last mapping scan, shared with the live section decoder */
     private volatile Set<Long> waterIdsCache = Set.of();
     private volatile boolean waterIdsLoading;
@@ -2332,6 +2335,7 @@ public final class MapData {
                     tileResyncStage = 0;
                 }
             }
+            maybeRecolorForTileRamp(store, now);
             return;
         }
         if (!VoxyMapConfig.AUTO_REFRESH.get()) return;
@@ -3330,6 +3334,8 @@ public final class MapData {
         }
         next.setCacheReady(waterIdsLoaded);
         liveTiles = next;
+        appliedTileRampVersion = next.rampVersion();
+        lastTileRampRecolorMs = 0;
         tile2dStorage = storage;
         if (tileResyncStage == 0) {
             tileResyncStage = 1;
@@ -3344,6 +3350,25 @@ public final class MapData {
         Minecraft mc = Minecraft.getInstance();
         if (mc.player == null) return;
         VoxyLiveProbe.feedLoadedSections(mc.player.getX(), mc.player.getZ(), 2048.0);
+    }
+
+    /**
+     * When the highest known land point changes, every tile must be re-coloured with the new
+     * ramp. Debounce during loading so a rapidly increasing maximum does not cause a recolor
+     * storm; once the maximum has been stable for a moment, invalidate all tile colours.
+     */
+    private void maybeRecolorForTileRamp(LiveTileStore store, long now) {
+        if (!(VoxyMapConfig.MIN_MAX_RAMP.get() || VoxyMapConfig.ADAPTIVE_COLOR_RAMP.get())) {
+            appliedTileRampVersion = store.rampVersion();
+            return;
+        }
+        int version = store.rampVersion();
+        if (version == appliedTileRampVersion) return;
+        if (now - store.lastRampChangeMs() < 750L) return;
+        if (now - lastTileRampRecolorMs < 1000L) return;
+        appliedTileRampVersion = version;
+        lastTileRampRecolorMs = now;
+        store.invalidateAllColors();
     }
 
     /** Loads the Voxy liquid ids from an already-open database (used by VoxyTileSource). */

@@ -119,7 +119,9 @@ public final class LiveTileStore {
     private final AtomicInteger minTileZ = new AtomicInteger(Integer.MAX_VALUE);
     private final AtomicInteger maxTileZ = new AtomicInteger(Integer.MIN_VALUE);
     /** highest known non-water terrain top, used by the land max-point colour ramp */
-    private volatile int maxLandY = Integer.MIN_VALUE;
+    private final AtomicInteger maxLandY = new AtomicInteger(Integer.MIN_VALUE);
+    private final AtomicInteger rampVersion = new AtomicInteger();
+    private volatile long lastRampChangeMs;
 
     public LiveTileStore(long minWX, long minWZ, int pixelBlocks, Path cacheDir) {
         this.minWX = minWX;
@@ -189,7 +191,9 @@ public final class LiveTileStore {
         sourceEmpty.clear();
         seedPending.clear();
         sourcePending.clear();
-        maxLandY = Integer.MIN_VALUE;
+        maxLandY.set(Integer.MIN_VALUE);
+        rampVersion.incrementAndGet();
+        lastRampChangeMs = System.currentTimeMillis();
         minTileX.set(Integer.MAX_VALUE);
         maxTileX.set(Integer.MIN_VALUE);
         minTileZ.set(Integer.MAX_VALUE);
@@ -303,7 +307,16 @@ public final class LiveTileStore {
 
     /** Highest known dry-land top; sea is returned when no land has been loaded yet. */
     public int maxLandTop(int sea) {
-        return maxLandY == Integer.MIN_VALUE ? sea : maxLandY;
+        int v = maxLandY.get();
+        return v == Integer.MIN_VALUE ? sea : v;
+    }
+
+    public int rampVersion() {
+        return rampVersion.get();
+    }
+
+    public long lastRampChangeMs() {
+        return lastRampChangeMs;
     }
 
     private void observePacked(long packed) {
@@ -313,7 +326,15 @@ public final class LiveTileStore {
         int floor = (int) (packed & 0xFFFF) - 32768;
         if (top == VoxyMerge.NO_TOP) top = floor;
         if (top == VoxyMerge.NO_TOP || top == VoxyMerge.NO_SOLID) return;
-        if (top > maxLandY) maxLandY = top;
+        while (true) {
+            int prev = maxLandY.get();
+            if (top <= prev) return;
+            if (maxLandY.compareAndSet(prev, top)) {
+                rampVersion.incrementAndGet();
+                lastRampChangeMs = System.currentTimeMillis();
+                return;
+            }
+        }
     }
 
     private void observeTile(LiveTile tile) {
