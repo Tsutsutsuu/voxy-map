@@ -437,7 +437,7 @@ public final class VoxyLiveProbe {
      * Only fine levels near the player are submitted; this is a one-shot helper, not a per-tick scan.
      */
     public static void feedLoadedSections(double centerX, double centerZ, double radius) {
-        if (engine == null || engineTrackerField == null || !VoxyMapConfig.LIVE_TILES.get()) return;
+        if (engine == null || !VoxyMapConfig.LIVE_TILES.get()) return;
         synchronized (feedLock) {
             if (feedThread != null && feedThread.isAlive()) return;
             feedThread = new Thread(() -> {
@@ -454,6 +454,10 @@ public final class VoxyLiveProbe {
                     if (trackerLruField != null) {
                         collectLoadedKeys(trackerLruField.get(tracker), centerX, centerZ, radius);
                     }
+                    // Reflecting private fastutil maps may be unavailable on some mappings. Also
+                    // probe the lvl0 section coordinates around the player directly; sections that
+                    // are not loaded simply return null from acquireIfExists.
+                    collectDirectSections(centerX, centerZ, Math.min(radius, 512.0));
                 } catch (Throwable ignored) {
                     // Reflection is best-effort; the storage path still covers everything else.
                 }
@@ -481,6 +485,27 @@ public final class VoxyLiveProbe {
                 trackerLruField = trackerClass.getDeclaredField("lruSecondaryCache");
                 trackerLruField.setAccessible(true);
             } catch (Throwable ignored) {
+            }
+        }
+    }
+
+    private static void collectDirectSections(double centerX, double centerZ, double radius) {
+        Minecraft mc = Minecraft.getInstance();
+        Level level = mc.level;
+        if (level == null) return;
+        int minSy = level.getMinSectionY();
+        int maxSy = level.getMaxSectionY();
+        int scx = (int) Math.floorDiv((long) Math.floor(centerX), 32L);
+        int scz = (int) Math.floorDiv((long) Math.floor(centerZ), 32L);
+        int r = Math.max(1, (int) Math.ceil(radius / 32.0));
+        for (int sz = scz - r; sz <= scz + r; sz++) {
+            for (int sx = scx - r; sx <= scx + r; sx++) {
+                for (int sy = minSy; sy <= maxSy; sy++) {
+                    long key = ((long) (sy & 0xFF) << 52)
+                            | ((long) (sz & 0xFFFFFF) << 28)
+                            | ((long) (sx & 0xFFFFFF) << 4);
+                    enqueueKey(key, 0, 0);
+                }
             }
         }
     }
