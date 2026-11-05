@@ -28,14 +28,13 @@ public final class MapStyles {
     private static final int[][] WATER_SOFT = {
             {0, 150, 185, 210}, {500, 70, 120, 180}, {1000, 30, 60, 120},
     };
-    // Lowland gradients: most palettes stay only a little darker than their beach/coast colour.
-    // The rainbow (turbo) palette is the exception: below-sea land deliberately switches hue to
-    // violet/magenta so depressions are distinguishable from the blue-green-yellow land ramp.
+    // Lowland gradients: stay in the same hue family as each palette's coast colour and only
+    // darken slightly. No special hue switch: a saturated below-sea colour looked like a bug.
     private static final int[][] LOW_GRADIENT = {
             {0, 200, 198, 166}, {500, 188, 184, 150}, {1000, 176, 170, 138},
     };
     private static final int[][] LOW_TURBO = {
-            {0, 178, 120, 186}, {250, 142, 78, 164}, {500, 105, 45, 130}, {1000, 60, 25, 85},
+            {0, 70, 118, 160}, {250, 62, 106, 148}, {500, 54, 94, 134}, {1000, 45, 78, 112},
     };
     private static final int[][] LOW_SOFT = {
             {0, 198, 210, 194}, {500, 186, 200, 184}, {1000, 174, 188, 172},
