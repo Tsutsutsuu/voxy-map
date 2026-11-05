@@ -160,6 +160,36 @@ public final class LiveTileStore {
         return pixelBlocks;
     }
 
+    /** Snapshot of all loaded tile pixels, used for tile-native biome overlay/labels/export. */
+    public MapData.Snapshot buildSnapshot(java.util.Map<Integer, String> biomeNames) {
+        if (!hasBounds()) return null;
+        int minTx = minTileX(), maxTx = maxTileX();
+        int minTz = minTileZ(), maxTz = maxTileZ();
+        long wpx = (long) (maxTx - minTx + 1) * TILE_PIXELS;
+        long hpx = (long) (maxTz - minTz + 1) * TILE_PIXELS;
+        if (wpx <= 0 || hpx <= 0 || wpx * hpx > 80_000_000L) return null;
+        int w = (int) wpx, h = (int) hpx;
+        long minWX = tileMinWX(minTx), minWZ = tileMinWZ(minTz);
+        long[] pixels = new long[w * h];
+        java.util.Arrays.fill(pixels, VoxyMerge.LONG_EMPTY);
+        for (LiveTile tile : tiles.values()) {
+            int ox = (tile.tx - minTx) * TILE_PIXELS;
+            int oz = (tile.tz - minTz) * TILE_PIXELS;
+            if (ox < 0 || oz < 0 || ox + TILE_PIXELS > w || oz + TILE_PIXELS > h) continue;
+            for (int z = 0; z < TILE_PIXELS; z++) {
+                System.arraycopy(tile.pixels, z * TILE_PIXELS,
+                        pixels, (oz + z) * w + ox, TILE_PIXELS);
+            }
+        }
+        return new MapData.Snapshot(pixels, w, h, minWX, minWZ, pixelBlocks,
+                biomeNames == null ? java.util.Map.of() : biomeNames, System.nanoTime());
+    }
+
+    /** Read-only view used by the PNG exporter. */
+    public java.util.Collection<LiveTile> tilesView() {
+        return java.util.List.copyOf(tiles.values());
+    }
+
     /** Invalidates every tile colour/texture after a style or display-option change. */
     public void invalidateAllColors() {
         for (LiveTile tile : tiles.values()) {

@@ -491,7 +491,7 @@ public class MapScreen extends Screen {
 
     /** Layer 1: the map texture (nearest neighbour when zoomed in, the pre-filtered copy far out). */
     private void drawMap(GuiGraphicsExtractor g, MapData data, double uiScale) {
-        if (VoxyMapConfig.TILE_RENDER.get() && VoxyMapConfig.UNIFIED_TILES.get()) {
+        if (data.isTile2DMode()) {
             drawUnifiedTiles(g, data, uiScale);
             return;
         }
@@ -711,23 +711,41 @@ public class MapScreen extends Screen {
 
     /** Layer 2: things drawn on top of the map - biome boundaries, player marker, render-distance box. */
     private void drawMapOverlays(GuiGraphicsExtractor g, MapData data) {
-        if (data.isBiomeOverlay() && data.getMapWidth() > 0) {
-            data.ensureBiomeTexture();
-            if (data.getBiomeTexture() != null) {
-                double x0 = width / 2.0 - centerPx() * zoom;
-                double y0 = height / 2.0 - centerPz() * zoom;
-                double w = data.getMapWidth() * zoom;
-                double h = data.getMapHeight() * zoom;
-                g.blit(RenderPipelines.GUI_TEXTURED, data.getBiomeTexture(),
-                        (int) Math.round(x0), (int) Math.round(y0),
-                        0f, 0f, Math.max(1, (int) Math.round(w)), Math.max(1, (int) Math.round(h)),
-                        data.getMapWidth(), data.getMapHeight(), data.getMapWidth(), data.getMapHeight());
+        if (data.isBiomeOverlay()) {
+            if (data.isTile2DMode()) {
+                drawTileBiomeOverlay(g, data);
+            } else if (data.getMapWidth() > 0) {
+                data.ensureBiomeTexture();
+                if (data.getBiomeTexture() != null) {
+                    double x0 = width / 2.0 - centerPx() * zoom;
+                    double y0 = height / 2.0 - centerPz() * zoom;
+                    double w = data.getMapWidth() * zoom;
+                    double h = data.getMapHeight() * zoom;
+                    g.blit(RenderPipelines.GUI_TEXTURED, data.getBiomeTexture(),
+                            (int) Math.round(x0), (int) Math.round(y0),
+                            0f, 0f, Math.max(1, (int) Math.round(w)), Math.max(1, (int) Math.round(h)),
+                            data.getMapWidth(), data.getMapHeight(), data.getMapWidth(), data.getMapHeight());
+                }
             }
         }
         drawPlayerArrow(g);
         if (data.isRenderDistanceOverlay()) {
             drawRenderDistanceBox(g);
         }
+    }
+
+    private void drawTileBiomeOverlay(GuiGraphicsExtractor g, MapData data) {
+        data.ensureBiomeTexture();
+        Identifier tex = data.getBiomeTexture();
+        int w = data.getBiomeTextureWidth();
+        int h = data.getBiomeTextureHeight();
+        if (tex == null || w <= 0 || h <= 0) return;
+        double x0 = width / 2.0 + (data.getBiomeTextureMinWX() - centerPx()) * zoom;
+        double y0 = height / 2.0 + (data.getBiomeTextureMinWZ() - centerPz()) * zoom;
+        g.blit(RenderPipelines.GUI_TEXTURED, tex,
+                (int) Math.round(x0), (int) Math.round(y0),
+                0f, 0f, Math.max(1, (int) Math.round(w * zoom)), Math.max(1, (int) Math.round(h * zoom)),
+                w, h, w, h);
     }
 
     private void drawPlayerArrow(GuiGraphicsExtractor g) {
@@ -1941,7 +1959,7 @@ public class MapScreen extends Screen {
 
     private void drawBiomeLabels(GuiGraphicsExtractor g) {
         MapData data = MapData.INSTANCE;
-        if (data.getMapWidth() <= 0) return;
+        if (!data.isTile2DMode() && data.getMapWidth() <= 0) return;
         // two discrete label sizes only on very large GUI scales (4x+); otherwise default size
         double guiScale = Minecraft.getInstance().getWindow().getGuiScale();
         float labelScale = (guiScale >= 4.0 && zoom < 1.0) ? 0.5f : 1.0f;

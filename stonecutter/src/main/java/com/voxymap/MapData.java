@@ -64,7 +64,7 @@ public final class MapData {
     private static final int CACHE_VERSION = 9;
     private static final int FALLBACK_SEA = 63;
 
-    private static final class Snapshot {
+    static final class Snapshot {
         final long[] pixels;
         final int width, height;
         final long minWX, minWZ;
@@ -148,6 +148,11 @@ public final class MapData {
     /** bump when the biome border colour changes: forces the cached texture/edges to rebuild */
     private static final int BIOME_EDGE_VERSION = 2;
     private volatile int biomeEdgeVersion;
+    /** biome id -> names loaded from Voxy id_mappings without a global snapshot */
+    private volatile Map<Integer, String> tileBiomeNames = Map.of();
+    /** pixel-space origin/dimensions of the tile-derived biome overlay texture */
+    private volatile int biomeTextureMinWX, biomeTextureMinWZ, biomeTextureWidth, biomeTextureHeight;
+    private volatile Snapshot tileBiomeSnapshot;
     private final AtomicBoolean buildingTextures = new AtomicBoolean();
     private final AtomicBoolean buildingBiome = new AtomicBoolean();
     /** set when a texture build was requested while another one was running (retried on completion) */
@@ -392,7 +397,8 @@ public final class MapData {
 
     public String getBiomeName(int biomeId) {
         Snapshot s = snap;
-        return s == null ? null : s.biomeNames.get(biomeId);
+        if (s != null) return s.biomeNames.get(biomeId);
+        return tileBiomeNames.get(biomeId);
     }
 
     private final java.util.Map<Integer, String> biomeKeyCache = new java.util.concurrent.ConcurrentHashMap<>();
@@ -451,7 +457,9 @@ public final class MapData {
 
     /** True when the unified 2D renderer is the active map path. */
     public boolean isTile2DMode() {
-        return VoxyMapConfig.TILE_RENDER.get() && VoxyMapConfig.UNIFIED_TILES.get();
+        // The unified tile renderer is now the only 2D map path. The legacy texture/grid path is
+        // retained only for reference and is unreachable from the client map.
+        return true;
     }
 
     public int getMapWidth() {
@@ -710,6 +718,7 @@ public final class MapData {
     }
 
     public void setBiomeOverlay(boolean value) {
+        if (value && !biomeOverlay && isTile2DMode()) invalidateTileBiomeCache();
         biomeOverlay = value;
         saveUiState();
     }
@@ -3197,6 +3206,9 @@ public final class MapData {
     /** Writes the most recently rendered map as a PNG. */
     public boolean exportPng(java.nio.file.Path out) {
         ColorFrame f = colorFrame;
+        if ((f == null || f.width <= 0 || f.height <= 0) && isTile2DMode()) {
+            return exportTilePng(out);
+        }
         if (f == null || f.width <= 0 || f.height <= 0) return false;
         int[] rgb = f.rgb;
         int w = f.width, h = f.height;
@@ -3204,6 +3216,41 @@ public final class MapData {
             java.nio.file.Files.createDirectories(out.getParent());
             java.awt.image.BufferedImage img = new java.awt.image.BufferedImage(w, h, java.awt.image.BufferedImage.TYPE_INT_RGB);
             img.setRGB(0, 0, w, h, rgb, 0, w);
+            javax.imageio.ImageIO.write(img, "png", out.toFile());
+            return true;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** Tile-native PNG export: composites the currently loaded tile colours. */
+    private boolean exportTilePng(java.nio.file.Path out) {
+        LiveTileStore live = liveTiles;
+        if (live == null || !live.hasBounds()) return false;
+        int minTx = live.minTileX(), maxTx = live.maxTileX();
+        int minTz = live.minTileZ(), maxTz = live.maxTileZ();
+        long wpx = (long) (maxTx - minTx + 1) * LiveTileStore.TILE_PIXELS;
+        long hpx = (long) (maxTz - minTz + 1) * LiveTileStore.TILE_PIXELS;
+        if (wpx <= 0 || hpx <= 0 || wpx * hpx > 160_000_000L) return false;
+        int w = (int) wpx, h = (int) hpx;
+        int[] argb = new int[w * h];
+        for (LiveTileStore.LiveTile tile : live.tilesView()) {
+            int[] rgb = tile.rgb;
+            if (rgb == null) continue;
+            int ox = (tile.tx - minTx) * LiveTileStore.TILE_PIXELS;
+            int oz = (tile.tz - minTz) * LiveTileStore.TILE_PIXELS;
+            if (ox < 0 || oz < 0 || ox + LiveTileStore.TILE_PIXELS > w
+                    || oz + LiveTileStore.TILE_PIXELS > h) continue;
+            for (int z = 0; z < LiveTileStore.TILE_PIXELS; z++) {
+                System.arraycopy(rgb, z * LiveTileStore.TILE_PIXELS,
+                        argb, (oz + z) * w + ox, LiveTileStore.TILE_PIXELS);
+            }
+        }
+        try {
+            java.nio.file.Files.createDirectories(out.getParent());
+            java.awt.image.BufferedImage img = new java.awt.image.BufferedImage(w, h,
+                    java.awt.image.BufferedImage.TYPE_INT_ARGB);
+            img.setRGB(0, 0, w, h, argb, 0, w);
             javax.imageio.ImageIO.write(img, "png", out.toFile());
             return true;
         } catch (Throwable t) {
@@ -3247,11 +3294,9 @@ public final class MapData {
 
     /** Re-upload the main textures from the last rendered grid (background, used when reopening). */
     public void ensureMainTextures() {
-        boolean tile2d = VoxyMapConfig.TILE_RENDER.get() && VoxyMapConfig.UNIFIED_TILES.get();
-        if (tile2d) return; // tiles are drawn directly; no global preview texture
-        if (!tile2d) ensureTileStore();
-        if (tile2d && textureIdSmall != null) return;
-        if (!tile2d && textureId != null) return;
+        if (isTile2DMode()) return; // tiles are drawn directly; no global preview texture
+        ensureTileStore();
+        if (textureId != null) return;
         ColorFrame f = colorFrame;
         if (snap == null || f == null) return;
         buildTexturesAsync(f.width, f.height, f.rgb);
@@ -3337,6 +3382,7 @@ public final class MapData {
         appliedTileRampVersion = next.rampVersion();
         lastTileRampRecolorMs = 0;
         tile2dStorage = storage;
+        invalidateTileBiomeCache();
         if (tileResyncStage == 0) {
             tileResyncStage = 1;
             tileResyncAtMs = System.currentTimeMillis() + 4_000L;
@@ -3371,6 +3417,19 @@ public final class MapData {
         store.invalidateAllColors();
     }
 
+    /** Drops the tile-derived biome overlay so a new map scale/store rebuilds it. */
+    private void invalidateTileBiomeCache() {
+        Minecraft mc = Minecraft.getInstance();
+        releaseOne(mc, biomeTextureId);
+        biomeTextureId = null;
+        biomeImage = null;
+        biomeEdgePx = null;
+        biomeEdgeVersion = 0;
+        biomeLabelsFlat = new int[0];
+        biomeLabelsSnapshot = null;
+        tileBiomeSnapshot = null;
+    }
+
     /** Loads the Voxy liquid ids from an already-open database (used by VoxyTileSource). */
     public static Set<Long> loadWaterIdsFromDb(Object db, Object mappings) {
         return loadWaterIds(db, mappings, new HashMap<>());
@@ -3388,7 +3447,10 @@ public final class MapData {
             try {
                 db = RocksBridge.openReadOnly(storage.toString(), handles);
                 if (db != null && handles.size() >= 3) {
-                    Set<Long> loaded = loadWaterIds(db, handles.get(2), new HashMap<>());
+                    HashMap<Integer, String> names = new HashMap<>();
+                    Set<Long> loaded = loadWaterIds(db, handles.get(2), names);
+                    tileBiomeNames = names;
+                    biomeKeyCache.clear();
                     boolean hadWater = !waterIdsCache.isEmpty();
                     waterIdsCache = loaded;
                     waterIdsLoaded = true;
@@ -3421,7 +3483,7 @@ public final class MapData {
 
     /** Consumer for the Voxy live-section bridge (called on its worker thread). */
     public void onLiveSection(long key, long[] raw) {
-        if (!VoxyMapConfig.LIVE_TILES.get() || !VoxyMapConfig.TILE_RENDER.get()) return;
+        if (!VoxyMapConfig.LIVE_TILES.get()) return;
         LiveTileStore store = liveTiles;
         if (isTile2DMode()) {
             if (store == null || !store.matches(0L, 0L, effectivePixelBlocks())) return;
@@ -3448,6 +3510,10 @@ public final class MapData {
     }
     /** Build the 1-bit biome boundary mask + labels on the loader thread (overlay only). */
     public void ensureBiomeTexture() {
+        if (isTile2DMode()) {
+            ensureTileBiomeTexture();
+            return;
+        }
         // the 3D overlay needs the edge array even when the 2D texture already exists (e.g. the map
         // was opened before this feature was added), so do not early-out on the texture alone
         if (biomeTextureId != null && biomeEdgePx != null && biomeEdgeVersion == BIOME_EDGE_VERSION) return;
@@ -3490,10 +3556,85 @@ public final class MapData {
         });
     }
 
+    /** Builds the biome border texture/labels from the loaded tiles, without a global snapshot. */
+    private void ensureTileBiomeTexture() {
+        if (biomeTextureId != null && biomeEdgeVersion == BIOME_EDGE_VERSION) return;
+        LiveTileStore live = liveTiles;
+        if (live == null) return;
+        Snapshot s = live.buildSnapshot(tileBiomeNames);
+        if (s == null) return;
+        if (!buildingBiome.compareAndSet(false, true)) return;
+        final int epochAtStart = worldEpoch;
+        loader.submit(() -> {
+            NativeImage bimg = null;
+            try {
+                bimg = buildBiomeImage(s);
+                int[] edges = buildBiomeEdges(s);
+                int[] labels = buildBiomeLabels(s);
+                int offX = (int) Math.floorDiv(s.minWX, s.pixelBlocks);
+                int offZ = (int) Math.floorDiv(s.minWZ, s.pixelBlocks);
+                for (int i = 0; i + 2 < labels.length; i += 3) {
+                    labels[i] += offX;
+                    labels[i + 1] += offZ;
+                }
+                final NativeImage image = bimg;
+                final int[] finalEdges = edges;
+                final int[] finalLabels = labels;
+                Minecraft.getInstance().execute(() -> {
+                    try {
+                        if (epochAtStart != worldEpoch) {
+                            if (image != null) image.close();
+                            return;
+                        }
+                        biomeEdgePx = finalEdges;
+                        biomeEdgeVersion = BIOME_EDGE_VERSION;
+                        biomeLabelsFlat = finalLabels;
+                        biomeLabelsSnapshot = s;
+                        tileBiomeSnapshot = s;
+                        biomeTextureMinWX = offX;
+                        biomeTextureMinWZ = offZ;
+                        biomeTextureWidth = s.width;
+                        biomeTextureHeight = s.height;
+                        if (image != null) {
+                            releaseOne(Minecraft.getInstance(), biomeTextureId);
+                            biomeImage = image;
+                            DynamicTexture btex = new DynamicTexture(() -> "voxymap_bimg", image);
+                            Identifier bid = Identifier.fromNamespaceAndPath("voxymap", "map_biomes");
+                            Minecraft.getInstance().getTextureManager().register(bid, btex);
+                            biomeTextureId = bid;
+                        }
+                    } finally {
+                        buildingBiome.set(false);
+                    }
+                });
+            } catch (Throwable t) {
+                if (bimg != null) bimg.close();
+                buildingBiome.set(false);
+                t.printStackTrace();
+            }
+        });
+    }
+
+    public int getBiomeTextureMinWX() {
+        return biomeTextureMinWX;
+    }
+
+    public int getBiomeTextureMinWZ() {
+        return biomeTextureMinWZ;
+    }
+
+    public int getBiomeTextureWidth() {
+        return biomeTextureWidth;
+    }
+
+    public int getBiomeTextureHeight() {
+        return biomeTextureHeight;
+    }
+
     private void uploadTexture(Snapshot s, int[] rgb) {
         ColorFrame prev = colorFrame;
         colorFrame = new ColorFrame(rgb, s.width, s.height, prev == null ? 1 : prev.epoch + 1);
-        if (!(VoxyMapConfig.TILE_RENDER.get() && VoxyMapConfig.UNIFIED_TILES.get())) {
+        if (!isTile2DMode()) {
             ensureTileStore();
         } else {
             // create the live store as soon as a colour frame exists, even while the map is
@@ -3506,7 +3647,7 @@ public final class MapData {
         releaseOne(mc, biomeTextureId);
         biomeTextureId = null;
         biomeImage = null;
-        if (VoxyMapConfig.TILE_RENDER.get() && VoxyMapConfig.UNIFIED_TILES.get()) {
+        if (isTile2DMode()) {
             return; // the unified 2D renderer never needs a global texture
         }
         buildTexturesAsync(s.width, s.height, rgb);
@@ -3524,7 +3665,7 @@ public final class MapData {
         final int worldEpochAtStart = worldEpoch;
         loader.submit(() -> {
             try {
-                boolean needBig = !(VoxyMapConfig.TILE_RENDER.get() && VoxyMapConfig.UNIFIED_TILES.get());
+                boolean needBig = !isTile2DMode();
                 NativeImage big = needBig ? buildImage(rgb, w, h) : null;
                 NativeImage small = buildSmall(rgb, w, h);
                 Minecraft.getInstance().execute(() -> {
