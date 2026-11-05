@@ -45,10 +45,15 @@ public final class MapStyles {
     }
 
     public static int landColor(String style, int y, int sea, int lo, int hi, boolean adaptive) {
-        // Below-sea-level land is rare in vanilla terrain; use one flat band per palette instead
-        // of stretching the normal elevation ramp into negative heights. Water pixels never reach
-        // this method, so only dry lowlands/cave mouths are affected.
-        if (y < sea) return belowSeaColor(style, y, sea, lo);
+        if (y < sea) {
+            // Blend from the colour used exactly at sea level into the lowland palette over the
+            // first few blocks. A hard branch at y<sea made the coastline a solid, unrelated
+            // colour band (most visible with the rainbow palette).
+            int coast = landColor(style, sea, sea, lo, hi, adaptive);
+            int lowland = belowSeaColor(style, y, sea, lo);
+            float t = Math.min(1f, (sea - y) / 6f);
+            return mix(coast, lowland, t);
+        }
         int hh = adaptive ? (int) (((long) (y - lo)) * 820L / Math.max(1, hi - lo)) : (y - sea);
         switch (style) {
             case "gmt":
@@ -116,6 +121,16 @@ public final class MapStyles {
     private static float lowlandT(int y, int sea, int lo, int forcedSpan) {
         int span = forcedSpan > 0 ? forcedSpan : Math.max(32, sea - Math.min(lo, sea - 32));
         return Math.max(0f, Math.min(1f, (sea - y) / (float) span));
+    }
+
+    private static int mix(int a, int b, float t) {
+        t = Math.max(0f, Math.min(1f, t));
+        int ar = (a >> 16) & 0xFF, ag = (a >> 8) & 0xFF, ab = a & 0xFF;
+        int br = (b >> 16) & 0xFF, bg = (b >> 8) & 0xFF, bb = b & 0xFF;
+        return rgb(
+                clamp((int) (ar + (br - ar) * t)),
+                clamp((int) (ag + (bg - ag) * t)),
+                clamp((int) (ab + (bb - ab) * t)));
     }
 
     public static int waterColor(String style, int depth) {
