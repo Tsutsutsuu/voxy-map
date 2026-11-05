@@ -28,30 +28,20 @@ public final class MapStyles {
     private static final int[][] WATER_SOFT = {
             {0, 150, 185, 210}, {500, 70, 120, 180}, {1000, 30, 60, 120},
     };
-    // Lowland gradients: stay in the same hue family as each palette's coast colour and only
-    // darken slightly. No special hue switch: a saturated below-sea colour looked like a bug.
-    private static final int[][] LOW_GRADIENT = {
-            {0, 200, 198, 166}, {500, 188, 184, 150}, {1000, 176, 170, 138},
-    };
-    private static final int[][] LOW_TURBO = {
-            {0, 92, 104, 158}, {250, 82, 92, 146}, {500, 70, 80, 132}, {1000, 56, 64, 110},
-    };
-    private static final int[][] LOW_SOFT = {
-            {0, 198, 210, 194}, {500, 186, 200, 184}, {1000, 174, 188, 172},
-    };
-
     private MapStyles() {
     }
 
     public static int landColor(String style, int y, int sea, int lo, int hi, boolean adaptive) {
         if (y < sea) {
-            // Blend from the colour used exactly at sea level into the lowland palette over the
-            // first few blocks. A hard branch at y<sea made the coastline a solid, unrelated
-            // colour band (most visible with the rainbow palette).
+            // Below-sea land is just a slightly darker continuation of the coast colour. Deriving
+            // it from the actual sea-level colour keeps the hue identical (no magenta/blue slab)
+            // and makes the depression barely noticeable, which is what this palette needs.
             int coast = landColor(style, sea, sea, lo, hi, adaptive);
-            int lowland = belowSeaColor(style, y, sea, lo);
-            float t = Math.min(1f, (sea - y) / 6f);
-            return mix(coast, lowland, t);
+            int depth = sea - y;
+            float darken = 0.94f - 0.10f * Math.min(1f, depth / 32f);
+            int lowland = darken(coast, darken);
+            float blend = Math.min(1f, depth / 4f);
+            return mix(coast, lowland, blend);
         }
         int hh = adaptive ? (int) (((long) (y - lo)) * 820L / Math.max(1, hi - lo)) : (y - sea);
         switch (style) {
@@ -94,32 +84,11 @@ public final class MapStyles {
         }
     }
 
-    /**
-     * Below-sea land: non-gradient palettes use one flat colour barely darker than their beach
-     * colour; gradient palettes continue their palette with a shallow lowland gradient.
-     */
-    private static int belowSeaColor(String style, int y, int sea, int lo) {
-        switch (style) {
-            case "gradient":
-                return grad(LOW_GRADIENT, lowlandT(y, sea, lo, 0));
-            case "gradient-turbo":
-                // Rainbow needs a visible hue ramp even in the shallow 1-8 block depressions
-                // common around coasts, so compress the lowland gradient into 8 blocks.
-                return grad(LOW_TURBO, lowlandT(y, sea, lo, 8));
-            case "gradient-soft":
-                return grad(LOW_SOFT, lowlandT(y, sea, lo, 0));
-            case "gmt":
-                return rgb(138, 184, 176);      // just below the GMT coast teal
-            case "nautical":
-                return rgb(232, 226, 210);      // slightly darker nautical beach
-            default: // current
-                return rgb(198, 188, 152);      // slightly darker current beach sand
-        }
-    }
-
-    private static float lowlandT(int y, int sea, int lo, int forcedSpan) {
-        int span = forcedSpan > 0 ? forcedSpan : Math.max(32, sea - Math.min(lo, sea - 32));
-        return Math.max(0f, Math.min(1f, (sea - y) / (float) span));
+    private static int darken(int color, float factor) {
+        return rgb(
+                clamp((int) (((color >> 16) & 0xFF) * factor)),
+                clamp((int) (((color >> 8) & 0xFF) * factor)),
+                clamp((int) ((color & 0xFF) * factor)));
     }
 
     private static int mix(int a, int b, float t) {
