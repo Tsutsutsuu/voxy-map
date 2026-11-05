@@ -584,6 +584,40 @@ public final class LiveTileStore {
     }
 
     /**
+     * 3D uses the same progressive tile pipeline as 2D: create tiles from the centre outwards and
+     * request their colours, using the same per-frame budgets. No GPU texture is needed here.
+     */
+    public void pumpFor3D(double centerX, double centerZ, int radiusTiles,
+                          String style, int sea, int colorEpoch) {
+        beginFrame();
+        int ccx = tileIndexX(centerX);
+        int ccz = tileIndexZ(centerZ);
+        int radius = Math.max(1, Math.min(32, radiusTiles));
+        int styleHash = ((style == null ? 0 : style.hashCode()) * 31 + sea) * 31 + colorEpoch;
+        for (int r = 0; r <= radius; r++) {
+            for (int tx = ccx - r; tx <= ccx + r; tx++) {
+                pump3DTile(tx, ccz - r, styleHash);
+                if (r != 0) pump3DTile(tx, ccz + r, styleHash);
+            }
+            for (int tz = ccz - r + 1; tz <= ccz + r - 1; tz++) {
+                pump3DTile(ccx - r, tz, styleHash);
+                if (r != 0) pump3DTile(ccx + r, tz, styleHash);
+            }
+        }
+        evictFar(ccx, ccz, radius + 4, 512);
+    }
+
+    private void pump3DTile(int tx, int tz, int styleHash) {
+        LiveTile tile = getOrCreateSeed(tx, tz);
+        if (tile == null) return;
+        if (tile.version != tile.coloredVersion || tile.colorStyleHash != styleHash) {
+            if (!tile.colorPending && colorRequestsThisFrame.get() < 8) {
+                requestColor(tile, styleHash);
+            }
+        }
+    }
+
+    /**
      * Lazily creates a tile from the base snapshot. Returns null for empty/out-of-seed tiles so the
      * unified renderer does not allocate tiles for the empty margin.
      */

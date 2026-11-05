@@ -139,6 +139,7 @@ public final class MapData {
     private volatile ColorFrame colorFrame;
     /** tile-derived colour buffer used by the 3D rasteriser (avoids per-pixel tile lookups) */
     private volatile ColorFrame tileColorFrame;
+    private volatile long lastTileColorFrameNs;
     /** biome border pixels (w*h ARGB) for the 3D overlay / labels */
     private volatile int[] biomeEdgePx;
     /** bump when the biome border colour changes: forces the cached texture/edges to rebuild */
@@ -651,6 +652,11 @@ public final class MapData {
         int epoch = getMeshEpoch();
         ColorFrame cached = tileColorFrame;
         if (cached != null && cached.epoch == epoch) return cached;
+        long now = System.nanoTime();
+        // During progressive 3D loading every tile completion changes the epoch; recomposing the
+        // whole render-bounds buffer every frame would stall the view. Refresh it at most 5x/s.
+        if (cached != null && now - lastTileColorFrameNs < 200_000_000L) return cached;
+        lastTileColorFrameNs = now;
         LiveTileStore live = liveTiles;
         if (live == null || !live.hasBounds()) return null;
         int w = getRenderWidthPx();
@@ -3331,6 +3337,14 @@ public final class MapData {
      * Live overlay store. It shares the base snapshot's origin/pixel scale so tile indices line up;
      * if the base geometry changes the overlay is discarded (the next base build covers the area).
      */
+    /** Feeds the 3D view with the same progressive tile loading used by 2D. */
+    public void pump3DTiles(double centerX, double centerZ, int radiusTiles,
+                            String style, int sea, int colorEpoch) {
+        if (!isTile2DMode()) return;
+        LiveTileStore live = ensure2DStore();
+        if (live != null) live.pumpFor3D(centerX, centerZ, radiusTiles, style, sea, colorEpoch);
+    }
+
     public LiveTileStore getLiveTiles() {
         if (isTile2DMode()) return ensure2DStore();
         Snapshot s = snap;

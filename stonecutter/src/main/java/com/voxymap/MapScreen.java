@@ -428,6 +428,7 @@ public class MapScreen extends Screen {
                 lastBiomeEdges = edgesNow;
                 cam3dDirty = true;
             }
+            pump3DTiles(data);
             ensureMesh3d();
             updateSoft3d();
             if (tex3dId != null && fb3d != null) {
@@ -817,6 +818,15 @@ public class MapScreen extends Screen {
         fov3d = VoxyMapConfig.FOV_3D.get();
     }
 
+    private void pump3DTiles(MapData data) {
+        if (cam3d == null || !data.isTile2DMode()) return;
+        double radiusWorld = Math.max(2048.0, Math.min(8192.0, cam3d.distance * 2.0));
+        int pb = Math.max(1, data.getPixelBlocks());
+        int radiusTiles = (int) Math.ceil(radiusWorld / (256.0 * pb));
+        data.pump3DTiles(cam3d.targetX, cam3d.targetZ, radiusTiles,
+                data.getStyle(), data.seaLevel(), data.getColorEpoch());
+    }
+
     private void ensureMesh3d() {
         MapData data = MapData.INSTANCE;
         if (!data.isReady()) return;
@@ -929,7 +939,7 @@ public class MapScreen extends Screen {
                         cam3dDirty = true;
                     } else {
                         // empty mesh or a failed build: back off instead of retrying every frame
-                        meshRetryAtNs = System.nanoTime() + 3_000_000_000L;
+                        meshRetryAtNs = System.nanoTime() + 1_000_000_000L;
                     }
                 } finally {
                     building3d = false;
