@@ -232,7 +232,7 @@ public final class Map3DSoft {
                     fb.color[di] = 0xFF000000 | (r << 16) | (g << 8) | b;
                 } else {
                     int rgb = 0;
-                    if (colors != null && !data.isTile2DMode()) {
+                    if (colors != null) {
                         int cw = colors.width;
                         int ch = colors.height;
                         int ccol = mx < cw ? mx : cw - 1;

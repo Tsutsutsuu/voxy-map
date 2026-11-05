@@ -137,6 +137,8 @@ public final class MapData {
      * dimensions, which used to produce an AIOOBE in the background mesh builder.
      */
     private volatile ColorFrame colorFrame;
+    /** tile-derived colour buffer used by the 3D rasteriser (avoids per-pixel tile lookups) */
+    private volatile ColorFrame tileColorFrame;
     /** biome border pixels (w*h ARGB) for the 3D overlay / labels */
     private volatile int[] biomeEdgePx;
     /** bump when the biome border colour changes: forces the cached texture/edges to rebuild */
@@ -637,7 +639,45 @@ public final class MapData {
 
     /** The colour buffer together with the dimensions it was rendered at (null before first render). */
     public ColorFrame getColorFrame() {
-        return colorFrame;
+        return isTile2DMode() ? tileColorFrame() : colorFrame;
+    }
+
+    /**
+     * Composes the loaded tile colours into one render-bounds buffer. The software 3D rasteriser
+     * samples this array directly; per-pixel tile lookups made the tile-based 3D view much slower
+     * than the old snapshot path.
+     */
+    private synchronized ColorFrame tileColorFrame() {
+        int epoch = getMeshEpoch();
+        ColorFrame cached = tileColorFrame;
+        if (cached != null && cached.epoch == epoch) return cached;
+        LiveTileStore live = liveTiles;
+        if (live == null || !live.hasBounds()) return null;
+        int w = getRenderWidthPx();
+        int h = getRenderHeightPx();
+        if (w <= 0 || h <= 0 || (long) w * h > 64_000_000L) return null;
+        long minWX = getRenderMinWX();
+        long minWZ = getRenderMinWZ();
+        int pb = Math.max(1, getPixelBlocks());
+        int[] rgb = new int[w * h];
+        for (LiveTileStore.LiveTile tile : live.tilesView()) {
+            int[] src = tile.rgb;
+            if (src == null) continue;
+            int ox = (int) Math.floorDiv(tile.minWX - minWX, pb);
+            int oz = (int) Math.floorDiv(tile.minWZ - minWZ, pb);
+            int x0 = Math.max(0, ox);
+            int z0 = Math.max(0, oz);
+            int x1 = Math.min(w, ox + LiveTileStore.TILE_PIXELS);
+            int z1 = Math.min(h, oz + LiveTileStore.TILE_PIXELS);
+            if (x0 >= x1 || z0 >= z1) continue;
+            for (int z = z0; z < z1; z++) {
+                System.arraycopy(src, (z - oz) * LiveTileStore.TILE_PIXELS + (x0 - ox),
+                        rgb, z * w + x0, x1 - x0);
+            }
+        }
+        ColorFrame frame = new ColorFrame(rgb, w, h, epoch);
+        tileColorFrame = frame;
+        return frame;
     }
 
     /** Rendered RGB colour at a map pixel (0 when no data yet). */
