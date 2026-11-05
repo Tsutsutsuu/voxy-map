@@ -1145,7 +1145,6 @@ public final class MapData {
                 store.clearCacheFiles();
                 store.invalidateSourceIndex();
             }
-            feedRuntimeSections();
             return;
         }
         final long reportStart = System.nanoTime();
@@ -2107,7 +2106,6 @@ public final class MapData {
             // the unified 2D path never waits for a global snapshot/colour build
             ensureWaterIdsAsync();
             ensure2DStore();
-            feedRuntimeSections();
             return;
         }
         if (needsWorldReload()) dropSnapshotForWorldChange();
@@ -2327,7 +2325,6 @@ public final class MapData {
                 tileResyncAtMs = 0;
                 store.invalidateSourceIndex();
                 store.markAllSourceUnfilled();
-                feedRuntimeSections();
                 if (tileResyncStage < 3) {
                     tileResyncAtMs = now + (tileResyncStage == 1 ? 10_000L : 20_000L);
                     tileResyncStage++;
@@ -3373,7 +3370,6 @@ public final class MapData {
                             }
                             store.setCacheReady(true);
                         }
-                        feedRuntimeSections();
                     });
                 }
             } catch (Throwable t) {
