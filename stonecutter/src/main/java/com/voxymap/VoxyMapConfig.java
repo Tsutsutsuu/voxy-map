@@ -64,12 +64,8 @@ public final class VoxyMapConfig {
     public static final Value<Boolean> DEBUG_REFRESH_VERBOSE = new Value<>("debugRefreshVerbose", false);
     /** PoC: observe Voxy's live section dirty callbacks instead of polling RocksDB. */
     public static final Value<Boolean> DEBUG_VOXY_EVENTS = new Value<>("debugVoxyEvents", false);
-    /** Milestone 1 of the tiled map: draw independent tiles instead of one huge texture. */
-    public static final Value<Boolean> TILE_RENDER = new Value<>("tileRender", true);
-    /** Event-driven 2D overlay for terrain outside the current global snapshot. */
+    /** Event-driven 2D tile updates for newly explored chunks. */
     public static final Value<Boolean> LIVE_TILES = new Value<>("liveTiles", true);
-    /** Migration switch: use the live store as the single 2D map (seeded from the base snapshot). */
-    public static final Value<Boolean> UNIFIED_TILES = new Value<>("unifiedTileMap", true);
     public static final Value<Boolean> SKIP_WORLD_RENDER = new Value<>("skipWorldRender", true);
     public static final Value<Integer> CACHE_KEEP_COUNT = new Value<>("cacheKeepCount", 5);
     public static final Value<Integer> MIN_CONTOUR_AREA = new Value<>("minContourArea", 40);
