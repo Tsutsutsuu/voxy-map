@@ -33,6 +33,10 @@ public final class MapStyles {
     }
 
     public static int landColor(String style, int y, int sea, int lo, int hi, boolean adaptive) {
+        // Below-sea-level land is rare in vanilla terrain; use one flat band per palette instead
+        // of stretching the normal elevation ramp into negative heights. Water pixels never reach
+        // this method, so only dry lowlands/cave mouths are affected.
+        if (y < sea) return belowSeaColor(style);
         int hh = adaptive ? (int) (((long) (y - lo)) * 820L / Math.max(1, hi - lo)) : (y - sea);
         switch (style) {
             case "gmt":
@@ -71,6 +75,27 @@ public final class MapStyles {
                 if (hh <= 580) return rgb(192, 192, 186);
                 if (hh <= 700) return rgb(220, 225, 224);
                 return rgb(250, 252, 255);
+        }
+    }
+
+    /**
+     * Single flat colour for dry land below sea level, matched to each palette's existing
+     * low-elevation/coastal hue. Kept separate from the stretched land ramp.
+     */
+    private static int belowSeaColor(String style) {
+        switch (style) {
+            case "gmt":
+                return rgb(92, 124, 112);       // muted teal-green lowland
+            case "nautical":
+                return rgb(138, 152, 136);      // olive-grey seabed/coastal
+            case "gradient":
+                return rgb(122, 138, 108);      // muted olive from the low gradient stops
+            case "gradient-turbo":
+                return rgb(52, 86, 80);         // dark blue-green lowland
+            case "gradient-soft":
+                return rgb(136, 156, 140);      // soft pale lowland green
+            default: // current
+                return rgb(88, 112, 76);        // dark lowland green
         }
     }
 
