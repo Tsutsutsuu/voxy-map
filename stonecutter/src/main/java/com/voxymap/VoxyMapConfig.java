@@ -68,8 +68,6 @@ public final class VoxyMapConfig {
     public static final Value<Boolean> TILE_RENDER = new Value<>("tileRender", true);
     /** Event-driven 2D overlay for terrain outside the current global snapshot. */
     public static final Value<Boolean> LIVE_TILES = new Value<>("liveTiles", true);
-    /** Show "pending/loading" labels on tiles that are not ready yet. */
-    public static final Value<Boolean> TILE_LOADING_LABELS = new Value<>("tileLoadingLabels", true);
     /** Migration switch: use the live store as the single 2D map (seeded from the base snapshot). */
     public static final Value<Boolean> UNIFIED_TILES = new Value<>("unifiedTileMap", true);
     public static final Value<Boolean> SKIP_WORLD_RENDER = new Value<>("skipWorldRender", true);
