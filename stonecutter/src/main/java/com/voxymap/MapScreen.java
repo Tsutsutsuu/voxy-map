@@ -757,6 +757,7 @@ public class MapScreen extends Screen {
     }
 
     private void drawTileLoadingLabels(GuiGraphicsExtractor g, MapData data) {
+        if (!VoxyMapConfig.TILE_LOADING_LABELS.get()) return;
         LiveTileStore live = data.getLiveTiles();
         if (live == null) return;
         double tileScreen = LiveTileStore.TILE_PIXELS * zoom;
@@ -773,19 +774,22 @@ public class MapScreen extends Screen {
         for (int tz = tz0; tz <= tz1; tz++) {
             for (int tx = tx0; tx <= tx1; tx++) {
                 LiveTileStore.LiveTile tile = live.get(tx, tz);
-                if (tile == null) continue;
-                int progress = live.progressPercent(tile);
-                if (progress >= 100) continue;
-                double sx = width / 2.0 + (tile.minWX - centerX) * zoom / pb + tileScreen / 2.0;
-                double sy = height / 2.0 + (tile.minWZ - centerZ) * zoom / pb + tileScreen / 2.0;
+                int state = tile == null ? LiveTileStore.LOAD_PENDING : live.loadingState(tile);
+                if (state == LiveTileStore.LOAD_READY) continue;
+                long tileWX = tile != null ? tile.minWX : live.tileMinWX(tx);
+                long tileWZ = tile != null ? tile.minWZ : live.tileMinWZ(tz);
+                double sx = width / 2.0 + (tileWX - centerX) * zoom / pb + tileScreen / 2.0;
+                double sy = height / 2.0 + (tileWZ - centerZ) * zoom / pb + tileScreen / 2.0;
                 if (sx < 0 || sx > width || sy < 0 || sy > height) continue;
-                Component text = Component.literal(progress + "%");
+                Component text = Component.translatable(state == LiveTileStore.LOAD_PENDING
+                        ? "voxymap.tile.pending" : "voxymap.tile.loading");
+                int color = state == LiveTileStore.LOAD_LOADING ? 0xFFFF55 : 0xD0D0D0;
                 g.pose().pushMatrix();
                 g.pose().translate((float) sx, (float) sy);
                 g.pose().scale(labelScale, labelScale);
                 int tw = font.width(text);
                 g.fill(-tw / 2 - 2, -6, tw / 2 + 2, 7, 0x99000000);
-                g.text(font, text, -tw / 2, -4, 0xFFFFFFFF, true);
+                g.text(font, text, -tw / 2, -4, color, true);
                 g.pose().popMatrix();
             }
         }

@@ -392,15 +392,25 @@ public final class LiveTileStore {
         lastRampChangeMs = System.currentTimeMillis();
     }
 
+    public static final int LOAD_READY = 0;
+    public static final int LOAD_PENDING = 1;
+    public static final int LOAD_LOADING = 2;
+
     public int progressPercent(LiveTile tile) {
         if (tile == null) return 0;
-        if (tile.texture != null && !tile.textureDirty && tile.rgb != null) return 100;
+        if (tile.texture != null && tile.rgb != null) return 100;
         if (tile.rgb == null) {
             int fill = tile.filledPixels * 100 / (TILE_PIXELS * TILE_PIXELS);
             if (!tile.sourceFilled) return Math.min(55, 5 + fill * 50 / 100);
             return 55 + Math.min(30, fill * 30 / 100);
         }
         return 85;
+    }
+
+    /** 0 = ready (no label), 1 = no data yet, 2 = data present but still colouring/uploading. */
+    public int loadingState(LiveTile tile) {
+        if (tile == null || tile.filledPixels == 0) return LOAD_PENDING;
+        return progressPercent(tile) >= 100 ? LOAD_READY : LOAD_LOADING;
     }
 
     /** Rebuilds the lazy source's section index after a manual refresh. */
