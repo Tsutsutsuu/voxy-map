@@ -35,7 +35,7 @@ public final class MapStyles {
             {0, 200, 198, 166}, {500, 188, 184, 150}, {1000, 176, 170, 138},
     };
     private static final int[][] LOW_TURBO = {
-            {0, 148, 92, 164}, {500, 108, 58, 132}, {1000, 62, 32, 88},
+            {0, 178, 120, 186}, {250, 142, 78, 164}, {500, 105, 45, 130}, {1000, 60, 25, 85},
     };
     private static final int[][] LOW_SOFT = {
             {0, 198, 210, 194}, {500, 186, 200, 184}, {1000, 174, 188, 172},
@@ -97,11 +97,13 @@ public final class MapStyles {
     private static int belowSeaColor(String style, int y, int sea, int lo) {
         switch (style) {
             case "gradient":
-                return grad(LOW_GRADIENT, lowlandT(y, sea, lo));
+                return grad(LOW_GRADIENT, lowlandT(y, sea, lo, 0));
             case "gradient-turbo":
-                return grad(LOW_TURBO, lowlandT(y, sea, lo));
+                // Rainbow needs a visible hue ramp even in the shallow 1-8 block depressions
+                // common around coasts, so compress the lowland gradient into 8 blocks.
+                return grad(LOW_TURBO, lowlandT(y, sea, lo, 8));
             case "gradient-soft":
-                return grad(LOW_SOFT, lowlandT(y, sea, lo));
+                return grad(LOW_SOFT, lowlandT(y, sea, lo, 0));
             case "gmt":
                 return rgb(138, 184, 176);      // just below the GMT coast teal
             case "nautical":
@@ -111,8 +113,8 @@ public final class MapStyles {
         }
     }
 
-    private static float lowlandT(int y, int sea, int lo) {
-        int span = Math.max(32, sea - Math.min(lo, sea - 32));
+    private static float lowlandT(int y, int sea, int lo, int forcedSpan) {
+        int span = forcedSpan > 0 ? forcedSpan : Math.max(32, sea - Math.min(lo, sea - 32));
         return Math.max(0f, Math.min(1f, (sea - y) / (float) span));
     }
 
