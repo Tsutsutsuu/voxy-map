@@ -66,6 +66,8 @@ public final class LiveTileStore {
         Identifier texture;
         DynamicTexture dynamic;
         int textureEpoch = -1;
+        /** highest non-water top in this tile; lets the global max shrink again after refinement */
+        volatile int tileMaxLand = Integer.MIN_VALUE;
 
         LiveTile(int tx, int tz, long minWX, long minWZ) {
             this.tx = tx;
@@ -350,27 +352,39 @@ public final class LiveTileStore {
         return lastRampChangeMs;
     }
 
-    private void observePacked(long packed) {
-        if (packed == VoxyMerge.LONG_EMPTY) return;
-        if ((packed & (1L << 52)) != 0) return; // water columns do not drive the land ramp
+    private static int landTopOfPacked(long packed) {
+        if (packed == VoxyMerge.LONG_EMPTY) return Integer.MIN_VALUE;
+        if ((packed & (1L << 52)) != 0) return Integer.MIN_VALUE;
         int top = (int) ((packed >>> 24) & 0xFFFF) - 32768;
         int floor = (int) (packed & 0xFFFF) - 32768;
         if (top == VoxyMerge.NO_TOP) top = floor;
-        if (top == VoxyMerge.NO_TOP || top == VoxyMerge.NO_SOLID) return;
-        while (true) {
-            int prev = maxLandY.get();
-            if (top <= prev) return;
-            if (maxLandY.compareAndSet(prev, top)) {
-                rampVersion.incrementAndGet();
-                lastRampChangeMs = System.currentTimeMillis();
-                return;
-            }
-        }
+        if (top == VoxyMerge.NO_TOP || top == VoxyMerge.NO_SOLID) return Integer.MIN_VALUE;
+        return top;
     }
 
     private void observeTile(LiveTile tile) {
         if (tile == null) return;
-        for (long packed : tile.pixels) observePacked(packed);
+        int max = Integer.MIN_VALUE;
+        for (long packed : tile.pixels) {
+            int top = landTopOfPacked(packed);
+            if (top > max) max = top;
+        }
+        if (max == tile.tileMaxLand) return;
+        tile.tileMaxLand = max;
+        refreshGlobalLandMax();
+    }
+
+    /** Recompute the global maximum from per-tile maxima; cheap (tile count, not pixel count). */
+    private synchronized void refreshGlobalLandMax() {
+        int max = Integer.MIN_VALUE;
+        for (LiveTile tile : tiles.values()) {
+            int v = tile.tileMaxLand;
+            if (v > max) max = v;
+        }
+        if (max == maxLandY.get()) return;
+        maxLandY.set(max);
+        rampVersion.incrementAndGet();
+        lastRampChangeMs = System.currentTimeMillis();
     }
 
     /** Rebuilds the lazy source's section index after a manual refresh. */
@@ -408,12 +422,12 @@ public final class LiveTileStore {
             System.arraycopy(pixels, 0, tile.pixels, 0, tile.pixels.length);
             tile.liveDirty = true;
             tile.sourceFilled = true;
-            observeTile(tile);
             LiveTile previous = tiles.putIfAbsent(key, tile);
             if (previous == null) {
                 liveOnlyTileCount.incrementAndGet();
                 markBounds(tx, tz);
                 invalidateNeighborColors(tx, tz);
+                observeTile(tile);
             } else {
                 previous.sourceFilled = true;
                 fillMissing(previous, pixels);
@@ -477,7 +491,6 @@ public final class LiveTileStore {
                 // storage tile has a much finer sample for the same column.
                 tile.pixels[i] = src;
                 changed = true;
-                observePacked(src);
             }
         }
         if (changed) {
@@ -485,6 +498,7 @@ public final class LiveTileStore {
             tile.version++;
             tile.textureDirty = true;
             tile.colorPending = false;
+            observeTile(tile);
             invalidateNeighborColors(tile.tx, tile.tz);
         }
     }
@@ -564,8 +578,8 @@ public final class LiveTileStore {
                         liveOnlyTileCount.incrementAndGet();
                         markBounds(tx, tz);
                         invalidateNeighborColors(tx, tz);
+                        observeTile(cached);
                     }
-                    observeTile(cached);
                 });
             });
             return null;
@@ -593,8 +607,8 @@ public final class LiveTileStore {
                     seedTileCount.incrementAndGet();
                     markBounds(tx, tz);
                     invalidateNeighborColors(tx, tz);
+                    observeTile(result);
                 }
-                observeTile(result);
             });
         });
         return null; // the renderer retries next frame; preview hides the gap
@@ -807,7 +821,6 @@ public final class LiveTileStore {
                             (int) (packed & 0xFFFF) - 32768,
                             (packed & (1L << 52)) != 0,
                             (int) ((packed >>> 53) & 0x1FF));
-                    observePacked(tile.pixels[idx]);
                     touched.add(tile);
                 }
             }
@@ -817,6 +830,7 @@ public final class LiveTileStore {
             t.version++;
             t.textureDirty = true;
             t.colorPending = false;
+            observeTile(t);
             invalidateNeighborColors(t.tx, t.tz);
         }
     }
@@ -979,6 +993,7 @@ public final class LiveTileStore {
                 }
             }
         }
+        refreshGlobalLandMax();
     }
 
     public void dispose() {
