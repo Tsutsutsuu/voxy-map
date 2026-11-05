@@ -1145,6 +1145,7 @@ public final class MapData {
                 store.clearCacheFiles();
                 store.invalidateSourceIndex();
             }
+            feedRuntimeSections();
             return;
         }
         final long reportStart = System.nanoTime();
@@ -2106,6 +2107,7 @@ public final class MapData {
             // the unified 2D path never waits for a global snapshot/colour build
             ensureWaterIdsAsync();
             ensure2DStore();
+            feedRuntimeSections();
             return;
         }
         if (needsWorldReload()) dropSnapshotForWorldChange();
@@ -2325,6 +2327,7 @@ public final class MapData {
                 tileResyncAtMs = 0;
                 store.invalidateSourceIndex();
                 store.markAllSourceUnfilled();
+                feedRuntimeSections();
                 if (tileResyncStage < 3) {
                     tileResyncAtMs = now + (tileResyncStage == 1 ? 10_000L : 20_000L);
                     tileResyncStage++;
@@ -3332,6 +3335,13 @@ public final class MapData {
         return next;
     }
 
+    /** Ask the live probe to copy Voxy's already-loaded fine sections into the tile store. */
+    private void feedRuntimeSections() {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.player == null) return;
+        VoxyLiveProbe.feedLoadedSections(mc.player.getX(), mc.player.getZ(), 2048.0);
+    }
+
     /** Loads the Voxy liquid ids from an already-open database (used by VoxyTileSource). */
     public static Set<Long> loadWaterIdsFromDb(Object db, Object mappings) {
         return loadWaterIds(db, mappings, new HashMap<>());
@@ -3363,6 +3373,7 @@ public final class MapData {
                             }
                             store.setCacheReady(true);
                         }
+                        feedRuntimeSections();
                     });
                 }
             } catch (Throwable t) {
