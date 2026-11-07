@@ -2349,6 +2349,12 @@ public final class MapData {
         mapClosedAtMs = System.currentTimeMillis();
         openRefreshPending = false;
         cancelActiveRefresh();
+        LiveTileStore store = liveTiles;
+        if (store != null) {
+            // Keep memory resident for instant reopen, but persist the dirty tiles so moving away
+            // and back (or restarting the game) can use the .vxt cache instead of Voxy storage.
+            store.persistDirtyTiles();
+        }
         // Keep the tile set and its colours alive: reopening the map should not re-decode the
         // same area or throw away the user's already-loaded view. Memory is bounded by the normal
         // evictFar pass while the map is open.

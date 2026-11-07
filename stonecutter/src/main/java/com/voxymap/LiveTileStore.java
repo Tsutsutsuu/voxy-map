@@ -62,6 +62,11 @@ public final class LiveTileStore {
         volatile int seedEpoch = -1;
         /** true once the whole tile has been filled from cache/Voxy storage (not just live sections) */
         volatile boolean sourceFilled;
+        /** true when this tile came from the complete .vxt cache (skip resync source scans) */
+        volatile boolean fromCache;
+        /** true when the on-disk .vxt file no longer reflects this tile's pixels */
+        volatile boolean cacheDirty = true;
+        volatile int cacheSavedVersion = -1;
         volatile int textureSeedEpoch = -1;
         volatile int[] rgb;
         volatile boolean textureDirty = true;
@@ -318,11 +323,18 @@ public final class LiveTileStore {
     }
 
     private void scheduleSave(LiveTile tile) {
-        if (cacheDir == null || !cacheReady || tile.seedEpoch >= 0) return;
+        if (cacheDir == null || !cacheReady || tile.seedEpoch >= 0 || !tile.cacheDirty) return;
         final int generation = cacheGeneration.get();
         CACHE_IO.submit(() -> {
             if (generation == cacheGeneration.get()) saveCached(tile);
         });
+    }
+
+    /** Persist all dirty resident tiles (map close / world change). */
+    public void persistDirtyTiles() {
+        for (LiveTile tile : tiles.values()) {
+            if (tile.seedEpoch < 0 && tile.cacheDirty) scheduleSave(tile);
+        }
     }
 
     public long minWX() {
@@ -488,7 +500,9 @@ public final class LiveTileStore {
         sourcePending.clear();
         sourceEmpty.clear();
         for (LiveTile tile : tiles.values()) {
-            tile.sourceFilled = false;
+            // Cached tiles are already complete; re-reading Voxy storage for them defeats the
+            // purpose of the .vxt cache. Manual refresh still forces a full source rebuild.
+            if (!tile.fromCache) tile.sourceFilled = false;
         }
     }
 
@@ -595,6 +609,8 @@ public final class LiveTileStore {
         if (changed) {
             tile.liveDirty = true;
             tile.version++;
+            tile.fromCache = false;
+            tile.cacheDirty = true;
             tile.textureDirty = true;
             tile.colorPending = false;
             observeTile(tile);
@@ -809,6 +825,12 @@ public final class LiveTileStore {
             LiveTile tile = new LiveTile(tx, tz, tileMinWX(tx), tileMinWZ(tz));
             for (int i = 0; i < tile.pixels.length; i++) tile.pixels[i] = bb.getLong();
             tile.liveDirty = true; // cached pixels have no colour; let the live pipeline colour them
+            // The cache already contains a complete pixel field. Marking sourceFilled avoids a
+            // pointless RocksDB refill every time a cached tile moves back into view.
+            tile.sourceFilled = true;
+            tile.fromCache = true;
+            tile.cacheDirty = false;
+            tile.cacheSavedVersion = tile.version;
             return tile;
         } catch (Throwable t) {
             return null;
@@ -817,6 +839,7 @@ public final class LiveTileStore {
 
     private void saveCached(LiveTile tile) {
         if (cacheDir == null || !cacheReady || tile.seedEpoch >= 0) return;
+        final int savingVersion = tile.version;
         try {
             Files.createDirectories(cacheDir);
             ByteBuffer raw = ByteBuffer.allocate(TILE_PIXELS * TILE_PIXELS * Long.BYTES)
@@ -838,6 +861,10 @@ public final class LiveTileStore {
                 out.write(comp);
             }
             Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            if (tile.version == savingVersion) {
+                tile.cacheDirty = false;
+                tile.cacheSavedVersion = savingVersion;
+            }
         } catch (Throwable ignored) {
         }
     }
@@ -967,6 +994,8 @@ public final class LiveTileStore {
         for (LiveTile t : touched) {
             t.liveDirty = true;
             t.version++;
+            t.fromCache = false;
+            t.cacheDirty = true;
             t.textureDirty = true;
             t.colorPending = false;
             observeTile(t);
