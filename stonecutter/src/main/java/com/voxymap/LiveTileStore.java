@@ -115,8 +115,6 @@ public final class LiveTileStore {
     private final AtomicInteger resetGeneration = new AtomicInteger();
     private final AtomicInteger sourceEpoch = new AtomicInteger();
     private volatile VoxyTileSource source;
-    /** requested source LOD: 0=full, 4=only coarse 16-block sections */
-    private volatile int sourceMinLod;
     private final AtomicInteger seedTileCount = new AtomicInteger();
     private final AtomicInteger liveOnlyTileCount = new AtomicInteger();
     private final AtomicInteger minTileX = new AtomicInteger(Integer.MAX_VALUE);
@@ -392,29 +390,6 @@ public final class LiveTileStore {
 
     public void setSource(VoxyTileSource source) {
         this.source = source;
-        if (source != null) source.setMinLod(sourceMinLod);
-    }
-
-    /**
-     * Low zoom only needs coarse sections. Raising the level avoids decoding the full LOD stack;
-     * lowering it marks source tiles unfilled so the next pass refills finer detail.
-     */
-    public void setSourceMinLod(int lod) {
-        int next = Math.max(0, Math.min(4, lod));
-        if (next == sourceMinLod) return;
-        boolean needFiner = next < sourceMinLod;
-        sourceMinLod = next;
-        VoxyTileSource src = source;
-        if (src != null) src.setMinLod(next);
-        if (needFiner) {
-            sourceEpoch.incrementAndGet();
-            if (src != null) src.cancelPending();
-            sourcePending.clear();
-            sourceEmpty.clear();
-            for (LiveTile tile : tiles.values()) {
-                tile.sourceFilled = false;
-            }
-        }
     }
 
     public void setCacheReady(boolean ready) {
