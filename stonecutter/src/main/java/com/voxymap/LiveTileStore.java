@@ -1089,7 +1089,13 @@ public final class LiveTileStore {
         for (LiveTile tile : tiles.values()) {
             int dx = tile.tx - centerTx;
             int dz = tile.tz - centerTz;
-            if (Math.max(Math.abs(dx), Math.abs(dz)) > keepRadius) candidates.add(tile);
+            if (Math.max(Math.abs(dx), Math.abs(dz)) > keepRadius) {
+                long k = key(tile.tx, tile.tz);
+                // A pending source/cache decode is still being paid for; evicting it now just
+                // makes the callback recreate it and re-request the same tile later.
+                if (sourcePending.contains(k) || seedPending.contains(k)) continue;
+                candidates.add(tile);
+            }
         }
         candidates.sort((a, b) -> {
             int da = Math.max(Math.abs(a.tx - centerTx), Math.abs(a.tz - centerTz));

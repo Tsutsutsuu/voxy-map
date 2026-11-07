@@ -26,7 +26,7 @@ public final class VoxyTileSource {
     private final int pixelBlocks;
     private final int maxLod;
     private final java.util.function.Supplier<Set<Long>> waterIds;
-    private final ExecutorService io = Executors.newFixedThreadPool(2, r -> {
+    private final ExecutorService io = Executors.newFixedThreadPool(4, r -> {
         Thread t = new Thread(r, "voxymap-tile-source");
         t.setDaemon(true);
         return t;

@@ -650,59 +650,85 @@ public class MapScreen extends Screen {
 
     /** Debug panel (Q when debugEnabled): data-layer and view state, drawn as its own modal layer. */
     private void drawDebugPanel(GuiGraphicsExtractor g, MapData data, int mouseX, int mouseY) {
-        List<String> lines = new ArrayList<>(data.debugLines());
-        lines.addAll(MapPerf.INSTANCE.lines(data));
+        List<String> primary = new ArrayList<>(data.debugLines());
+        List<String> secondary = new ArrayList<>(MapPerf.INSTANCE.lines(data));
         Minecraft mc = Minecraft.getInstance();
         double uiScale = mc.getWindow().getGuiScale();
-        lines.add(String.format(Locale.ROOT, "view: zoom=%.3f uiScale=%.1f fps=%d", zoom, uiScale, mc.getFps()));
+        secondary.add(String.format(Locale.ROOT, "view: zoom=%.3f ui=%d fps=%d",
+                zoom, (int) uiScale, mc.getFps()));
         double wx = screenToWorldX(mouseX);
         double wz = screenToWorldZ(mouseY);
-        lines.add(String.format(Locale.ROOT, "hover: %.1f %.1f  height=%d  biome=%d",
+        secondary.add(String.format(Locale.ROOT, "hover: %.0f %.0f h=%d b=%d",
                 wx, wz, data.heightAt((int) Math.round(wx), (int) Math.round(wz)),
                 data.biomeAt((int) Math.round(wx), (int) Math.round(wz))));
-        lines.add("labels: " + labelPanelState(data, zoom * uiScale) + " / "
+        secondary.add("labels: " + labelPanelState(data, zoom * uiScale) + " / "
                 + (data.getBiomeLabelsFlat().length / 3) + " total");
         if (view3d) {
-            lines.add(String.format(Locale.ROOT, "3d: mesh=%s building=%s frames=%d render=%.1fms",
+            primary.add(String.format(Locale.ROOT, "3d: mesh=%s build=%s frames=%d %.1fms",
                     mesh3d != null, building3d, dbg3dFrames, dbg3dNanos / 1_000_000.0));
             int[] dbgEdges = data.isBiomeOverlay() ? data.getBiomeEdgeSnapshot() : null;
-            lines.add("labels3d: drawn=" + labels3dDrawn + " / " + labels3dTotal);
-            lines.add(String.format(Locale.ROOT, "overlay: biome=%s rd=%s",
-                    dbgEdges == null ? "off" : (dbgEdges.length + "px"),
-                    data.isRenderDistanceOverlay() ? "on (analytic)" : "off"));
+            primary.add("labels3d: " + labels3dDrawn + " / " + labels3dTotal);
+            primary.add("overlay: biome=" + (dbgEdges == null ? "off" : "on")
+                    + " rd=" + (data.isRenderDistanceOverlay() ? "on" : "off"));
             if (mesh3d != null) {
-                lines.add(String.format(Locale.ROOT, "lod: verts=%d tris=%d baseStep=%dpx near=%d mid=%d far=%d",
+                primary.add(String.format(Locale.ROOT, "lod: v=%d t=%d step=%d near/mid/far=%d/%d/%d",
                         mesh3d.vertices.length / 7, mesh3d.indices.length / 3, mesh3d.step,
                         VoxyMapConfig.LOD_STEP_NEAR.get(), VoxyMapConfig.LOD_STEP_MID.get(),
                         VoxyMapConfig.LOD_STEP_FAR.get()));
             }
             if (cam3d != null) {
-                lines.add(String.format(Locale.ROOT, "cam: t=(%.0f,%.0f,%.0f) yaw=%.2f pitch=%.2f dist=%.0f",
+                primary.add(String.format(Locale.ROOT, "cam: t=(%.0f,%.0f,%.0f) y=%.2f p=%.2f d=%.0f",
                         cam3d.targetX, cam3d.targetY, cam3d.targetZ, cam3d.yaw, cam3d.pitch, cam3d.distance));
             }
         }
-        lines.add("press Q to close");
+        primary.add("press Q to close");
 
+        boolean twoColumn = uiScale >= 4.0 && width >= 900;
+        if (!twoColumn) primary.addAll(secondary);
         int pad = 8;
+        int gap = 12;
         int lineH = font.lineHeight + 2;
-        // keep the panel on screen: long lines (the storage path in particular) are trimmed from the
-        // left so the informative tail survives
-        int contentMax = Math.max(80, width - 16 - pad * 2);
-        List<String> shown = new ArrayList<>(lines.size());
-        for (String l : lines) shown.add(fitRight(l, contentMax));
-        int panelW = 0;
-        for (String l : shown) panelW = Math.max(panelW, font.width(l));
+        float scale = twoColumn ? 0.5f : 1f;
+        int maxLines = twoColumn ? Math.max(primary.size(), secondary.size()) : primary.size();
+        int availableW = Math.max(200, width - 16);
+        int maxColPx = twoColumn
+                ? (int) ((availableW / (2.0 * scale)) - gap - pad)
+                : (int) ((availableW / scale) - pad * 2);
+        List<String> left = new ArrayList<>(primary.size());
+        for (String l : primary) left.add(fitRight(l, maxColPx));
+        List<String> right = new ArrayList<>(secondary.size());
+        for (String l : secondary) right.add(fitRight(l, maxColPx));
+        int w1 = 0, w2 = 0;
+        for (String l : left) w1 = Math.max(w1, font.width(l));
+        for (String l : right) w2 = Math.max(w2, font.width(l));
+        int unscaledW = twoColumn ? w1 + w2 + gap + pad * 2 : Math.max(w1, w2) + pad * 2;
+        // shrink slightly if the native GUI scale makes the two columns wider than the screen
+        if (unscaledW * scale > availableW) scale = availableW / (float) unscaledW;
+        int unscaledH = maxLines * lineH + pad * 2;
+        if (unscaledH * scale > height - 40) scale = (height - 40) / (float) unscaledH;
+        int pw = Math.round(unscaledW * scale);
+        int ph = Math.round(unscaledH * scale);
         int x = 8;
         int y = 34;
-        int pw = panelW + pad * 2;
-        int ph = shown.size() * lineH + pad * 2;
         g.fill(x, y, x + pw, y + ph, COL_PANEL);
         g.fill(x, y, x + pw, y + 1, COL_BORDER);
-        int ty = y + pad;
-        for (String l : shown) {
-            g.text(font, l, x + pad, ty, COL_TEXT_DIM);
+        var pose = g.pose();
+        pose.pushMatrix();
+        pose.translate(x + pad * scale, y + pad * scale);
+        pose.scale(scale, scale);
+        int ty = 0;
+        for (String l : left) {
+            g.text(font, l, 0, ty, COL_TEXT_DIM);
             ty += lineH;
         }
+        if (twoColumn) {
+            ty = 0;
+            for (String l : right) {
+                g.text(font, l, w1 + gap, ty, COL_TEXT_DIM);
+                ty += lineH;
+            }
+        }
+        pose.popMatrix();
     }
 
     /** Trims a string to {@code maxWidth}, keeping its tail (useful for paths and ids). */
