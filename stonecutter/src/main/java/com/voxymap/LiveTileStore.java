@@ -809,8 +809,6 @@ public final class LiveTileStore {
             LiveTile tile = new LiveTile(tx, tz, tileMinWX(tx), tileMinWZ(tz));
             for (int i = 0; i < tile.pixels.length; i++) tile.pixels[i] = bb.getLong();
             tile.liveDirty = true; // cached pixels have no colour; let the live pipeline colour them
-            liveOnlyTileCount.incrementAndGet();
-            markBounds(tx, tz);
             return tile;
         } catch (Throwable t) {
             return null;
