@@ -2349,11 +2349,9 @@ public final class MapData {
         mapClosedAtMs = System.currentTimeMillis();
         openRefreshPending = false;
         cancelActiveRefresh();
-        LiveTileStore store = liveTiles;
-        Minecraft mc = Minecraft.getInstance();
-        if (store != null && mc.player != null) {
-            store.evictFar(store.tileIndexX(mc.player.getX()), store.tileIndexZ(mc.player.getZ()), 0, 256);
-        }
+        // Keep the tile set and its colours alive: reopening the map should not re-decode the
+        // same area or throw away the user's already-loaded view. Memory is bounded by the normal
+        // evictFar pass while the map is open.
     }
 
     public boolean isMapOpen() {
