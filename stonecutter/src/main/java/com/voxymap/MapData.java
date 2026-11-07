@@ -3547,9 +3547,10 @@ public final class MapData {
                         LiveTileStore store = liveTiles;
                         if (store != null) {
                             if (!hadWater) {
-                                // tiles/cache built before the liquid ids were known are dry land
+                                // In-memory tiles created before the liquid ids were known are dry;
+                                // drop them, but keep the .vxt files: any cached file was written
+                                // after cacheReady=true, so it already has correct water data.
                                 store.dropAllTiles(false);
-                                store.clearCacheFiles();
                             }
                             store.setCacheReady(true);
                         }

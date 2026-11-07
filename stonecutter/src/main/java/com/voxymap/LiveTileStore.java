@@ -731,11 +731,6 @@ public final class LiveTileStore {
         seedRequestsThisFrame.incrementAndGet();
         final boolean hasSeed = seedPixels != null && seedRgb != null;
         final int generation = resetGeneration.get();
-        if (!hasSeed && !cacheReady) {
-            seedPending.remove(key);
-            requestSourceTile(tx, tz, key);
-            return null;
-        }
         if (!hasSeed) {
             SEED_IO.submit(() -> {
                 LiveTile cached = loadCached(tx, tz);
@@ -826,7 +821,7 @@ public final class LiveTileStore {
     }
 
     private LiveTile loadCached(int tx, int tz) {
-        if (cacheDir == null || !cacheReady) return null;
+        if (cacheDir == null) return null;
         Path file = cacheFile(tx, tz);
         if (!Files.isRegularFile(file)) return null;
         try (DataInputStream in = new DataInputStream(
