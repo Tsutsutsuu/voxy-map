@@ -517,7 +517,9 @@ public final class LiveTileStore {
         VoxyTileSource src = source;
         if (src != null) src.cancelPending();
         sourcePending.clear();
-        sourceEmpty.clear();
+        // Keep the negative (empty) set across automatic LOD recalibration. Clearing it made every
+        // empty margin tile retry cache+source after each of the 4s/14s/34s passes. Manual refresh
+        // drops the whole store and still re-probes everything.
         for (LiveTile tile : tiles.values()) {
             // Cached tiles are already complete; re-reading Voxy storage for them defeats the
             // purpose of the .vxt cache. Manual refresh still forces a full source rebuild.
@@ -556,9 +558,11 @@ public final class LiveTileStore {
                 invalidateNeighborColors(tx, tz);
                 observeTile(tile);
                 contentVersion.incrementAndGet();
+                scheduleSave(tile);
             } else {
                 previous.sourceFilled = true;
                 fillMissing(previous, pixels);
+                scheduleSave(previous);
             }
         });
     }
@@ -602,12 +606,14 @@ public final class LiveTileStore {
                     liveOnlyTileCount.incrementAndGet();
                     markBounds(tx, tz);
                     invalidateNeighborColors(tx, tz);
+                    scheduleSave(created);
                 }
                 return;
             }
             current.sourceFilled = true;
             if (pixels == null) return;
             fillMissing(current, pixels);
+            scheduleSave(current);
         });
     }
 
