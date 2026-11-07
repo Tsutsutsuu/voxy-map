@@ -65,8 +65,11 @@ public final class VoxyTileSource {
         this.waterIds = waterIds;
     }
 
-    public void request(int tx, int tz, Consumer<long[]> callback) {
-        if (closed.get()) return;
+    public int indexedTileCount() {
+        return indexed ? byTile.size() : 0;
+    }
+
+    public void request(int tx, int tz, Consumer<long[]> callback) {        if (closed.get()) return;
         io.submit(() -> {
             if (closed.get()) return;
             try {

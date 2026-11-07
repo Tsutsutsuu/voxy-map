@@ -226,6 +226,27 @@ public final class LiveTileStore {
         return java.util.List.copyOf(tiles.values());
     }
 
+    public long pixelBytesEstimate() {
+        return (long) tiles.size() * TILE_PIXELS * TILE_PIXELS * Long.BYTES;
+    }
+
+    public long rgbBytesEstimate() {
+        long n = 0;
+        for (LiveTile t : tiles.values()) if (t.rgb != null) n++;
+        return n * TILE_PIXELS * TILE_PIXELS * Integer.BYTES;
+    }
+
+    public int textureCount() {
+        int n = 0;
+        for (LiveTile t : tiles.values()) if (t.texture != null) n++;
+        return n;
+    }
+
+    public int sourceIndexTiles() {
+        VoxyTileSource src = source;
+        return src == null ? 0 : src.indexedTileCount();
+    }
+
     /** Invalidates every tile colour/texture after a style or display-option change. */
     public void invalidateAllColors() {
         for (LiveTile tile : tiles.values()) {
@@ -455,13 +476,16 @@ public final class LiveTileStore {
         if (src == null || sourcePending.contains(key) || sourceEmpty.contains(key)) return;
         sourcePending.add(key);
         final int generation = resetGeneration.get();
+        MapPerf.INSTANCE.sourceRequests.increment();
         src.request(tx, tz, pixels -> {
             if (generation != resetGeneration.get()) return;
             sourcePending.remove(key);
             if (pixels == null) {
+                MapPerf.INSTANCE.sourceEmpty.increment();
                 sourceEmpty.add(key);
                 return;
             }
+            MapPerf.INSTANCE.sourceHits.increment();
             LiveTile tile = new LiveTile(tx, tz, tileMinWX(tx), tileMinWZ(tz));
             System.arraycopy(pixels, 0, tile.pixels, 0, tile.pixels.length);
             tile.liveDirty = true;
@@ -498,9 +522,12 @@ public final class LiveTileStore {
         sourceFillRequestsThisFrame.incrementAndGet();
         sourcePending.add(key);
         final int generation = resetGeneration.get();
+        MapPerf.INSTANCE.sourceRequests.increment();
         src.request(tx, tz, pixels -> {
             if (generation != resetGeneration.get()) return;
             sourcePending.remove(key);
+            if (pixels == null) MapPerf.INSTANCE.sourceEmpty.increment();
+            else MapPerf.INSTANCE.sourceHits.increment();
             LiveTile current = tiles.get(key);
             if (current == null) {
                 if (pixels == null) {
@@ -650,9 +677,11 @@ public final class LiveTileStore {
                     if (generation != resetGeneration.get()) return;
                     seedPending.remove(key);
                     if (cached == null) {
+                        MapPerf.INSTANCE.cacheMisses.increment();
                         requestSourceTile(tx, tz, key);
                         return;
                     }
+                    MapPerf.INSTANCE.cacheHits.increment();
                     LiveTile previous = tiles.putIfAbsent(key, cached);
                     if (previous == null) {
                         liveOnlyTileCount.incrementAndGet();
@@ -966,6 +995,7 @@ public final class LiveTileStore {
     private void requestColor(LiveTile tile, int styleHash) {
         tile.colorPending = true;
         colorRequestsThisFrame.incrementAndGet();
+        MapPerf.INSTANCE.colorRequests.increment();
         final int version = tile.version;
         final int halo = 8;
         final int hw = TILE_PIXELS + halo * 2;
@@ -999,6 +1029,7 @@ public final class LiveTileStore {
             tile.colorPending = false;
             if (full == null || full.length < hw * hw) return;
             if (tile.version != version) {
+                MapPerf.INSTANCE.colorStale.increment();
                 return; // a newer section update won the race; a later frame requests again
             }
             if (tile.coloredVersion == version && tile.colorStyleHash == styleHash) return;
@@ -1011,11 +1042,13 @@ public final class LiveTileStore {
             tile.colorStyleHash = styleHash;
             tile.textureDirty = true;
             colorVersion.incrementAndGet();
+            MapPerf.INSTANCE.colorDone.increment();
         });
     }
 
     private void buildTexture(LiveTile tile, int styleHash) {
         createdThisFrame.incrementAndGet();
+        MapPerf.INSTANCE.textureBuilds.increment();
         NativeImage image = new NativeImage(TILE_PIXELS, TILE_PIXELS, false);
         int[] rgb = tile.rgb;
         for (int i = 0; i < TILE_PIXELS * TILE_PIXELS; i++) {
@@ -1070,6 +1103,7 @@ public final class LiveTileStore {
             }
             if (tiles.remove(key(tile.tx, tile.tz), tile)) {
                 tile.dispose();
+                MapPerf.INSTANCE.evictions.increment();
                 contentVersion.incrementAndGet();
                 if (tile.seedEpoch < 0) {
                     liveOnlyTileCount.decrementAndGet();

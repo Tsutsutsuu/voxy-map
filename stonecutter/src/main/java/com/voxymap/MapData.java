@@ -657,6 +657,7 @@ public final class MapData {
         // whole render-bounds buffer every frame would stall the view. Refresh it at most 5x/s.
         if (cached != null && now - lastTileColorFrameNs < 200_000_000L) return cached;
         lastTileColorFrameNs = now;
+        long composeStart = System.nanoTime();
         LiveTileStore live = liveTiles;
         if (live == null || !live.hasBounds()) return null;
         int w = getRenderWidthPx();
@@ -683,7 +684,13 @@ public final class MapData {
         }
         ColorFrame frame = new ColorFrame(rgb, w, h, epoch);
         tileColorFrame = frame;
+        MapPerf.INSTANCE.colorFrameBuilt(System.nanoTime() - composeStart, w * h);
         return frame;
+    }
+
+    public void clearTileColorFrame() {
+        tileColorFrame = null;
+        lastTileColorFrameNs = 0L;
     }
 
     /** Rendered RGB colour at a map pixel (0 when no data yet). */
@@ -923,6 +930,23 @@ public final class MapData {
             }
         } catch (Throwable ignored) {
         }
+    }
+
+    /** Compact memory breakdown for the performance panel. */
+    public String perfMemoryLine() {
+        LiveTileStore live = liveTiles;
+        if (live == null) return "tiles=0";
+        int biomeEdgeBytes = biomeEdgePx == null ? 0 : biomeEdgePx.length * Integer.BYTES;
+        int labelBytes = biomeLabelsFlat.length * Integer.BYTES;
+        int colorPx = tileColorFrame == null ? 0 : tileColorFrame.width * tileColorFrame.height;
+        return "tiles=" + live.tileCount()
+                + " pixels=" + (live.pixelBytesEstimate() >> 20) + "MB"
+                + " rgb=" + (live.rgbBytesEstimate() >> 20) + "MB"
+                + " textures=" + live.textureCount()
+                + " srcIdx=" + live.sourceIndexTiles()
+                + " biome=" + (biomeEdgeBytes >> 20) + "MB"
+                + " labels=" + (labelBytes >> 10) + "KB"
+                + " 3dColor=" + (colorPx / 1_000_000) + "Mpx";
     }
 
     /** Diagnostic lines for the in-game debug panel (Q when debugEnabled). */
@@ -2310,6 +2334,15 @@ public final class MapData {
         mapClosedAtMs = System.currentTimeMillis();
         openRefreshPending = false;
         cancelActiveRefresh();
+        LiveTileStore store = liveTiles;
+        Minecraft mc = Minecraft.getInstance();
+        if (store != null && mc.player != null) {
+            store.evictFar(store.tileIndexX(mc.player.getX()), store.tileIndexZ(mc.player.getZ()), 0, 256);
+        }
+    }
+
+    public boolean isMapOpen() {
+        return mapOpen;
     }
 
     private void maybeRunPendingOpenRefresh() {
@@ -2361,17 +2394,18 @@ public final class MapData {
             }
         }
         if (isTile2DMode()) {
-            // tiles are fed by the Voxy event bridge / lazy storage reads; no global refresh lane
             teleportRefreshPending = false;
-            loadCurrentWorldUiState(); // saved map scale/style must be known before creating the store
+            if (!mapOpen) return; // no background tile work while the map is closed
+            loadCurrentWorldUiState();
             ensureWaterIdsAsync();
             LiveTileStore store = ensure2DStore();
             long now = System.currentTimeMillis();
             if (tileResyncAtMs > 0 && now >= tileResyncAtMs) {
                 // Voxy may still be flushing fine LOD sections when the map first opens. The
-                // first source index then contains only coarse sections (e.g. y=64 encoded as a
+                // first source index then only contains coarse sections (e.g. y=64 encoded as a
                 // 16-block voxel top at 79). Re-scan and replace coarse pixels once/twice.
                 tileResyncAtMs = 0;
+                MapPerf.INSTANCE.resyncs.increment();
                 store.invalidateSourceIndex();
                 store.markAllSourceUnfilled();
                 if (tileResyncStage < 3) {
@@ -3515,6 +3549,7 @@ public final class MapData {
     /** Consumer for the Voxy live-section bridge (called on its worker thread). */
     public void onLiveSection(long key, long[] raw) {
         if (!VoxyMapConfig.LIVE_TILES.get()) return;
+        MapPerf.INSTANCE.liveSections.increment();
         LiveTileStore store = liveTiles;
         if (isTile2DMode()) {
             if (store == null || !store.matches(0L, 0L, effectivePixelBlocks())) return;

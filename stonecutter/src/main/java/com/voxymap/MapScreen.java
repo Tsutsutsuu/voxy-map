@@ -48,6 +48,13 @@ public class MapScreen extends Screen {
     private boolean view3d;
     private Map3D.Camera cam3d;
     private Map3D.Mesh mesh3d;
+    /** dedicated 3D background pool: mesh build, CPU raster and FXAA must not share the common pool */
+    private static final java.util.concurrent.ExecutorService ASYNC_3D =
+            java.util.concurrent.Executors.newFixedThreadPool(2, r -> {
+                Thread t = new Thread(r, "voxymap-3d-async");
+                t.setDaemon(true);
+                return t;
+            });
     private boolean building3d;
     private int builtStepA = -1;
     private int builtStepB = -1;
@@ -507,6 +514,7 @@ public class MapScreen extends Screen {
     private void drawUnifiedTiles(GuiGraphicsExtractor g, MapData data, double uiScale) {
         LiveTileStore live = data.getLiveTiles();
         if (live == null) return;
+        MapPerf.INSTANCE.beginFrame2d();
         live.beginFrame();
         int pb = Math.max(1, data.getPixelBlocks());
         double worldPerScreenPx = pb / Math.max(1.0e-6, zoom);
@@ -535,6 +543,7 @@ public class MapScreen extends Screen {
         }
         int viewRadius = Math.max(tx1 - tx0, tz1 - tz0) / 2 + 4;
         live.evictFar(live.tileIndexX(centerX), live.tileIndexZ(centerZ), viewRadius, 512);
+        MapPerf.INSTANCE.endFrame2d((tx1 - tx0 + 1) * (tz1 - tz0 + 1), live.tileCount());
     }
 
     private void drawUnifiedTile(GuiGraphicsExtractor g, MapData data, LiveTileStore live,
@@ -550,6 +559,7 @@ public class MapScreen extends Screen {
         if (tile == null) return;
         Identifier tex = live.textureFor(tile, style, sea, data.getColorEpoch());
         if (tex == null) return;
+        MapPerf.INSTANCE.tileDrawn();
         double sx = width / 2.0 + (tile.minWX - centerX) * zoom / pb;
         double sy = height / 2.0 + (tile.minWZ - centerZ) * zoom / pb;
         double sw = LiveTileStore.TILE_PIXELS * zoom;
@@ -641,6 +651,7 @@ public class MapScreen extends Screen {
     /** Debug panel (Q when debugEnabled): data-layer and view state, drawn as its own modal layer. */
     private void drawDebugPanel(GuiGraphicsExtractor g, MapData data, int mouseX, int mouseY) {
         List<String> lines = new ArrayList<>(data.debugLines());
+        lines.addAll(MapPerf.INSTANCE.lines(data));
         Minecraft mc = Minecraft.getInstance();
         double uiScale = mc.getWindow().getGuiScale();
         lines.add(String.format(Locale.ROOT, "view: zoom=%.3f uiScale=%.1f fps=%d", zoom, uiScale, mc.getFps()));
@@ -780,6 +791,11 @@ public class MapScreen extends Screen {
             zoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, z));
         }
         restore3dOverrides();
+        // Release the large 3D-only buffers once back in 2D. Re-entering 3D rebuilds them, but
+        // keeping a large mesh/color buffer alive during normal 2D play is wasted memory.
+        mesh3d = null;
+        releaseSoft3d();
+        data.clearTileColorFrame();
     }
 
     /**
@@ -898,8 +914,10 @@ public class MapScreen extends Screen {
         // detail is expressed as "every N x N map pixels get one vertex"
         int[] stepsPx = {stepNear, stepMid, stepFar};
         double camDist = cam3d != null ? cam3d.distance : 1500.0;
+        // Bound the far layer: 1e9 made it traverse every loaded tile of a large save.
+        double farRadius = Math.min(32000.0, Math.max(midRadius + 1500.0, camDist * 8.0));
         // fixed layer radii (spherical): the detail size does not change with zoom
-        double[] radii = {nearRadius, midRadius, 1.0e9};
+        double[] radii = {nearRadius, midRadius, farRadius};
         final int colorEpoch0 = data.getMeshEpoch();
         final int pixelBlocks0 = data.getPixelBlocks();
         final double ftargetX = targetX;
@@ -914,8 +932,9 @@ public class MapScreen extends Screen {
         final int[] fSteps = stepsPx;
         final boolean fLodDebug = wantLodDebug;
         final double fCamDist = camDist;
-        java.util.concurrent.CompletableFuture.runAsync(() -> {
+        ASYNC_3D.execute(() -> {
             Map3D.Mesh mesh = null;
+            long buildStart = System.nanoTime();
             try {
                 mesh = Map3D.buildLod(data, fcx, fey, fcz, fv, fSteps, radii, fLodDebug);
             } catch (Throwable t) {
@@ -923,11 +942,14 @@ public class MapScreen extends Screen {
                 // the 3D mesh for the rest of the session
                 t.printStackTrace();
             }
+            final long buildNanos = System.nanoTime() - buildStart;
             final Map3D.Mesh built = mesh;
             Minecraft.getInstance().execute(() -> {
                 try {
                     pendingMeshEpoch = -1;
                     if (built != null) {
+                        MapPerf.INSTANCE.meshBuilt(buildNanos,
+                                built.vertices.length / 7, built.indices.length / 3);
                         mesh3d = built;
                         builtStepA = fStepA;
                         builtStepB = fStepB;
@@ -1015,7 +1037,7 @@ public class MapScreen extends Screen {
             final Map3D.Mesh mesh = mesh3d;
             final Map3DSoft.Framebuffer fb = fb3d;
             final float fov = fov3d;
-            java.util.concurrent.CompletableFuture.runAsync(() -> {
+            ASYNC_3D.execute(() -> {
                 long t0 = System.nanoTime();
                 MapData md = MapData.INSTANCE;
                 int[] edges = md.isBiomeOverlay() ? md.getBiomeEdgeSnapshot() : null;
@@ -1045,6 +1067,7 @@ public class MapScreen extends Screen {
                         // screen that already closed: writing them would touch a closed NativeImage
                         if (screenClosed || gen != soft3dGen || img3d == null) return;
                         dbg3dNanos = nanos;
+                        MapPerf.INSTANCE.rasterFrame(nanos, mesh.indices.length / 3);
                         uploadAbgr(abgr, fb.width, fb.height);
                         dbg3dFrames++;
                     } finally {
@@ -1061,7 +1084,7 @@ public class MapScreen extends Screen {
             soft3dPending = true;
             final int gen = soft3dGen;
             final Map3DSoft.Framebuffer fb = fb3d;
-            java.util.concurrent.CompletableFuture.runAsync(() -> {
+            ASYNC_3D.execute(() -> {
                 long t0 = System.nanoTime();
                 final int[] abgr;
                 try {
@@ -1077,6 +1100,7 @@ public class MapScreen extends Screen {
                     try {
                         if (screenClosed || gen != soft3dGen || img3d == null) return;
                         dbg3dNanos = nanos;
+                        MapPerf.INSTANCE.fxaaFrame(nanos);
                         uploadAbgr(abgr, fb.width, fb.height);
                     } finally {
                         soft3dPending = false;
@@ -2077,7 +2101,7 @@ public class MapScreen extends Screen {
         String name = "map_" + java.time.LocalDateTime.now()
                 .format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")) + ".png";
         java.nio.file.Path out = dir.resolve(name);
-        java.util.concurrent.CompletableFuture.runAsync(() -> {
+        ASYNC_3D.execute(() -> {
             boolean ok = data.exportPng(out);
             mc.execute(() -> {
                 if (mc.player != null) {

@@ -9,6 +9,13 @@ import org.joml.Matrix4f;
  * geometry, and which already displays the map through a plain dynamic texture.
  */
 public final class Map3DSoft {
+    /** Fixed worker pool: creating threads per 3D frame was a significant drag cost. */
+    private static final java.util.concurrent.ExecutorService BAND_POOL =
+            java.util.concurrent.Executors.newFixedThreadPool(8, r -> {
+                Thread t = new Thread(r, "voxymap-3d-band");
+                t.setDaemon(true);
+                return t;
+            });
     // per-frame scratch buffers, reused to avoid allocating tens of MB every frame
     private static float[] sSx;
     private static float[] sSy;
@@ -115,7 +122,7 @@ public final class Map3DSoft {
         // interleaved rows: worker k owns rows y % threads == k. Two workers can never both own or
         // both miss a row, which is what caused the intermittent horizontal seams at band edges.
         int bands = threads;
-        java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(bands);
+        java.util.List<java.util.concurrent.Future<?>> tasks = new java.util.ArrayList<>(bands);
         for (int band = 0; band < bands; band++) {
             final int fBand = band;
             final int fBands = bands;
@@ -126,30 +133,29 @@ public final class Map3DSoft {
             final float[] fswz = swz;
             final int[] fscol = scol;
             final boolean fVertexColors = vertexColors;
-            Thread worker = new Thread(() -> {
-                try {
-                    for (int i = 0; i + 2 < idx.length; i += 3) {
-                        int a = idx[i];
-                        int b = idx[i + 1];
-                        int c = idx[i + 2];
-                        if (fsinv[a] <= 0f || fsinv[b] <= 0f || fsinv[c] <= 0f) continue;
-                                triangle(fb, fBand, fBands, fsx[a], fsy[a], fsinv[a], fswx[a], fswz[a],
-                                fsx[b], fsy[b], fsinv[b], fswx[b], fswz[b],
-                                fsx[c], fsy[c], fsinv[c], fswx[c], fswz[c], data,
-                                fscol[a], fscol[b], fscol[c], fVertexColors, colors,
-                                biomeEdges, rdCenterX, rdCenterZ, rdDist, rdEnabled);
-                    }
-                } finally {
-                    latch.countDown();
+            tasks.add(BAND_POOL.submit(() -> {
+                for (int i = 0; i + 2 < idx.length; i += 3) {
+                    int a = idx[i];
+                    int b = idx[i + 1];
+                    int c = idx[i + 2];
+                    if (fsinv[a] <= 0f || fsinv[b] <= 0f || fsinv[c] <= 0f) continue;
+                    triangle(fb, fBand, fBands, fsx[a], fsy[a], fsinv[a], fswx[a], fswz[a],
+                            fsx[b], fsy[b], fsinv[b], fswx[b], fswz[b],
+                            fsx[c], fsy[c], fsinv[c], fswx[c], fswz[c], data,
+                            fscol[a], fscol[b], fscol[c], fVertexColors, colors,
+                            biomeEdges, rdCenterX, rdCenterZ, rdDist, rdEnabled);
                 }
-            }, "voxymap-3d-band-" + band);
-            worker.setDaemon(true);
-            worker.start();
+            }));
         }
-        try {
-            latch.await();
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
+        for (java.util.concurrent.Future<?> task : tasks) {
+            try {
+                task.get();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            } catch (Throwable t) {
+                t.printStackTrace();
+            }
         }
     }
 
