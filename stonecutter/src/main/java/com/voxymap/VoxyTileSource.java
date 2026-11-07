@@ -26,13 +26,16 @@ public final class VoxyTileSource {
     private final int pixelBlocks;
     private final int maxLod;
     private final java.util.function.Supplier<Set<Long>> waterIds;
-    private final ExecutorService io = Executors.newFixedThreadPool(4, r -> {
+    private final ExecutorService io = Executors.newFixedThreadPool(6, r -> {
         Thread t = new Thread(r, "voxymap-tile-source");
         t.setDaemon(true);
         return t;
     });
     private final AtomicBoolean closed = new AtomicBoolean();
     private volatile boolean indexed;
+    /** bumped to discard queued/running decode work after the viewport moved */
+    private final java.util.concurrent.atomic.AtomicInteger requestGeneration =
+            new java.util.concurrent.atomic.AtomicInteger();
     private final java.util.concurrent.ConcurrentHashMap<Long, KeyList> byTile =
             new java.util.concurrent.ConcurrentHashMap<>();
     private Object db;
@@ -69,16 +72,26 @@ public final class VoxyTileSource {
         return indexed ? byTile.size() : 0;
     }
 
-    public void request(int tx, int tz, Consumer<long[]> callback) {        if (closed.get()) return;
+    /** Drops queued decode work for an obsolete viewport without closing the DB connection. */
+    public void cancelPending() {
+        requestGeneration.incrementAndGet();
+    }
+
+    public void request(int tx, int tz, Consumer<long[]> callback) {
+        if (closed.get()) return;
+        final int generation = requestGeneration.get();
         io.submit(() -> {
-            if (closed.get()) return;
+            if (closed.get() || generation != requestGeneration.get()) return;
             try {
                 ensureIndex();
+                if (generation != requestGeneration.get()) return;
                 long[] pixels = buildTile(tx, tz);
-                if (closed.get()) return;
+                if (closed.get() || generation != requestGeneration.get()) return;
                 Minecraft.getInstance().execute(() -> callback.accept(pixels));
             } catch (Throwable t) {
-                Minecraft.getInstance().execute(() -> callback.accept(null));
+                if (generation == requestGeneration.get()) {
+                    Minecraft.getInstance().execute(() -> callback.accept(null));
+                }
             }
         });
     }

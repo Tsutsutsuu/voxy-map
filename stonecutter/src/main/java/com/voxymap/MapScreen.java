@@ -41,6 +41,10 @@ public class MapScreen extends Screen {
     private double centerX;
     private double centerZ;
     private double zoom = 0.5;
+    private int lastViewCenterTx = Integer.MIN_VALUE;
+    private int lastViewCenterTz = Integer.MIN_VALUE;
+    private double lastViewZoom = -1.0;
+    private long lastViewCancelMs;
     private boolean dragging;
     private int menuX, menuY, menuWorldX, menuWorldZ, menuWorldY;
     private boolean menuOpen;
@@ -511,6 +515,21 @@ public class MapScreen extends Screen {
     }
 
     /** Migration path: one store renders both the seeded base tiles and live-updated tiles. */
+    private void maybeCancelStaleSource(LiveTileStore live) {
+        int cx = live.tileIndexX(centerX);
+        int cz = live.tileIndexZ(centerZ);
+        long now = System.currentTimeMillis();
+        boolean moved = cx != lastViewCenterTx || cz != lastViewCenterTz;
+        boolean zoomed = lastViewZoom > 0 && Math.abs(zoom - lastViewZoom) / lastViewZoom > 0.15;
+        if ((moved || zoomed) && now - lastViewCancelMs > 250L) {
+            live.cancelPendingSourceRequests();
+            lastViewCenterTx = cx;
+            lastViewCenterTz = cz;
+            lastViewZoom = zoom;
+            lastViewCancelMs = now;
+        }
+    }
+
     private void drawUnifiedTiles(GuiGraphicsExtractor g, MapData data, double uiScale) {
         LiveTileStore live = data.getLiveTiles();
         if (live == null) return;
@@ -524,6 +543,7 @@ public class MapScreen extends Screen {
         double bottom = centerZ + (height / 2.0) * worldPerScreenPx;
         int tx0 = live.tileIndexX(left), tx1 = live.tileIndexX(right);
         int tz0 = live.tileIndexZ(top), tz1 = live.tileIndexZ(bottom);
+        maybeCancelStaleSource(live);
         String style = data.getStyle();
         int sea = data.seaLevel();
         int ccx = live.tileIndexX(centerX), ccz = live.tileIndexZ(centerZ);

@@ -113,6 +113,7 @@ public final class LiveTileStore {
     private final Set<Long> sourcePending = ConcurrentHashMap.newKeySet();
     private final Set<Long> sourceEmpty = ConcurrentHashMap.newKeySet();
     private final AtomicInteger resetGeneration = new AtomicInteger();
+    private final AtomicInteger sourceEpoch = new AtomicInteger();
     private volatile VoxyTileSource source;
     private final AtomicInteger seedTileCount = new AtomicInteger();
     private final AtomicInteger liveOnlyTileCount = new AtomicInteger();
@@ -458,12 +459,23 @@ public final class LiveTileStore {
         if (src != null) src.invalidateIndex();
     }
 
+    /** Cancel decode work for a viewport that is no longer relevant. */
+    public void cancelPendingSourceRequests() {
+        sourceEpoch.incrementAndGet();
+        VoxyTileSource src = source;
+        if (src != null) src.cancelPending();
+        sourcePending.clear();
+    }
+
     /** Lets the next visible pass re-query storage and replace any coarse LOD pixels. */
     public void markAllSourceUnfilled() {
         // Cancel/forget in-flight source requests from the old index. Without this, a request
         // started before the rescan can finish with coarse pixels and set sourceFilled=true, so
         // the fresh index is never queried for the tile.
         resetGeneration.incrementAndGet();
+        sourceEpoch.incrementAndGet();
+        VoxyTileSource src = source;
+        if (src != null) src.cancelPending();
         sourcePending.clear();
         sourceEmpty.clear();
         for (LiveTile tile : tiles.values()) {
@@ -476,9 +488,11 @@ public final class LiveTileStore {
         if (src == null || sourcePending.contains(key) || sourceEmpty.contains(key)) return;
         sourcePending.add(key);
         final int generation = resetGeneration.get();
+        final int epochAtRequest = sourceEpoch.get();
         MapPerf.INSTANCE.sourceRequests.increment();
         src.request(tx, tz, pixels -> {
             if (generation != resetGeneration.get()) return;
+            if (epochAtRequest != sourceEpoch.get()) return;
             sourcePending.remove(key);
             if (pixels == null) {
                 MapPerf.INSTANCE.sourceEmpty.increment();
@@ -518,13 +532,15 @@ public final class LiveTileStore {
         }
         long key = key(tx, tz);
         if (sourcePending.contains(key) || sourceEmpty.contains(key)) return;
-        if (sourceFillRequestsThisFrame.get() >= 32) return;
+        if (sourceFillRequestsThisFrame.get() >= 48) return;
         sourceFillRequestsThisFrame.incrementAndGet();
         sourcePending.add(key);
         final int generation = resetGeneration.get();
+        final int epochAtRequest = sourceEpoch.get();
         MapPerf.INSTANCE.sourceRequests.increment();
         src.request(tx, tz, pixels -> {
             if (generation != resetGeneration.get()) return;
+            if (epochAtRequest != sourceEpoch.get()) return;
             sourcePending.remove(key);
             if (pixels == null) MapPerf.INSTANCE.sourceEmpty.increment();
             else MapPerf.INSTANCE.sourceHits.increment();
@@ -638,7 +654,7 @@ public final class LiveTileStore {
         LiveTile tile = getOrCreateSeed(tx, tz);
         if (tile == null) return;
         if (tile.version != tile.coloredVersion || tile.colorStyleHash != styleHash) {
-            if (!tile.colorPending && colorRequestsThisFrame.get() < 8) {
+            if (!tile.colorPending && colorRequestsThisFrame.get() < 12) {
                 requestColor(tile, styleHash);
             }
         }
@@ -653,13 +669,13 @@ public final class LiveTileStore {
         if (existing != null) {
             if (!existing.sourceFilled) requestSourceFill(tx, tz, existing);
             if (existing.seedEpoch < 0 && seedPixels != null && seedRgb != null
-                    && seedCreatesThisFrame.get() < 24) {
+                    && seedCreatesThisFrame.get() < 32) {
                 seedCreatesThisFrame.incrementAndGet();
                 seedExisting(existing);
             }
             return existing;
         }
-        if (seedRequestsThisFrame.get() >= 24) return null;
+        if (seedRequestsThisFrame.get() >= 32) return null;
         long key = key(tx, tz);
         // Do not retry the cache/source for a tile that is already being decoded or was proven
         // empty. Without these checks a visible empty margin re-ran loadCached() every frame.
@@ -966,7 +982,7 @@ public final class LiveTileStore {
             }
             if (tile.rgb == null) return tile.texture;
             if (tile.texture == null || tile.textureDirty || tile.textureEpoch != styleHash) {
-                if (createdThisFrame.get() >= 8) return tile.texture;
+                if (createdThisFrame.get() >= 12) return tile.texture;
                 buildTexture(tile, styleHash);
             }
             return tile.texture;
@@ -975,7 +991,7 @@ public final class LiveTileStore {
             if (tile.seedEpoch != seedEpoch) refreshSeed(tile);
             if (tile.rgb == null) return tile.texture;
             if (tile.texture == null || tile.textureDirty || tile.textureEpoch != styleHash) {
-                if (createdThisFrame.get() >= 8) return tile.texture;
+                if (createdThisFrame.get() >= 12) return tile.texture;
                 buildTexture(tile, styleHash);
             }
             return tile.texture;
@@ -984,13 +1000,13 @@ public final class LiveTileStore {
             return tile.texture;
         }
         if (tile.version != tile.coloredVersion || tile.colorStyleHash != styleHash) {
-            if (!tile.colorPending && colorRequestsThisFrame.get() < 8) {
+            if (!tile.colorPending && colorRequestsThisFrame.get() < 12) {
                 requestColor(tile, styleHash);
             }
             return tile.texture;
         }
         if (tile.rgb == null) return tile.texture;
-        if (createdThisFrame.get() >= 8) return tile.texture;
+        if (createdThisFrame.get() >= 12) return tile.texture;
         buildTexture(tile, styleHash);
         return tile.texture;
     }
