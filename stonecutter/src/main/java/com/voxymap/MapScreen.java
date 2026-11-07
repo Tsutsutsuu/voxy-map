@@ -533,6 +533,10 @@ public class MapScreen extends Screen {
     private void drawUnifiedTiles(GuiGraphicsExtractor g, MapData data, double uiScale) {
         LiveTileStore live = data.getLiveTiles();
         if (live == null) return;
+        // At low zoom one screen pixel spans several blocks; decoding the whole LOD stack per
+        // visible tile is wasted work. Use coarse sections until the user zooms in.
+        int sourceLod = zoom < 0.06 ? 4 : zoom < 0.12 ? 3 : zoom < 0.25 ? 2 : zoom < 0.5 ? 1 : 0;
+        live.setSourceMinLod(sourceLod);
         MapPerf.INSTANCE.beginFrame2d();
         live.beginFrame();
         int pb = Math.max(1, data.getPixelBlocks());
@@ -890,6 +894,8 @@ public class MapScreen extends Screen {
 
     private void pump3DTiles(MapData data) {
         if (cam3d == null || !data.isTile2DMode()) return;
+        LiveTileStore live = data.getLiveTiles();
+        if (live != null) live.setSourceMinLod(0);
         double radiusWorld = Math.max(2048.0, Math.min(8192.0, cam3d.distance * 2.0));
         int pb = Math.max(1, data.getPixelBlocks());
         int radiusTiles = (int) Math.ceil(radiusWorld / (256.0 * pb));

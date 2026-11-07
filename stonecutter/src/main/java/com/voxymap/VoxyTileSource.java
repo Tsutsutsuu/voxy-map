@@ -42,6 +42,12 @@ public final class VoxyTileSource {
     private final List<Object> handles = new ArrayList<>();
     private Object sectionsHandle;
     private volatile Set<Long> ownWaterIds = Set.of();
+    /** Coarsest detail to decode: 0 = full LOD, 4 = only 16-block voxel sections. */
+    private volatile int minLod;
+
+    public void setMinLod(int lod) {
+        minLod = Math.max(0, Math.min(4, lod));
+    }
 
     private static final class KeyList {
         long[] keys = new long[16];
@@ -170,6 +176,7 @@ public final class VoxyTileSource {
         for (int k = 0; k < list.size; k++) {
             long key = list.keys[k];
             int lvl = (int) ((key >>> 60) & 0xF);
+            if (lvl < minLod) continue;
             int scale = 1 << lvl;
             int sx = (int) ((key << 36) >> 40);
             int sz = (int) ((key << 12) >> 40);
