@@ -661,6 +661,9 @@ public final class LiveTileStore {
         }
         if (seedRequestsThisFrame.get() >= 24) return null;
         long key = key(tx, tz);
+        // Do not retry the cache/source for a tile that is already being decoded or was proven
+        // empty. Without these checks a visible empty margin re-ran loadCached() every frame.
+        if (sourcePending.contains(key) || sourceEmpty.contains(key)) return null;
         if (!seedPending.add(key)) return null;
         seedRequestsThisFrame.incrementAndGet();
         final boolean hasSeed = seedPixels != null && seedRgb != null;

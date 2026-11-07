@@ -955,6 +955,19 @@ public final class MapData {
         Snapshot s = snap;
         out.add("voxymap 0.1.0  cache v" + CACHE_VERSION);
         out.add("storage: " + (lastStorage == null ? "-" : lastStorage));
+        if (isTile2DMode()) {
+            LiveTileStore live = liveTiles;
+            out.add("state: ready=" + isReady() + " loading=" + loading
+                    + " styleChanging=" + styleChanging + " mapOpen=" + mapOpen);
+            out.add("style: " + style + "  scale=1:" + mapScale + "  error: "
+                    + (error.isEmpty() ? "-" : error));
+            out.add("tiles: " + (live == null ? "none"
+                    : live.tileCount() + " (liveOnly=" + live.liveOnlyTileCount()
+                    + "), " + live.sectionCount() + " sections"));
+            out.add("biome labels: " + (biomeLabelsFlat.length / 3));
+            out.add(VoxyLiveProbe.statsLine());
+            return out;
+        }
         out.add("map: " + (s == null ? "none" : s.width + "x" + s.height)
                 + "  px=" + (s == null ? "-" : String.valueOf(s.pixelBlocks))
                 + "  origin=" + (s == null ? "-" : s.minWX + "," + s.minWZ));

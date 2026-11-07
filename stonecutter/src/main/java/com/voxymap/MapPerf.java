@@ -113,44 +113,28 @@ public final class MapPerf {
         if (data != null && data.isTile2DMode()) {
             double frameMs = msPer(frame2dNanos, frames2d);
             out.add(String.format(Locale.ROOT,
-                    "perf 2d: frames=%d avg=%.2fms tiles=%d vis=%d resident=%d",
-                    frames2d.sum(), frameMs, frameTileDraws, lastVisibleTiles, lastResidentTiles));
-            out.add(String.format(Locale.ROOT,
-                    "perf tile: cache(hit=%d miss=%d) source(req=%d hit=%d empty=%d) evict=%d",
+                    "p2d %.2fms vis%d res%d | cache %d/%d src %d(%d/%d) ev%d",
+                    frameMs, lastVisibleTiles, lastResidentTiles,
                     cacheHits.sum(), cacheMisses.sum(), sourceRequests.sum(),
                     sourceHits.sum(), sourceEmpty.sum(), evictions.sum()));
-            long colors = colorRequests.sum();
             out.add(String.format(Locale.ROOT,
-                    "perf color: req=%d done=%d stale=%d textures=%d",
-                    colors, colorDone.sum(), colorStale.sum(), textureBuilds.sum()));
+                    "pcol %d/%d/%d tex%d | live%d skip%d cal%d | tiles%d",
+                    colorRequests.sum(), colorDone.sum(), colorStale.sum(), textureBuilds.sum(),
+                    liveSections.sum(), liveClosedSkipped.sum(), resyncs.sum(),
+                    tileObjects.sum()));
+        }
+        if (meshBuilds.sum() > 0 || colorFrameBuilds.sum() > 0 || rasterFrames.sum() > 0) {
             out.add(String.format(Locale.ROOT,
-                    "perf live: sections=%d closedSkipped=%d resyncs=%d",
-                    liveSections.sum(), liveClosedSkipped.sum(), resyncs.sum()));
+                    "p3d mesh%d %.0fms %dk/%dk | cf%d %.1fms %dMpx | ras%d %.1fms fx%d",
+                    meshBuilds.sum(), msPer(meshNanos, meshBuilds),
+                    meshVerts / 1024, meshTris / 1024,
+                    colorFrameBuilds.sum(), msPer(colorFrameNanos, colorFrameBuilds),
+                    colorFramePixels / 1_000_000,
+                    rasterFrames.sum(), msPer(rasterNanos, rasterFrames), fxaaFrames.sum()));
         }
-        double meshMs = msPer(meshNanos, meshBuilds);
-        if (meshBuilds.sum() > 0) {
-            out.add(String.format(Locale.ROOT,
-                    "perf 3d mesh: builds=%d avg=%.1fms verts=%d tris=%d",
-                    meshBuilds.sum(), meshMs, meshVerts, meshTris));
-        }
-        double cfMs = msPer(colorFrameNanos, colorFrameBuilds);
-        if (colorFrameBuilds.sum() > 0) {
-            out.add(String.format(Locale.ROOT,
-                    "perf 3d colorFrame: builds=%d avg=%.1fms px=%d",
-                    colorFrameBuilds.sum(), cfMs, colorFramePixels));
-        }
-        double rasterMs = msPer(rasterNanos, rasterFrames);
-        if (rasterFrames.sum() > 0) {
-            out.add(String.format(Locale.ROOT,
-                    "perf 3d raster: frames=%d avg=%.1fms tris=%d fxaa=%d/%.1fms",
-                    rasterFrames.sum(), rasterMs, rasterTris.sum(), fxaaFrames.sum(),
-                    msPer(fxaaNanos, fxaaFrames)));
-        }
-        if (data != null) {
-            out.add("perf mem: " + data.perfMemoryLine());
-        }
+        if (data != null) out.add("pmem " + data.perfMemoryLine());
         MemoryUsage heap = ManagementFactory.getMemoryMXBean().getHeapMemoryUsage();
-        out.add(String.format(Locale.ROOT, "perf heap: used=%dMB max=%dMB",
+        out.add(String.format(Locale.ROOT, "pheap %d/%dMB",
                 heap.getUsed() >> 20, heap.getMax() >> 20));
         return out;
     }
