@@ -40,11 +40,13 @@ public final class LiveTileStore {
     private static final ExecutorService CACHE_IO = Executors.newFixedThreadPool(2, r -> {
         Thread t = new Thread(r, "voxymap-tile-cache");
         t.setDaemon(true);
+        t.setPriority(Thread.MIN_PRIORITY);
         return t;
     });
     private static final ExecutorService SEED_IO = Executors.newFixedThreadPool(4, r -> {
         Thread t = new Thread(r, "voxymap-tile-seed");
         t.setDaemon(true);
+        t.setPriority(Thread.MIN_PRIORITY);
         return t;
     });
 

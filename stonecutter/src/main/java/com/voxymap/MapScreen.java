@@ -57,6 +57,7 @@ public class MapScreen extends Screen {
             java.util.concurrent.Executors.newFixedThreadPool(2, r -> {
                 Thread t = new Thread(r, "voxymap-3d-async");
                 t.setDaemon(true);
+                t.setPriority(Thread.MIN_PRIORITY);
                 return t;
             });
     private boolean building3d;

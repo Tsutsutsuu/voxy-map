@@ -14,6 +14,7 @@ public final class Map3DSoft {
             java.util.concurrent.Executors.newFixedThreadPool(8, r -> {
                 Thread t = new Thread(r, "voxymap-3d-band");
                 t.setDaemon(true);
+                t.setPriority(Thread.MIN_PRIORITY);
                 return t;
             });
     // per-frame scratch buffers, reused to avoid allocating tens of MB every frame

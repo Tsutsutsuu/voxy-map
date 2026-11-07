@@ -29,6 +29,7 @@ public final class VoxyTileSource {
     private final ExecutorService io = Executors.newFixedThreadPool(6, r -> {
         Thread t = new Thread(r, "voxymap-tile-source");
         t.setDaemon(true);
+        t.setPriority(Thread.MIN_PRIORITY);
         return t;
     });
     private final AtomicBoolean closed = new AtomicBoolean();

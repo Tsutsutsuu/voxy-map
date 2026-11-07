@@ -89,11 +89,13 @@ public final class MapData {
     private final ExecutorService pool = Executors.newFixedThreadPool(8, r -> {
         Thread t = new Thread(r, "voxymap-loader");
         t.setDaemon(true);
+        t.setPriority(Thread.MIN_PRIORITY);
         return t;
     });
     private final ExecutorService loader = Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "voxymap-manager");
         t.setDaemon(true);
+        t.setPriority(Thread.MIN_PRIORITY);
         return t;
     });
     private final AtomicBoolean requested = new AtomicBoolean();
