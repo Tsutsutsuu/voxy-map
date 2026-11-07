@@ -36,7 +36,7 @@ import java.util.concurrent.atomic.AtomicLong;
 public final class LiveTileStore {
     public static final int TILE_PIXELS = 256;
     private static final int CACHE_MAGIC = 0x56585431;
-    private static final int CACHE_VERSION = 7;
+    private static final int CACHE_VERSION = 8;
     private static final ExecutorService CACHE_IO = Executors.newFixedThreadPool(2, r -> {
         Thread t = new Thread(r, "voxymap-tile-cache");
         t.setDaemon(true);
@@ -323,7 +323,8 @@ public final class LiveTileStore {
     }
 
     private void scheduleSave(LiveTile tile) {
-        if (cacheDir == null || !cacheReady || tile.seedEpoch >= 0 || !tile.cacheDirty) return;
+        if (cacheDir == null || !cacheReady || tile.seedEpoch >= 0 || !tile.cacheDirty
+                || !tile.sourceFilled) return;
         final int generation = cacheGeneration.get();
         CACHE_IO.submit(() -> {
             if (generation == cacheGeneration.get()) saveCached(tile);
@@ -333,7 +334,7 @@ public final class LiveTileStore {
     /** Persist all dirty resident tiles (map close / world change). */
     public void persistDirtyTiles() {
         for (LiveTile tile : tiles.values()) {
-            if (tile.seedEpoch < 0 && tile.cacheDirty) scheduleSave(tile);
+            if (tile.seedEpoch < 0 && tile.sourceFilled && tile.cacheDirty) scheduleSave(tile);
         }
     }
 
@@ -838,7 +839,7 @@ public final class LiveTileStore {
     }
 
     private void saveCached(LiveTile tile) {
-        if (cacheDir == null || !cacheReady || tile.seedEpoch >= 0) return;
+        if (cacheDir == null || !cacheReady || tile.seedEpoch >= 0 || !tile.sourceFilled) return;
         final int savingVersion = tile.version;
         try {
             Files.createDirectories(cacheDir);
