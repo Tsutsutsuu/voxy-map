@@ -42,6 +42,17 @@ public final class VoxyTileSource {
     private final List<Object> handles = new ArrayList<>();
     private Object sectionsHandle;
     private volatile Set<Long> ownWaterIds = Set.of();
+    /**
+     * Decoded coarse sections are shared by several neighbouring tiles (especially at low zoom);
+     * a small LRU avoids reading/decoding the same 32³ section four times per tile batch.
+     */
+    private final java.util.Map<Long, long[]> sectionCache =
+            java.util.Collections.synchronizedMap(new java.util.LinkedHashMap<>(256, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(java.util.Map.Entry<Long, long[]> eldest) {
+                    return size() > 384;
+                }
+            });
 
     private static final class KeyList {
         long[] keys = new long[16];
@@ -70,6 +81,14 @@ public final class VoxyTileSource {
 
     public int indexedTileCount() {
         return indexed ? byTile.size() : 0;
+    }
+
+    /**
+     * Fast existence check after the section index is built. An unindexed source returns true
+     * (unknown) so callers still perform the normal cache/source request.
+     */
+    public boolean hasTileData(int tx, int tz) {
+        return !indexed || byTile.containsKey(tileKey(tx, tz));
     }
 
     /** Drops queued decode work for an obsolete viewport without closing the DB connection. */
@@ -178,14 +197,18 @@ public final class VoxyTileSource {
             long wx1 = wx0 + 32L * scale;
             long wz1 = wz0 + 32L * scale;
             if (wx1 <= tileX0 || wx0 >= tileX1 || wz1 <= tileZ0 || wz0 >= tileZ1) continue;
-            keyBuf.clear();
-            keyBuf.putLong(key);
-            byte[] val = RocksBridge.get(db, sectionsHandle, keyBuf.array());
-            if (val == null) continue;
-            Set<Long> ids = waterIds.get();
-            if (ids.isEmpty()) ids = ownWaterIds;
-            long[] cols = MapData.decodeSectionColumns(key, val, ids);
-            if (cols == null) continue;
+            long[] cols = sectionCache.get(key);
+            if (cols == null) {
+                keyBuf.clear();
+                keyBuf.putLong(key);
+                byte[] val = RocksBridge.get(db, sectionsHandle, keyBuf.array());
+                if (val == null) continue;
+                Set<Long> ids = waterIds.get();
+                if (ids.isEmpty()) ids = ownWaterIds;
+                cols = MapData.decodeSectionColumns(key, val, ids);
+                if (cols == null) continue;
+                sectionCache.put(key, cols);
+            }
             for (int c = 0; c < 1024; c++) {
                 long packed = cols[c];
                 if (packed == VoxyMerge.LONG_EMPTY) continue;
@@ -235,11 +258,13 @@ public final class VoxyTileSource {
         // the connection is safe and avoids a close/reopen race now that requests use a pool.
         io.submit(() -> {
             byTile.clear();
+            sectionCache.clear();
             indexed = false;
         });
     }
 
     private void closeDb() {
+        sectionCache.clear();
         for (Object h : handles) RocksBridge.close(h);
         handles.clear();
         RocksBridge.close(db);

@@ -37,12 +37,12 @@ public final class LiveTileStore {
     public static final int TILE_PIXELS = 256;
     private static final int CACHE_MAGIC = 0x56585431;
     private static final int CACHE_VERSION = 7;
-    private static final ExecutorService CACHE_IO = Executors.newSingleThreadExecutor(r -> {
+    private static final ExecutorService CACHE_IO = Executors.newFixedThreadPool(2, r -> {
         Thread t = new Thread(r, "voxymap-tile-cache");
         t.setDaemon(true);
         return t;
     });
-    private static final ExecutorService SEED_IO = Executors.newSingleThreadExecutor(r -> {
+    private static final ExecutorService SEED_IO = Executors.newFixedThreadPool(4, r -> {
         Thread t = new Thread(r, "voxymap-tile-seed");
         t.setDaemon(true);
         return t;
@@ -51,7 +51,7 @@ public final class LiveTileStore {
     public static final class LiveTile {
         public final int tx, tz;
         public final long minWX, minWZ;
-        public final long[] pixels = new long[TILE_PIXELS * TILE_PIXELS];
+        public final long[] pixels;
         volatile int version;
         volatile int coloredVersion = -1;
         volatile int colorStyleHash;
@@ -70,11 +70,17 @@ public final class LiveTileStore {
         volatile int tileMaxLand = Integer.MIN_VALUE;
 
         LiveTile(int tx, int tz, long minWX, long minWZ) {
+            this(tx, tz, minWX, minWZ, new long[TILE_PIXELS * TILE_PIXELS]);
+            java.util.Arrays.fill(pixels, VoxyMerge.LONG_EMPTY);
+        }
+
+        /** Takes ownership of an already decoded 256×256 pixel array (avoids a 512 KiB copy). */
+        LiveTile(int tx, int tz, long minWX, long minWZ, long[] pixels) {
             this.tx = tx;
             this.tz = tz;
             this.minWX = minWX;
             this.minWZ = minWZ;
-            java.util.Arrays.fill(pixels, VoxyMerge.LONG_EMPTY);
+            this.pixels = pixels;
         }
 
         void dispose() {
@@ -487,6 +493,10 @@ public final class LiveTileStore {
     private void requestSourceTile(int tx, int tz, long key) {
         VoxyTileSource src = source;
         if (src == null || sourcePending.contains(key) || sourceEmpty.contains(key)) return;
+        if (!src.hasTileData(tx, tz)) {
+            sourceEmpty.add(key);
+            return;
+        }
         sourcePending.add(key);
         final int generation = resetGeneration.get();
         final int epochAtRequest = sourceEpoch.get();
@@ -501,8 +511,7 @@ public final class LiveTileStore {
                 return;
             }
             MapPerf.INSTANCE.sourceHits.increment();
-            LiveTile tile = new LiveTile(tx, tz, tileMinWX(tx), tileMinWZ(tz));
-            System.arraycopy(pixels, 0, tile.pixels, 0, tile.pixels.length);
+            LiveTile tile = new LiveTile(tx, tz, tileMinWX(tx), tileMinWZ(tz), pixels);
             tile.liveDirty = true;
             tile.sourceFilled = true;
             LiveTile previous = tiles.putIfAbsent(key, tile);
@@ -551,8 +560,7 @@ public final class LiveTileStore {
                     sourceEmpty.add(key);
                     return;
                 }
-                LiveTile created = new LiveTile(tx, tz, tileMinWX(tx), tileMinWZ(tz));
-                System.arraycopy(pixels, 0, created.pixels, 0, created.pixels.length);
+                LiveTile created = new LiveTile(tx, tz, tileMinWX(tx), tileMinWZ(tz), pixels);
                 created.liveDirty = true;
                 created.sourceFilled = true;
                 if (tiles.putIfAbsent(key, created) == null) {
