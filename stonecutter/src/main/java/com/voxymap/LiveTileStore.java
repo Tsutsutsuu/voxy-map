@@ -66,6 +66,7 @@ public final class LiveTileStore {
         volatile boolean fromCache;
         /** true when the on-disk .vxt file no longer reflects this tile's pixels */
         volatile boolean cacheDirty = true;
+        volatile boolean cacheSaving;
         volatile int cacheSavedVersion = -1;
         volatile int textureSeedEpoch = -1;
         volatile int[] rgb;
@@ -155,7 +156,7 @@ public final class LiveTileStore {
             java.util.List<Path> files = Files.list(cacheDir)
                     .filter(p -> p.getFileName().toString().endsWith(".vxt"))
                     .toList();
-            final int maxFiles = 4096;
+            final int maxFiles = 32768;
             if (files.size() <= maxFiles) return;
             files.sort((a, b) -> {
                 try {
@@ -324,10 +325,15 @@ public final class LiveTileStore {
 
     private void scheduleSave(LiveTile tile) {
         if (cacheDir == null || !cacheReady || tile.seedEpoch >= 0 || !tile.cacheDirty
-                || !tile.sourceFilled) return;
+                || !tile.sourceFilled || tile.cacheSaving) return;
         final int generation = cacheGeneration.get();
+        tile.cacheSaving = true;
         CACHE_IO.submit(() -> {
-            if (generation == cacheGeneration.get()) saveCached(tile);
+            try {
+                if (generation == cacheGeneration.get()) saveCached(tile);
+            } finally {
+                tile.cacheSaving = false;
+            }
         });
     }
 
@@ -335,6 +341,18 @@ public final class LiveTileStore {
     public void persistDirtyTiles() {
         for (LiveTile tile : tiles.values()) {
             if (tile.seedEpoch < 0 && tile.sourceFilled && tile.cacheDirty) scheduleSave(tile);
+        }
+    }
+
+    /** Background incremental persistence; spread writes instead of one burst on close. */
+    public void persistDirtyTiles(int maxWrites) {
+        int writes = 0;
+        for (LiveTile tile : tiles.values()) {
+            if (writes >= maxWrites) return;
+            if (tile.seedEpoch < 0 && tile.sourceFilled && tile.cacheDirty && !tile.cacheSaving) {
+                scheduleSave(tile);
+                writes++;
+            }
         }
     }
 
@@ -675,7 +693,8 @@ public final class LiveTileStore {
                 if (r != 0) pump3DTile(ccx + r, tz, styleHash);
             }
         }
-        evictFar(ccx, ccz, radius + 4, 512);
+        int cap = Math.max(256, VoxyMapConfig.TILE_RESIDENT_CAP.get());
+        evictFar(ccx, ccz, radius + 4, cap, Math.max(256, cap * 7 / 10));
     }
 
     private void pump3DTile(int tx, int tz, int styleHash) {
@@ -1139,7 +1158,13 @@ public final class LiveTileStore {
      * so far ones can be dropped safely; live-only tiles are kept (they have no other source).
      */
     public void evictFar(int centerTx, int centerTz, int keepRadius, int maxTiles) {
-        if (tiles.size() <= maxTiles) return;
+        evictFar(centerTx, centerTz, keepRadius, maxTiles, Math.max(256, maxTiles * 7 / 10));
+    }
+
+    /** Evicts only above the high-water mark, down to the low-water mark. */
+    public void evictFar(int centerTx, int centerTz, int keepRadius, int highWater, int lowWater) {
+        if (tiles.size() <= highWater) return;
+        int target = Math.max(128, lowWater);
         java.util.List<LiveTile> candidates = new java.util.ArrayList<>();
         for (LiveTile tile : tiles.values()) {
             int dx = tile.tx - centerTx;
@@ -1157,7 +1182,7 @@ public final class LiveTileStore {
             int db = Math.max(Math.abs(b.tx - centerTx), Math.abs(b.tz - centerTz));
             return Integer.compare(db, da);
         });
-        int excess = tiles.size() - maxTiles;
+        int excess = tiles.size() - target;
         for (LiveTile tile : candidates) {
             if (excess-- <= 0) break;
             // live-only tiles are persisted before eviction, so a later visit can restore them

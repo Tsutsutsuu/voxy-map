@@ -125,6 +125,7 @@ public final class MapData {
     /** automatic source resyncs after first open (Voxy may still be flushing fine LOD sections) */
     private volatile long tileResyncAtMs;
     private int tileResyncStage;
+    private long lastTileCacheSaveMs;
     /** highest-point colour ramp changes trigger a full tile recolour */
     private int appliedTileRampVersion = -1;
     private long lastTileRampRecolorMs;
@@ -2436,6 +2437,10 @@ public final class MapData {
             }
             maybeRecolorForTileRamp(store, now);
             maybeRefreshTileBiome(store, now);
+            if (now - lastTileCacheSaveMs >= 5_000L) {
+                lastTileCacheSaveMs = now;
+                store.persistDirtyTiles(64);
+            }
             return;
         }
         if (!VoxyMapConfig.AUTO_REFRESH.get()) return;

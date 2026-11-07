@@ -563,7 +563,9 @@ public class MapScreen extends Screen {
             }
         }
         int viewRadius = Math.max(tx1 - tx0, tz1 - tz0) / 2 + 4;
-        live.evictFar(live.tileIndexX(centerX), live.tileIndexZ(centerZ), viewRadius, 512);
+        int cap = Math.max(256, VoxyMapConfig.TILE_RESIDENT_CAP.get());
+        live.evictFar(live.tileIndexX(centerX), live.tileIndexZ(centerZ), viewRadius,
+                cap, Math.max(256, cap * 7 / 10));
         MapPerf.INSTANCE.endFrame2d((tx1 - tx0 + 1) * (tz1 - tz0 + 1), live.tileCount());
     }
 
