@@ -57,6 +57,7 @@ public final class LiveTileStore {
         volatile int version;
         volatile int coloredVersion = -1;
         volatile int colorEpoch;
+        volatile long colorDirtySinceMs;
         volatile int colorStyleHash;
         volatile boolean colorPending;
         volatile boolean liveDirty;
@@ -424,6 +425,7 @@ public final class LiveTileStore {
                 t.liveDirty = true;
                 t.coloredVersion = -1;
                 t.colorEpoch++;
+                t.colorDirtySinceMs = System.currentTimeMillis();
                 // Do not clear colorPending: a job is already in flight. Clearing it queued another
                 // full colour job for the same tile on every neighbour arrival (the 26s backlog).
                 t.textureDirty = true;
@@ -655,6 +657,7 @@ public final class LiveTileStore {
             tile.liveDirty = true;
             tile.version++;
             tile.fromCache = false;
+            tile.colorDirtySinceMs = System.currentTimeMillis();
             tile.cacheDirty = true;
             tile.textureDirty = true;
             tile.colorPending = false;
@@ -1064,8 +1067,9 @@ public final class LiveTileStore {
             t.version++;
             t.fromCache = false;
             t.cacheDirty = true;
+            t.colorEpoch++;
+            t.colorDirtySinceMs = System.currentTimeMillis();
             t.textureDirty = true;
-            t.colorPending = false;
             observeTile(t);
             contentVersion.incrementAndGet();
             invalidateNeighborColors(t.tx, t.tz);
@@ -1106,7 +1110,11 @@ public final class LiveTileStore {
             return tile.texture;
         }
         if (tile.version != tile.coloredVersion || tile.colorStyleHash != styleHash) {
-            if (!tile.colorPending && colorRequestsThisFrame.get() < 12) {
+            long now = System.currentTimeMillis();
+            // Coalesce the burst of neighbour/invalidation updates that happens while tiles first
+            // load. Without this debounce every arriving neighbour queued another full colour job.
+            if (!tile.colorPending && now - tile.colorDirtySinceMs >= 200L
+                    && colorRequestsThisFrame.get() < 12) {
                 requestColor(tile, styleHash);
             }
             return tile.texture;
