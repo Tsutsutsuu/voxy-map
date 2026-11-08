@@ -147,6 +147,7 @@ public final class LiveTileStore {
     private final Set<Long> sourceEmpty = ConcurrentHashMap.newKeySet();
     private final AtomicInteger resetGeneration = new AtomicInteger();
     private final AtomicInteger sourceEpoch = new AtomicInteger();
+    private final AtomicInteger cacheEpoch = new AtomicInteger();
     private volatile VoxyTileSource source;
     private final AtomicInteger seedTileCount = new AtomicInteger();
     private final AtomicInteger liveOnlyTileCount = new AtomicInteger();
@@ -375,6 +376,7 @@ public final class LiveTileStore {
         sourceEmpty.clear();
         seedPending.clear();
         sourcePending.clear();
+        cacheEpoch.incrementAndGet();
         maxLandY.set(persistedMaxLand);
         rampVersion.incrementAndGet();
         contentVersion.incrementAndGet();
@@ -660,6 +662,8 @@ public final class LiveTileStore {
         VoxyTileSource src = source;
         if (src != null) src.cancelPending();
         sourcePending.clear();
+        cacheEpoch.incrementAndGet();
+        seedPending.clear();
     }
 
     /** Lets the next visible pass re-query storage and replace any coarse LOD pixels. */
@@ -669,6 +673,7 @@ public final class LiveTileStore {
         // the fresh index is never queried for the tile.
         resetGeneration.incrementAndGet();
         sourceEpoch.incrementAndGet();
+        cacheEpoch.incrementAndGet();
         VoxyTileSource src = source;
         if (src != null) src.cancelPending();
         sourcePending.clear();
@@ -851,10 +856,15 @@ public final class LiveTileStore {
             count++;
             if (!visibleTextures.contains(tile)) candidates.add(tile);
         }
-        if (used <= budget || candidates.isEmpty()) return;
+        if (candidates.isEmpty()) return;
+        // Two watermarks: start trimming at 75% and stop at 50% of the VRAM budget. The hard
+        // budget alone let hundreds of off-screen textures sit at 85% forever.
+        long high = budget * 3L / 4L;
+        long low = budget / 2L;
+        if (used <= high) return;
         candidates.sort(java.util.Comparator.comparingLong(t -> t.lastTextureFrame));
         for (LiveTile tile : candidates) {
-            if (used <= budget) break;
+            if (used <= low) break;
             tile.releaseGpu();
             used -= TEXTURE_BYTES;
             count--;
@@ -957,9 +967,11 @@ public final class LiveTileStore {
                 if (TileTrace.enabled()) TileTrace.stage(tx, tz, "cache_skip_empty", "source-index-empty");
                 return null;
             }
+            final int cacheAtRequest = cacheEpoch.get();
             final long cacheStartNs = System.nanoTime();
             if (TileTrace.enabled()) TileTrace.stage(tx, tz, "cache_submit", "file=" + cacheFile(tx, tz).getFileName());
             SEED_IO.submit(() -> {
+                if (cacheAtRequest != cacheEpoch.get()) return;
                 final long ioStartNs = System.nanoTime();
                 if (TileTrace.enabled()) TileTrace.timed(tx, tz, "cache_queue", cacheStartNs, "seed-worker");
                 LiveTile cached = loadCached(tx, tz);
@@ -968,6 +980,7 @@ public final class LiveTileStore {
                             cached == null ? "miss" : "hit");
                 }
                 Minecraft.getInstance().execute(() -> {
+                    if (cacheAtRequest != cacheEpoch.get()) return;
                     if (generation != resetGeneration.get()) return;
                     seedPending.remove(key);
                     if (cached == null) {
