@@ -1345,6 +1345,7 @@ public final class LiveTileStore {
         visibleTextures.add(tile);
         tile.lastTextureFrame = textureFrame;
         int styleHash = ((style == null ? 0 : style.hashCode()) * 31 + sea) * 31 + colorEpoch;
+        styleHash = styleHash * 31 + (MapData.INSTANCE.isBiomeOverlay() ? 1 : 0);
         if (tile.seedEpoch >= 0) {
             // Tiles covered by the base snapshot keep the proven base colour pipeline. Live
             // colouring is currently only used for genuinely new tiles outside the snapshot.
@@ -1504,8 +1505,43 @@ public final class LiveTileStore {
         if (TileTrace.enabled()) TileTrace.stage(tile.tx, tile.tz, "texture_build", "style=" + styleHash);
         NativeImage image = new NativeImage(TILE_PIXELS, TILE_PIXELS, false);
         int[] rgb = tile.rgb;
+        boolean biomes = MapData.INSTANCE.isBiomeOverlay();
+        long[] eastPixels = null;
+        long[] southPixels = null;
+        if (biomes) {
+            LiveTile east = get(tile.tx + 1, tile.tz);
+            LiveTile south = get(tile.tx, tile.tz + 1);
+            eastPixels = east == null ? null : east.pixels;
+            southPixels = south == null ? null : south.pixels;
+        }
         for (int i = 0; i < TILE_PIXELS * TILE_PIXELS; i++) {
             int c = rgb[i];
+            if (biomes) {
+                int x = i % TILE_PIXELS;
+                int y = i / TILE_PIXELS;
+                long packed = tile.pixels[i];
+                if (packed != VoxyMerge.LONG_EMPTY) {
+                    int biome = (int) ((packed >>> 53) & 0x1FF);
+                    long east = x < TILE_PIXELS - 1 ? tile.pixels[i + 1]
+                            : (eastPixels == null ? VoxyMerge.LONG_EMPTY : eastPixels[y * TILE_PIXELS]);
+                    long south = y < TILE_PIXELS - 1 ? tile.pixels[i + TILE_PIXELS]
+                            : (southPixels == null ? VoxyMerge.LONG_EMPTY : southPixels[x]);
+                    boolean edge = (east != VoxyMerge.LONG_EMPTY
+                            && biome != (int) ((east >>> 53) & 0x1FF))
+                            || (south != VoxyMerge.LONG_EMPTY
+                            && biome != (int) ((south >>> 53) & 0x1FF));
+                    if (edge) {
+                        int alpha = ((x + y) & 1) == 0 ? 0xC0 : 0x40;
+                        int r = (c >> 16) & 0xFF;
+                        int g = (c >> 8) & 0xFF;
+                        int b = c & 0xFF;
+                        r = (r * (255 - alpha)) / 255;
+                        g = (g * (255 - alpha) + 0xFF * alpha) / 255;
+                        b = (b * (255 - alpha) + 0xCC * alpha) / 255;
+                        c = (0xFF << 24) | (r << 16) | (g << 8) | b;
+                    }
+                }
+            }
             int r = (c >> 16) & 0xFF, g = (c >> 8) & 0xFF, b = c & 0xFF;
             image.setPixelABGR(i % TILE_PIXELS, i / TILE_PIXELS,
                     ((c >>> 24) << 24) | (b << 16) | (g << 8) | r);

@@ -4,7 +4,10 @@
   "package": "com.voxymap.mixin",
   "compatibilityLevel": "JAVA_25",
   "client": [
-    "GameRendererMixin"
+    "GameRendererMixin",
+    "GuiRendererMixin",
+    "HudMixin",
+    "ItemInHandRendererMixin"
   ],
   "injectors": {
     "defaultRequire": 1

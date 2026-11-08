@@ -21,11 +21,12 @@ import java.util.Map;
  */
 public class MapConfigScreen extends Screen {
     private enum Group {
-        REFRESH("voxymap.configuration.refresh"),
+        GENERAL("voxymap.configuration.general"),
+        MAP("voxymap.configuration.map"),
         DATA("voxymap.configuration.data"),
-        RENDERING("voxymap.configuration.rendering"),
         THREE_D("voxymap.configuration.3d"),
-        UI("voxymap.configuration.ui");
+        PERFORMANCE("voxymap.configuration.performance"),
+        DEBUG("voxymap.configuration.debug");
 
         final String labelKey;
 
@@ -35,7 +36,7 @@ public class MapConfigScreen extends Screen {
     }
 
     private record Item(Group group, String name, String descKey, VoxyMapConfig.Value<?> value,
-                        int min, int max, String[] options, boolean sep) {
+                        int min, int max, String[] options, boolean sep, boolean header) {
     }
 
     private static final int TAB_H = 20;
@@ -59,7 +60,7 @@ public class MapConfigScreen extends Screen {
     private final Screen parent;
     private final List<Item> items = new ArrayList<>();
     private final Map<Item, Object> draft = new HashMap<>();
-    private Group group = Group.REFRESH;
+    private Group group = Group.GENERAL;
     private int scroll;
     private Item dragging;
     private Item editing;
@@ -76,89 +77,105 @@ public class MapConfigScreen extends Screen {
     public MapConfigScreen(Screen parent) {
         super(Component.translatable("voxymap.ui.config"));
         this.parent = parent;
-        // refresh
-        add(Group.REFRESH, "autoRefresh", VoxyMapConfig.AUTO_REFRESH, 0, 0, null, true);
-        add(Group.REFRESH, "autoRefreshMode", VoxyMapConfig.AUTO_REFRESH_MODE, 0, 0,
-                new String[]{"gentle", "fast", "off"}, true);
-        add(Group.REFRESH, "gentleBudgetMsPer10s", VoxyMapConfig.GENTLE_BUDGET_MS_PER_10S, 10, 2000, null);
-        add(Group.REFRESH, "gentleIdleSeconds", VoxyMapConfig.GENTLE_IDLE_SECONDS, 1, 60, null);
-        add(Group.REFRESH, "frontierDistanceChunks", VoxyMapConfig.FRONTIER_DISTANCE_CHUNKS, 1, 256, null);
-        add(Group.REFRESH, "openTimeFallbackMinutes", VoxyMapConfig.OPEN_TIME_FALLBACK_MINUTES, 1, 120, null);
-        add(Group.REFRESH, "idleTimeFallbackMinutes", VoxyMapConfig.IDLE_TIME_FALLBACK_MINUTES, 1, 240, null);
-        add(Group.REFRESH, "frontierCooldownSeconds", VoxyMapConfig.FRONTIER_COOLDOWN_SECONDS, 1, 300, null);
-        add(Group.REFRESH, "frontierBackoffSeconds", VoxyMapConfig.FRONTIER_BACKOFF_SECONDS, 1, 600, null);
-        add(Group.REFRESH, "incrementalMaxChangedPercent", VoxyMapConfig.INCREMENTAL_MAX_CHANGED_PERCENT, 10, 90, null);
-        add(Group.REFRESH, "incrementalRefresh", VoxyMapConfig.INCREMENTAL_REFRESH, 0, 0, null, true);
-        add(Group.REFRESH, "initialRefreshDelayMinutes", VoxyMapConfig.INITIAL_REFRESH_DELAY_MINUTES, 0, 60, null);
-        add(Group.DATA, "mapScale", VoxyMapConfig.MAP_SCALE, 1, 8, null, true);
-        add(Group.DATA, "maxLodLevel", VoxyMapConfig.MAX_LOD_LEVEL, 0, 4, null);
-        add(Group.DATA, "cacheKeepCount", VoxyMapConfig.CACHE_KEEP_COUNT, 1, 100, null);
+        section(Group.GENERAL, "voxymap.config.section.interface");
+        add(Group.GENERAL, "showCoordinates", VoxyMapConfig.SHOW_COORDINATES, 0, 0, null);
+        add(Group.GENERAL, "showHint", VoxyMapConfig.SHOW_HINT, 0, 0, null);
+        section(Group.GENERAL, "voxymap.config.section.interaction");
+        add(Group.GENERAL, "teleportEnabled", VoxyMapConfig.TELEPORT_ENABLED, 0, 0, null);
+        add(Group.GENERAL, "defaultZoom", VoxyMapConfig.DEFAULT_ZOOM, 0, 0, null);
+        add(Group.GENERAL, "rememberZoom", VoxyMapConfig.REMEMBER_ZOOM, 0, 0, null);
+        add(Group.GENERAL, "arrowStyle", VoxyMapConfig.ARROW_STYLE, 0, 0, new String[]{"clean", "classic"});
+
+        section(Group.MAP, "voxymap.config.section.terrainColor");
+        add(Group.MAP, "defaultStyle", VoxyMapConfig.DEFAULT_STYLE, 0, 0, MapStyles.NAMES);
+        add(Group.MAP, "adaptiveColorRamp", VoxyMapConfig.ADAPTIVE_COLOR_RAMP, 0, 0, null);
+        add(Group.MAP, "landMaxRamp", VoxyMapConfig.MIN_MAX_RAMP, 0, 0, null);
+        add(Group.MAP, "drawHillshade", VoxyMapConfig.DRAW_HILLSHADE, 0, 0, null);
+        add(Group.MAP, "drawWaterDepth", VoxyMapConfig.DRAW_WATER_DEPTH, 0, 0, null);
+        add(Group.MAP, "autoSeaLevel", VoxyMapConfig.AUTO_SEA_LEVEL, 0, 0, null);
+        add(Group.MAP, "seaLevelOverride", VoxyMapConfig.SEA_LEVEL_OVERRIDE, -2048, 2048, null);
+        section(Group.MAP, "voxymap.config.section.contours");
+        add(Group.MAP, "drawContours", VoxyMapConfig.DRAW_CONTOURS, 0, 0, null);
+        add(Group.MAP, "contourDensity", VoxyMapConfig.CONTOUR_DENSITY, 1, 24, null);
+        add(Group.MAP, "minContourArea", VoxyMapConfig.MIN_CONTOUR_AREA, 0, 1000, null);
+        section(Group.MAP, "voxymap.config.section.waterPost");
+        add(Group.MAP, "waterBlur", VoxyMapConfig.WATER_BLUR, 0, 0, null);
+        add(Group.MAP, "waterBlurRadius", VoxyMapConfig.WATER_BLUR_RADIUS, 1, 16, null);
+        add(Group.MAP, "waterBlurPasses", VoxyMapConfig.WATER_BLUR_PASSES, 1, 5, null);
+        add(Group.MAP, "denoise", VoxyMapConfig.DENOISE, 0, 0, null);
+        add(Group.MAP, "fillHoles", VoxyMapConfig.FILL_HOLES, 0, 0, null);
+        section(Group.MAP, "voxymap.config.section.overlaysLabels");
+        add(Group.MAP, "showBiomes", VoxyMapConfig.SHOW_BIOMES, 0, 0, null);
+        add(Group.MAP, "showRenderDistance", VoxyMapConfig.SHOW_RENDER_DISTANCE, 0, 0, null);
+        add(Group.MAP, "biomeLabelMinArea", VoxyMapConfig.BIOME_LABEL_MIN_AREA, 1, 5000, null);
+        add(Group.MAP, "biomeLabelBackground", VoxyMapConfig.BIOME_LABEL_BACKGROUND, 0, 0, null);
+
+        section(Group.DATA, "voxymap.config.section.refreshPolicy");
+        add(Group.DATA, "autoRefresh", VoxyMapConfig.AUTO_REFRESH, 0, 0, null);
+        add(Group.DATA, "autoRefreshMode", VoxyMapConfig.AUTO_REFRESH_MODE, 0, 0,
+                new String[]{"gentle", "fast", "off"});
+        add(Group.DATA, "initialRefreshDelayMinutes", VoxyMapConfig.INITIAL_REFRESH_DELAY_MINUTES, 0, 60, null);
+        add(Group.DATA, "openTimeFallbackMinutes", VoxyMapConfig.OPEN_TIME_FALLBACK_MINUTES, 1, 120, null);
+        add(Group.DATA, "idleTimeFallbackMinutes", VoxyMapConfig.IDLE_TIME_FALLBACK_MINUTES, 1, 240, null);
+        section(Group.DATA, "voxymap.config.section.frontierRefresh");
+        add(Group.DATA, "gentleBudgetMsPer10s", VoxyMapConfig.GENTLE_BUDGET_MS_PER_10S, 10, 2000, null);
+        add(Group.DATA, "gentleIdleSeconds", VoxyMapConfig.GENTLE_IDLE_SECONDS, 1, 60, null);
+        add(Group.DATA, "frontierDistanceChunks", VoxyMapConfig.FRONTIER_DISTANCE_CHUNKS, 1, 256, null);
+        add(Group.DATA, "frontierCooldownSeconds", VoxyMapConfig.FRONTIER_COOLDOWN_SECONDS, 1, 300, null);
+        add(Group.DATA, "frontierBackoffSeconds", VoxyMapConfig.FRONTIER_BACKOFF_SECONDS, 1, 600, null);
+        section(Group.DATA, "voxymap.config.section.incrementalLive");
+        add(Group.DATA, "incrementalRefresh", VoxyMapConfig.INCREMENTAL_REFRESH, 0, 0, null);
+        add(Group.DATA, "incrementalMaxChangedPercent", VoxyMapConfig.INCREMENTAL_MAX_CHANGED_PERCENT, 10, 90, null);
+        add(Group.DATA, "liveTiles", VoxyMapConfig.LIVE_TILES, 0, 0, null);
+        section(Group.DATA, "voxymap.config.section.mapScaleMemory");
+        add(Group.DATA, "mapScale", VoxyMapConfig.MAP_SCALE, 1, 8, null);
         add(Group.DATA, "maxMapPixels", VoxyMapConfig.MAX_MAP_PIXELS, 10_000_000, 500_000_000, null);
-        add(Group.DATA, "tileResidentCap", VoxyMapConfig.TILE_RESIDENT_CAP, 256, 8192, null);
-        add(Group.RENDERING, "gpuTextureBudgetMb", VoxyMapConfig.GPU_TEXTURE_BUDGET_MB, 32, 2048, null);
+        section(Group.DATA, "voxymap.config.section.cache");
+        add(Group.DATA, "cacheKeepCount", VoxyMapConfig.CACHE_KEEP_COUNT, 1, 100, null);
         add(Group.DATA, "diskCacheMaxMb", VoxyMapConfig.DISK_CACHE_MAX_MB, 256, 65536, null);
-        add(Group.DATA, "autoSeaLevel", VoxyMapConfig.AUTO_SEA_LEVEL, 0, 0, null, true);
-        add(Group.DATA, "seaLevelOverride", VoxyMapConfig.SEA_LEVEL_OVERRIDE, -2048, 2048, null);
-        add(Group.RENDERING, "defaultStyle", VoxyMapConfig.DEFAULT_STYLE, 0, 0, MapStyles.NAMES, true);
-        add(Group.RENDERING, "defaultZoom", VoxyMapConfig.DEFAULT_ZOOM, 0, 0, null);
-        add(Group.RENDERING, "rememberZoom", VoxyMapConfig.REMEMBER_ZOOM, 0, 0, null);
-        add(Group.RENDERING, "drawContours", VoxyMapConfig.DRAW_CONTOURS, 0, 0, null, true);
-        add(Group.RENDERING, "contourDensity", VoxyMapConfig.CONTOUR_DENSITY, 1, 24, null);
-        add(Group.RENDERING, "minContourArea", VoxyMapConfig.MIN_CONTOUR_AREA, 0, 1000, null);
-        add(Group.RENDERING, "drawHillshade", VoxyMapConfig.DRAW_HILLSHADE, 0, 0, null);
-        add(Group.RENDERING, "drawWaterDepth", VoxyMapConfig.DRAW_WATER_DEPTH, 0, 0, null);
-        add(Group.RENDERING, "adaptiveColorRamp", VoxyMapConfig.ADAPTIVE_COLOR_RAMP, 0, 0, null);
-        add(Group.RENDERING, "landMaxRamp", VoxyMapConfig.MIN_MAX_RAMP, 0, 0, null);
-        add(Group.RENDERING, "waterBlur", VoxyMapConfig.WATER_BLUR, 0, 0, null, true);
-        add(Group.RENDERING, "waterBlurRadius", VoxyMapConfig.WATER_BLUR_RADIUS, 1, 16, null);
-        add(Group.RENDERING, "waterBlurPasses", VoxyMapConfig.WATER_BLUR_PASSES, 1, 5, null);
-        add(Group.RENDERING, "denoise", VoxyMapConfig.DENOISE, 0, 0, null);
-        add(Group.RENDERING, "fillHoles", VoxyMapConfig.FILL_HOLES, 0, 0, null);
-        add(Group.RENDERING, "showBiomes", VoxyMapConfig.SHOW_BIOMES, 0, 0, null, true);
-        add(Group.RENDERING, "biomeLabelMinArea", VoxyMapConfig.BIOME_LABEL_MIN_AREA, 1, 5000, null);
-        add(Group.RENDERING, "biomeLabelBackground", VoxyMapConfig.BIOME_LABEL_BACKGROUND, 0, 0, null);
-        add(Group.RENDERING, "arrowStyle", VoxyMapConfig.ARROW_STYLE, 0, 0, new String[]{"clean", "classic"});
-        add(Group.RENDERING, "showRenderDistance", VoxyMapConfig.SHOW_RENDER_DISTANCE, 0, 0, null);
-        add(Group.RENDERING, "releaseTexturesOnClose", VoxyMapConfig.RELEASE_TEXTURES_ON_CLOSE, 0, 0, null);
-        add(Group.RENDERING, "skipWorldRender", VoxyMapConfig.SKIP_WORLD_RENDER, 0, 0, null);
-        // display & performance
-        add(Group.THREE_D, "renderScale3d", VoxyMapConfig.RENDER_SCALE_3D, 10, 150, null, true);
-        add(Group.THREE_D, "antialias3d", VoxyMapConfig.ANTIALIAS_3D, 0, 0, null);
-        add(Group.THREE_D, "renderThreads3d", VoxyMapConfig.RENDER_THREADS_3D, 1, 8, null);
-        // terrain & detail
-        add(Group.THREE_D, "verticalScale3d", VoxyMapConfig.VERTICAL_SCALE_3D, 0, 0, null, true);
-        add(Group.THREE_D, "lodNearRadius", VoxyMapConfig.LOD_NEAR_RADIUS, 200, 8000, null, true);
-        add(Group.THREE_D, "lodMidRadius", VoxyMapConfig.LOD_MID_RADIUS, 500, 30000, null);
-        add(Group.THREE_D, "lodStepNear", VoxyMapConfig.LOD_STEP_NEAR, 1, 128, null, true);
-        add(Group.THREE_D, "lodStepMid", VoxyMapConfig.LOD_STEP_MID, 1, 256, null);
-        add(Group.THREE_D, "lodStepFar", VoxyMapConfig.LOD_STEP_FAR, 1, 512, null);
-        add(Group.THREE_D, "lodRebuildDistance", VoxyMapConfig.LOD_REBUILD_DISTANCE, 50, 5000, null, true);
-        add(Group.THREE_D, "lodZoomRebuildPct", VoxyMapConfig.LOD_ZOOM_REBUILD_PCT, 5, 100, null);
-        // camera
-        add(Group.THREE_D, "fov3d", VoxyMapConfig.FOV_3D, 30, 110, null, true);
+
+        section(Group.THREE_D, "voxymap.config.section.camera");
+        add(Group.THREE_D, "fov3d", VoxyMapConfig.FOV_3D, 30, 110, null);
+        add(Group.THREE_D, "verticalScale3d", VoxyMapConfig.VERTICAL_SCALE_3D, 0, 0, null);
         add(Group.THREE_D, "minDistance3d", VoxyMapConfig.MIN_DISTANCE_3D, 16, 4096, null);
         add(Group.THREE_D, "maxDistance3d", VoxyMapConfig.MAX_DISTANCE_3D, 512, 32768, null);
-        add(Group.THREE_D, "rotateSens3d", VoxyMapConfig.ROTATE_SENS_3D, 0, 0, null, true);
+        add(Group.THREE_D, "rotateSens3d", VoxyMapConfig.ROTATE_SENS_3D, 0, 0, null);
         add(Group.THREE_D, "panSens3d", VoxyMapConfig.PAN_SENS_3D, 0, 0, null);
         add(Group.THREE_D, "zoomSens3d", VoxyMapConfig.ZOOM_SENS_3D, 0, 0, null);
-        // behaviour
-        add(Group.THREE_D, "remember3dView", VoxyMapConfig.REMEMBER_3D_VIEW, 0, 0, null, true);
-        add(Group.THREE_D, "autoHideContours3d", VoxyMapConfig.AUTO_HIDE_CONTOURS_3D, 0, 0, null);
-        add(Group.THREE_D, "lodDebugColors3d", VoxyMapConfig.LOD_DEBUG_COLORS_3D, 0, 0, null);
-        add(Group.THREE_D, "biomeLabel3dRange", VoxyMapConfig.BIOME_LABEL_3D_RANGE, 200, 20000, null);
-        add(Group.THREE_D, "tileMesh3d", VoxyMapConfig.TILE_MESH_3D, 0, 0, null);
-        // player marker
-        add(Group.THREE_D, "playerMarkerHeight3d", VoxyMapConfig.PLAYER_MARKER_HEIGHT_3D, 0, 200, null, true);
+        add(Group.THREE_D, "remember3dView", VoxyMapConfig.REMEMBER_3D_VIEW, 0, 0, null);
+        section(Group.THREE_D, "voxymap.config.section.terrainMesh");
+        add(Group.THREE_D, "gpuTerrainNearDistance", VoxyMapConfig.GPU_TERRAIN_NEAR_DISTANCE, 64, 4096, null);
+        add(Group.THREE_D, "gpuTerrainMidDistance", VoxyMapConfig.GPU_TERRAIN_MID_DISTANCE, 256, 16384, null);
+        add(Group.THREE_D, "gpuTerrainNearStep", VoxyMapConfig.GPU_TERRAIN_NEAR_STEP, 1, 256, null);
+        add(Group.THREE_D, "gpuTerrainMidStep", VoxyMapConfig.GPU_TERRAIN_MID_STEP, 1, 256, null);
+        add(Group.THREE_D, "gpuTerrainFarStep", VoxyMapConfig.GPU_TERRAIN_FAR_STEP, 1, 256, null);
+        add(Group.THREE_D, "gpuTerrainSkirtDepth", VoxyMapConfig.GPU_TERRAIN_SKIRT_DEPTH, 0, 64, null);
+        add(Group.THREE_D, "gpuTerrainHysteresisPct", VoxyMapConfig.GPU_TERRAIN_HYSTERESIS_PCT, 0, 50, null);
+        section(Group.THREE_D, "voxymap.config.section.markerLabels");
+        add(Group.THREE_D, "playerMarkerHeight3d", VoxyMapConfig.PLAYER_MARKER_HEIGHT_3D, 0, 200, null);
         add(Group.THREE_D, "playerMarkerScale3d", VoxyMapConfig.PLAYER_MARKER_SCALE_3D, 0, 5, null);
-        add(Group.UI, "showCoordinates", VoxyMapConfig.SHOW_COORDINATES, 0, 0, null, true);
-        add(Group.UI, "showHint", VoxyMapConfig.SHOW_HINT, 0, 0, null);
-        add(Group.UI, "teleportEnabled", VoxyMapConfig.TELEPORT_ENABLED, 0, 0, null, true);
-        add(Group.UI, "debugEnabled", VoxyMapConfig.DEBUG_ENABLED, 0, 0, null);
-        add(Group.UI, "debugRefreshChat", VoxyMapConfig.DEBUG_REFRESH_CHAT, 0, 0, null);
-        add(Group.UI, "debugRefreshVerbose", VoxyMapConfig.DEBUG_REFRESH_VERBOSE, 0, 0, null);
-        add(Group.UI, "debugVoxyEvents", VoxyMapConfig.DEBUG_VOXY_EVENTS, 0, 0, null);
-        add(Group.UI, "debugTileTrace", VoxyMapConfig.DEBUG_TILE_TRACE, 0, 0, null);
-        add(Group.UI, "liveTiles", VoxyMapConfig.LIVE_TILES, 0, 0, null);
+        add(Group.THREE_D, "biomeLabel3dRange", VoxyMapConfig.BIOME_LABEL_3D_RANGE, 200, 20000, null);
+        section(Group.THREE_D, "voxymap.config.section.overlays");
+        add(Group.THREE_D, "autoHideContours3d", VoxyMapConfig.AUTO_HIDE_CONTOURS_3D, 0, 0, null);
+
+        section(Group.PERFORMANCE, "voxymap.config.section.renderBudget");
+        add(Group.PERFORMANCE, "gpuTextureBudgetMb", VoxyMapConfig.GPU_TEXTURE_BUDGET_MB, 32, 2048, null);
+        section(Group.PERFORMANCE, "voxymap.config.section.tileCache");
+        add(Group.PERFORMANCE, "tileResidentCap", VoxyMapConfig.TILE_RESIDENT_CAP, 256, 8192, null);
+        add(Group.PERFORMANCE, "keep3dTilesIn2d", VoxyMapConfig.KEEP_3D_TILES_IN_2D, 0, 0, null);
+        add(Group.PERFORMANCE, "releaseTexturesOnClose", VoxyMapConfig.RELEASE_TEXTURES_ON_CLOSE, 0, 0, null);
+        section(Group.PERFORMANCE, "voxymap.config.section.build");
+        add(Group.PERFORMANCE, "gpu3dBuildThreads", VoxyMapConfig.GPU3D_BUILD_THREADS, 0, 16, null);
+        add(Group.PERFORMANCE, "gpu3dBatchBuild", VoxyMapConfig.GPU3D_BATCH_BUILD, 1, 32, null);
+        section(Group.PERFORMANCE, "voxymap.config.section.advanced");
+        add(Group.PERFORMANCE, "skipWorldRender", VoxyMapConfig.SKIP_WORLD_RENDER, 0, 0, null);
+
+        section(Group.DEBUG, "voxymap.config.section.diagnostics");
+        add(Group.DEBUG, "debugEnabled", VoxyMapConfig.DEBUG_ENABLED, 0, 0, null);
+        add(Group.DEBUG, "debugRefreshChat", VoxyMapConfig.DEBUG_REFRESH_CHAT, 0, 0, null);
+        add(Group.DEBUG, "debugRefreshVerbose", VoxyMapConfig.DEBUG_REFRESH_VERBOSE, 0, 0, null);
+        add(Group.DEBUG, "debugVoxyEvents", VoxyMapConfig.DEBUG_VOXY_EVENTS, 0, 0, null);
+        add(Group.DEBUG, "debugTileTrace", VoxyMapConfig.DEBUG_TILE_TRACE, 0, 0, null);
     }
 
     private void add(Group g, String name, VoxyMapConfig.Value<?> value, int min, int max, String[] options) {
@@ -167,7 +184,11 @@ public class MapConfigScreen extends Screen {
 
     private void add(Group g, String name, VoxyMapConfig.Value<?> value, int min, int max,
                      String[] options, boolean sep) {
-        items.add(new Item(g, name, "voxymap.config.desc." + name, value, min, max, options, sep));
+        items.add(new Item(g, name, "voxymap.config.desc." + name, value, min, max, options, sep, false));
+    }
+
+    private void section(Group g, String key) {
+        items.add(new Item(g, key, "", null, 0, 0, null, false, true));
     }
 
     private static int withAlpha(int color, float t) {
@@ -213,16 +234,20 @@ public class MapConfigScreen extends Screen {
 
     private void applyDraft() {
         for (Item it : items) {
+            if (it.header()) continue;
             ((VoxyMapConfig.Value<Object>) it.value()).set(draft.get(it));
         }
         VoxyMapConfig.save();
+        Gpu3DMap.reconfigureBuildThreads();
         // Rendering changes must re-colour existing tiles; otherwise the ramp toggle only
         // affects tiles loaded after the config screen closes.
         MapData.INSTANCE.requestColorRerender();
     }
 
     private void resetDraft() {
-        for (Item it : items) draft.put(it, it.value().getDefault());
+        for (Item it : items) {
+            if (!it.header()) draft.put(it, it.value().getDefault());
+        }
     }
 
     @Override
@@ -339,6 +364,10 @@ public class MapConfigScreen extends Screen {
         int y = listTop() + shiftY;
         for (int i = scroll; i < Math.min(vis.size(), scroll + visibleRows()); i++) {
             Item it = vis.get(i);
+            if (it.header()) {
+                y += ROW_H;
+                continue;
+            }
             if (e.y() >= y && e.y() < y + ROW_H) {
                 Object v = dv(it);
                 if (v instanceof Boolean b) {
@@ -522,6 +551,14 @@ public class MapConfigScreen extends Screen {
             // staggered fade-in on real time: no flicker on tab switches, frame-rate independent
             float rowDelay = (i - scroll) * 0.03f;
             float rowT = fade * Math.min(1f, Math.max(0f, (tabAge - rowDelay) / 0.16f));
+            if (it.header()) {
+                g.fill(PAD, y, rowRight(), y + ROW_H, withAlpha(0x4010141A, rowT));
+                g.fill(PAD, y + ROW_H - 1, rowRight(), y + ROW_H, withAlpha(COL_BORDER, rowT));
+                g.text(font, Component.translatable(it.name()), PAD + 6,
+                        y + (ROW_H - font.lineHeight) / 2 + 1, withAlpha(COL_ACCENT, rowT));
+                y += ROW_H;
+                continue;
+            }
             boolean hover = mouseY >= y && mouseY < y + ROW_H;
             float rh = hover("row:" + i, hover, lastDt);
             g.fill(PAD, y, rowRight(), y + ROW_H, withAlpha(0x30101014, rowT));

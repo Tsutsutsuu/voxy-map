@@ -38,7 +38,6 @@ public final class VoxyMapConfig {
     public static final Value<Integer> INCREMENTAL_MAX_CHANGED_PERCENT = new Value<>("incrementalMaxChangedPercent", 60);
     /** Automatic refreshes only read/decode changed Voxy sections and patch the map. */
     public static final Value<Boolean> INCREMENTAL_REFRESH = new Value<>("incrementalRefresh", true);
-    public static final Value<Integer> REFRESH_DISTANCE_CHUNKS = new Value<>("refreshDistanceChunks", 128);
     public static final Value<Integer> INITIAL_REFRESH_DELAY_MINUTES = new Value<>("initialRefreshDelayMinutes", 3);
     public static final Value<String> DEFAULT_STYLE = new Value<>("defaultStyle", "current");
     public static final Value<Integer> MAP_SCALE = new Value<>("mapScale", 2);
@@ -73,7 +72,6 @@ public final class VoxyMapConfig {
     /** Estimated VRAM budget for tile textures (256×256 RGBA ≈ 256 KiB each). */
     public static final Value<Integer> GPU_TEXTURE_BUDGET_MB = new Value<>("gpuTextureBudgetMb", 256);
     /** Experimental: build 3D mesh per map tile and rebuild only changed tiles. */
-    public static final Value<Boolean> TILE_MESH_3D = new Value<>("tileMesh3d", true);
     /** Disk .vxt cache soft limit. Oldest files are removed first. */
     public static final Value<Integer> DISK_CACHE_MAX_MB = new Value<>("diskCacheMaxMb", 8192);
     public static final Value<Boolean> SKIP_WORLD_RENDER = new Value<>("skipWorldRender", true);
@@ -91,17 +89,18 @@ public final class VoxyMapConfig {
     public static final Value<Boolean> SHOW_HINT = new Value<>("showHint", true);
 
     // ---- 3D map view ----
-    public static final Value<Integer> RENDER_SCALE_3D = new Value<>("renderScale3d", 100);
-    public static final Value<Boolean> ANTIALIAS_3D = new Value<>("antialias3d", true);
-    public static final Value<Integer> RENDER_THREADS_3D = new Value<>("renderThreads3d", 8);
     public static final Value<Double> VERTICAL_SCALE_3D = new Value<>("verticalScale3d", 1.0);
-    public static final Value<Integer> LOD_NEAR_RADIUS = new Value<>("lodNearRadius", 1500);
-    public static final Value<Integer> LOD_MID_RADIUS = new Value<>("lodMidRadius", 6000);
-    public static final Value<Integer> LOD_STEP_NEAR = new Value<>("lodStepNear", 4);
-    public static final Value<Integer> LOD_STEP_MID = new Value<>("lodStepMid", 32);
-    public static final Value<Integer> LOD_STEP_FAR = new Value<>("lodStepFar", 64);
-    public static final Value<Integer> LOD_REBUILD_DISTANCE = new Value<>("lodRebuildDistance", 300);
-    public static final Value<Integer> LOD_ZOOM_REBUILD_PCT = new Value<>("lodZoomRebuildPct", 25);
+    /** GPU terrain mesh precision (not Minecraft's chunk LOD). */
+    public static final Value<Integer> GPU_TERRAIN_NEAR_DISTANCE = new Value<>("gpuTerrainNearDistance", 512);
+    public static final Value<Integer> GPU_TERRAIN_MID_DISTANCE = new Value<>("gpuTerrainMidDistance", 2048);
+    public static final Value<Integer> GPU_TERRAIN_NEAR_STEP = new Value<>("gpuTerrainNearStep", 1);
+    public static final Value<Integer> GPU_TERRAIN_MID_STEP = new Value<>("gpuTerrainMidStep", 4);
+    public static final Value<Integer> GPU_TERRAIN_FAR_STEP = new Value<>("gpuTerrainFarStep", 32);
+    public static final Value<Integer> GPU_TERRAIN_SKIRT_DEPTH = new Value<>("gpuTerrainSkirtDepth", 16);
+    public static final Value<Integer> GPU_TERRAIN_HYSTERESIS_PCT = new Value<>("gpuTerrainHysteresisPct", 15);
+    public static final Value<Integer> GPU3D_BUILD_THREADS = new Value<>("gpu3dBuildThreads", 0);
+    public static final Value<Integer> GPU3D_BATCH_BUILD = new Value<>("gpu3dBatchBuild", 10);
+    public static final Value<Boolean> KEEP_3D_TILES_IN_2D = new Value<>("keep3dTilesIn2d", true);
     public static final Value<Integer> FOV_3D = new Value<>("fov3d", 55);
     public static final Value<Integer> MIN_DISTANCE_3D = new Value<>("minDistance3d", 64);
     public static final Value<Integer> MAX_DISTANCE_3D = new Value<>("maxDistance3d", 8192);
@@ -110,7 +109,6 @@ public final class VoxyMapConfig {
     public static final Value<Double> ZOOM_SENS_3D = new Value<>("zoomSens3d", 2.0);
     public static final Value<Boolean> REMEMBER_3D_VIEW = new Value<>("remember3dView", true);
     public static final Value<Boolean> AUTO_HIDE_CONTOURS_3D = new Value<>("autoHideContours3d", false);
-    public static final Value<Boolean> LOD_DEBUG_COLORS_3D = new Value<>("lodDebugColors3d", false);
     public static final Value<Double> PLAYER_MARKER_HEIGHT_3D = new Value<>("playerMarkerHeight3d", 50.0);
     public static final Value<Double> PLAYER_MARKER_SCALE_3D = new Value<>("playerMarkerScale3d", 2.6);
     /** pixel count above which the map asks before loading (memory guard) */
@@ -173,6 +171,7 @@ public final class VoxyMapConfig {
             if (root == null) return;
             for (java.lang.reflect.Field f : VoxyMapConfig.class.getDeclaredFields()) {
                 if (f.getType() != Value.class) continue;
+                if (f.isAnnotationPresent(Deprecated.class)) continue;
                 f.setAccessible(true);
                 Value<?> v = (Value<?>) f.get(null);
                 if (v == null || !root.has(v.key)) continue;
@@ -195,6 +194,7 @@ public final class VoxyMapConfig {
         JsonObject root = new JsonObject();
         for (java.lang.reflect.Field f : VoxyMapConfig.class.getDeclaredFields()) {
             if (f.getType() != Value.class) continue;
+            if (f.isAnnotationPresent(Deprecated.class)) continue;
             try {
                 f.setAccessible(true);
                 Value<?> v = (Value<?>) f.get(null);

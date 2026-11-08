@@ -168,6 +168,9 @@ public final class MapData {
     private int biomeBuildGeneration;
     /** viewport (map pixels) the current biome snapshot was built for */
     private int biomeViewCenterPxX, biomeViewCenterPzX, biomeViewHalfW, biomeViewHalfH;
+    private int biomeLabelsViewCenterPxX, biomeLabelsViewCenterPzX, biomeLabelsViewHalfW, biomeLabelsViewHalfH;
+    private volatile Snapshot biomeLabelsGlobalSnapshot;
+    private volatile int biomeLabelsGlobalVersion = -1;
     private long lastBiomeViewBuildMs;
     private final AtomicBoolean buildingBiome = new AtomicBoolean();
     private volatile boolean loading;
@@ -1217,6 +1220,8 @@ public final class MapData {
         biomeEdgePx = null;
         biomeEdgeVersion = 0;
         biomeLabelsSnapshot = null;
+        biomeLabelsGlobalSnapshot = null;
+        biomeLabelsGlobalVersion = -1;
     }
 
     /** True when the kept snapshot does not belong to the world that is loaded now. */
@@ -3593,6 +3598,8 @@ public final class MapData {
         biomeEdgeVersion = 0;
         biomeLabelsFlat = new int[0];
         biomeLabelsSnapshot = null;
+        biomeLabelsGlobalSnapshot = null;
+        biomeLabelsGlobalVersion = -1;
         nextTileBiomeAttemptMs = 0L;
         biomeBuildGeneration++;
     }
@@ -3679,6 +3686,122 @@ public final class MapData {
         if (current != null) current.dispose();
     }
     /** Build the 1-bit biome boundary mask + labels on the loader thread (overlay only). */
+    /**
+     * Stable label set: labels are computed once over the whole loaded tile store and keep their
+     * world anchors while the camera pans. Viewport-based anchors moved whenever the clipped
+     * region changed, which is why labels appeared to slide.
+     */
+    public void ensureBiomeLabelsGlobal() {
+        if (!isTile2DMode()) {
+            ensureBiomeTexture();
+            return;
+        }
+        LiveTileStore live = liveTiles;
+        if (live == null || !live.hasBounds()) return;
+        int version = live.contentVersion();
+        if (biomeLabelsGlobalSnapshot != null && biomeLabelsGlobalVersion == version) return;
+        if (!buildingBiome.compareAndSet(false, true)) return;
+        final int epochAtStart = worldEpoch;
+        final int generationAtStart = biomeBuildGeneration;
+        final Map<Integer, String> names = tileBiomeNames;
+        loader.submit(() -> {
+            try {
+                Snapshot s = live.buildSnapshot(names);
+                if (s == null) {
+                    buildingBiome.set(false);
+                    return;
+                }
+                int[] labels = buildBiomeLabels(s);
+                int offX = (int) Math.floorDiv(s.minWX, s.pixelBlocks);
+                int offZ = (int) Math.floorDiv(s.minWZ, s.pixelBlocks);
+                for (int i = 0; i + 2 < labels.length; i += 3) {
+                    labels[i] += offX;
+                    labels[i + 1] += offZ;
+                }
+                final int[] finalLabels = labels;
+                final Snapshot snapshot = s;
+                Minecraft.getInstance().execute(() -> {
+                    try {
+                        if (epochAtStart != worldEpoch || liveTiles != live
+                                || generationAtStart != biomeBuildGeneration) return;
+                        biomeLabelsFlat = finalLabels;
+                        biomeLabelsSnapshot = snapshot;
+                        biomeLabelsGlobalSnapshot = snapshot;
+                        biomeLabelsGlobalVersion = version;
+                    } finally {
+                        buildingBiome.set(false);
+                    }
+                });
+            } catch (Throwable t) {
+                buildingBiome.set(false);
+                t.printStackTrace();
+            }
+        });
+    }
+
+    /**
+     * Labels-only variant: biome borders are now derived per tile, so 2D/3D only need the label
+     * anchors for the current viewport. This never allocates a viewport-sized edge texture.
+     */
+    public void ensureBiomeLabels(int centerPxX, int centerPzX, int halfW, int halfH) {
+        if (!isTile2DMode()) {
+            ensureBiomeTexture();
+            return;
+        }
+        int reqHalfW = Math.max(32, Math.min(2048, halfW));
+        int reqHalfH = Math.max(32, Math.min(2048, halfH));
+        boolean sameView = centerPxX == biomeLabelsViewCenterPxX
+                && centerPzX == biomeLabelsViewCenterPzX
+                && reqHalfW == biomeLabelsViewHalfW && reqHalfH == biomeLabelsViewHalfH;
+        if (biomeLabelsSnapshot != null && sameView) return;
+        long now = System.currentTimeMillis();
+        if (now < nextTileBiomeAttemptMs) return;
+        LiveTileStore live = liveTiles;
+        if (live == null) return;
+        if (!buildingBiome.compareAndSet(false, true)) return;
+        final int epochAtStart = worldEpoch;
+        final int generationAtStart = biomeBuildGeneration;
+        final Map<Integer, String> names = tileBiomeNames;
+        final int reqCenterX = centerPxX, reqCenterZ = centerPzX;
+        loader.submit(() -> {
+            try {
+                Snapshot s = live.buildSnapshotRegion(reqCenterX, reqCenterZ, reqHalfW, reqHalfH, names);
+                if (s == null) {
+                    nextTileBiomeAttemptMs = System.currentTimeMillis() + 5_000L;
+                    buildingBiome.set(false);
+                    return;
+                }
+                int[] labels = buildBiomeLabels(s);
+                int offX = (int) Math.floorDiv(s.minWX, s.pixelBlocks);
+                int offZ = (int) Math.floorDiv(s.minWZ, s.pixelBlocks);
+                for (int i = 0; i + 2 < labels.length; i += 3) {
+                    labels[i] += offX;
+                    labels[i + 1] += offZ;
+                }
+                final int[] finalLabels = labels;
+                final Snapshot snapshot = s;
+                Minecraft.getInstance().execute(() -> {
+                    try {
+                        if (epochAtStart != worldEpoch || liveTiles != live
+                                || generationAtStart != biomeBuildGeneration) return;
+                        biomeLabelsFlat = finalLabels;
+                        biomeLabelsSnapshot = snapshot;
+                        biomeLabelsViewCenterPxX = reqCenterX;
+                        biomeLabelsViewCenterPzX = reqCenterZ;
+                        biomeLabelsViewHalfW = reqHalfW;
+                        biomeLabelsViewHalfH = reqHalfH;
+                    } finally {
+                        buildingBiome.set(false);
+                    }
+                });
+            } catch (Throwable t) {
+                nextTileBiomeAttemptMs = System.currentTimeMillis() + 5_000L;
+                buildingBiome.set(false);
+                t.printStackTrace();
+            }
+        });
+    }
+
     public void ensureBiomeTexture() {
         if (isTile2DMode()) {
             ensureTileBiomeTexture(0, 0, 2048, 2048);

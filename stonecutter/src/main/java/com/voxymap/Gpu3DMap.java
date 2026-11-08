@@ -1,0 +1,996 @@
+package com.voxymap;
+
+import com.mojang.blaze3d.GpuFormat;
+import com.mojang.blaze3d.IndexType;
+import com.mojang.blaze3d.PrimitiveTopology;
+import com.mojang.blaze3d.buffers.GpuBuffer;
+import com.mojang.blaze3d.buffers.GpuBufferSlice;
+import com.mojang.blaze3d.pipeline.RenderPipeline;
+import com.mojang.blaze3d.pipeline.RenderTarget;
+import com.mojang.blaze3d.systems.RenderPass;
+import com.mojang.blaze3d.systems.RenderSystem;
+import com.mojang.blaze3d.textures.FilterMode;
+import com.mojang.blaze3d.textures.GpuSampler;
+import com.mojang.blaze3d.textures.GpuTexture;
+import com.mojang.blaze3d.textures.GpuTextureView;
+import com.mojang.blaze3d.vertex.BufferBuilder;
+import com.mojang.blaze3d.vertex.ByteBufferBuilder;
+import com.mojang.blaze3d.vertex.MeshData;
+import com.mojang.blaze3d.vertex.VertexFormat;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.renderer.ProjectionMatrixBuffer;
+import net.minecraft.client.renderer.RenderPipelines;
+import net.minecraft.world.phys.AABB;
+import org.joml.Matrix4f;
+import org.joml.Vector3f;
+import org.joml.Vector4f;
+
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.OptionalDouble;
+import java.util.Set;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+
+/**
+ * GPU 3D terrain: CPU meshing on a worker, batched GPU uploads on the render thread, one
+ * immutable buffer per tile, texture-atlas NEAREST sampling, frustum culling and back-face culling
+ * (SOLID_BLOCK pipeline).
+ */
+public final class Gpu3DMap {
+    private static final int ATLAS = 1024;
+    private static final int CELL = 256;
+    private static final int COLS = ATLAS / CELL;
+    private static final int SLOTS = COLS * COLS;
+    private static final int MAX_JOBS = 32;
+    private static final int RETIRE_FRAMES = 3;
+    private static int batchBuild() {
+        return Math.max(1, Math.min(32, VoxyMapConfig.GPU3D_BATCH_BUILD.get()));
+    }
+    private static final Vector4f COLOR_MODULATOR = new Vector4f(1f, 1f, 1f, 1f);
+    private static final Vector3f MODEL_OFFSET = new Vector3f();
+    private static final Matrix4f TEXTURE_MATRIX = new Matrix4f();
+    private static final RenderPipeline PIPELINE = RenderPipelines.SOLID_BLOCK;
+    private static final RenderPipeline OVERLAY_PIPELINE = overlayPipeline();
+    private static final int OVERLAY_SEGMENTS = 64;
+    private static GpuBuffer overlayVbo;
+    private static GpuBuffer overlayIbo;
+    private static int overlayIndexCount;
+
+    private static RenderPipeline overlayPipeline() {
+        RenderPipeline source = RenderPipelines.DEBUG_FILLED_BOX;
+        RenderPipeline.Builder b = RenderPipeline.builder()
+                .withLocation(net.minecraft.resources.Identifier.fromNamespaceAndPath(
+                        "voxymap", "pipeline/gpu3d_overlay"))
+                .withVertexShader(source.getVertexShader())
+                .withFragmentShader(source.getFragmentShader())
+                .withVertexBinding(0, source.getVertexFormatBinding(0))
+                .withPrimitiveTopology(PrimitiveTopology.TRIANGLES)
+                .withColorTargetState(new com.mojang.blaze3d.pipeline.ColorTargetState(
+                        com.mojang.blaze3d.pipeline.BlendFunction.TRANSLUCENT))
+                .withDepthStencilState(new com.mojang.blaze3d.pipeline.DepthStencilState(
+                        com.mojang.blaze3d.platform.CompareOp.GREATER_THAN_OR_EQUAL, false))
+                .withCull(false);
+        for (var layout : source.getBindGroupLayouts()) b.withBindGroupLayout(layout);
+        return b.build();
+    }
+    private static final Map<Long, TileGpu> TILES = new HashMap<>();
+    private static final List<Page> PAGES = new ArrayList<>();
+    private static final Set<Long> IN_FLIGHT = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private static final Set<Long> CANCELLED = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private static final ConcurrentLinkedQueue<BuildResult> RESULTS = new ConcurrentLinkedQueue<>();
+    private static final java.util.ArrayDeque<Long> TEXTURE_REFRESH = new java.util.ArrayDeque<>();
+    private static final List<RetiredBuffer> RETIRED = new ArrayList<>();
+    private static long frameCounter;
+    private static long lastOverlayKey = Long.MIN_VALUE;
+    private static final ThreadPoolExecutor BUILD_POOL = new ThreadPoolExecutor(
+            buildThreads(), buildThreads(), 30L, TimeUnit.SECONDS,
+            new LinkedBlockingQueue<>(), r -> {
+        Thread t = new Thread(r, "voxymap-gpu3d-build");
+        t.setDaemon(true);
+        t.setPriority(Thread.MIN_PRIORITY);
+        return t;
+    });
+
+    public static void reconfigureBuildThreads() {
+        int n = buildThreads();
+        BUILD_POOL.setMaximumPoolSize(n);
+        BUILD_POOL.setCorePoolSize(n);
+    }
+
+    private static final class RetiredBuffer {
+        final GpuBuffer buffer;
+        final long frame;
+
+        RetiredBuffer(GpuBuffer buffer, long frame) {
+            this.buffer = buffer;
+            this.frame = frame;
+        }
+    }
+
+    private static int buildThreads() {
+        int configured = VoxyMapConfig.GPU3D_BUILD_THREADS.get();
+        if (configured <= 0) {
+            return Math.max(2, Math.min(6, Runtime.getRuntime().availableProcessors() - 1));
+        }
+        return Math.max(1, Math.min(16, configured));
+    }
+    private static GpuSampler sampler;
+    private static GpuSampler lightSampler;
+    private static ProjectionMatrixBuffer projection;
+    private static GpuTexture depthTexture;
+    private static GpuTextureView depthView;
+    private static int depthWidth, depthHeight;
+    private static long lastLog;
+    private static volatile int lastVisible, lastTotal;
+    private static volatile int generation;
+    private static volatile long lastBuildNanos, lastUploadNanos;
+    private static volatile int lastUploadTiles, lastDrawTiles, lastAtlasPages;
+    private static volatile long lastGpuBytes;
+    private static long gpuBytes;
+
+    private Gpu3DMap() {
+    }
+
+    private static final class Page {
+        final GpuTexture texture;
+        final GpuTextureView view;
+        final boolean[] used = new boolean[SLOTS];
+
+        Page() {
+            texture = RenderSystem.getDevice().createTexture("voxymap_gpu3d_atlas",
+                    GpuTexture.USAGE_TEXTURE_BINDING | GpuTexture.USAGE_COPY_DST,
+                    GpuFormat.RGBA8_UNORM, ATLAS, ATLAS, 1, 1);
+            view = RenderSystem.getDevice().createTextureView(texture);
+        }
+    }
+
+    private static final class Slot {
+        final Page page;
+        final int index;
+        boolean released;
+
+        Slot(Page page, int index) {
+            this.page = page;
+            this.index = index;
+        }
+    }
+
+    private static final class TileGpu {
+        final GpuBuffer vertices;
+        final GpuBuffer indices;
+        final int indexCount;
+        final IndexType indexType;
+        final int step;
+        final long stamp;
+        final double centerX, centerZ;
+        final double minY, maxY;
+        final Slot slot;
+        final long bytes;
+
+        TileGpu(GpuBuffer vertices, GpuBuffer indices, int indexCount, IndexType indexType, int step,
+                long stamp, double centerX, double centerZ, double minY, double maxY, Slot slot,
+                long bytes) {
+            this.vertices = vertices;
+            this.indices = indices;
+            this.indexCount = indexCount;
+            this.indexType = indexType;
+            this.step = step;
+            this.stamp = stamp;
+            this.centerX = centerX;
+            this.centerZ = centerZ;
+            this.minY = minY;
+            this.maxY = maxY;
+            this.slot = slot;
+            this.bytes = bytes;
+        }
+    }
+
+    private static final class BuildResult {
+        final int generation;
+        final long key;
+        final long stamp;
+        final Slot slot;
+        final ByteBuffer vertices;
+        final ByteBuffer indices;
+        final int indexCount;
+        final IndexType indexType;
+        final int step;
+        final double centerX, centerZ, minY, maxY;
+        final long buildNanos;
+
+        BuildResult(int generation, long key, long stamp, Slot slot, ByteBuffer vertices, ByteBuffer indices,
+                    int indexCount, IndexType indexType, int step,
+                    double centerX, double centerZ, double minY, double maxY, long buildNanos) {
+            this.generation = generation;
+            this.key = key;
+            this.stamp = stamp;
+            this.slot = slot;
+            this.vertices = vertices;
+            this.indices = indices;
+            this.indexCount = indexCount;
+            this.indexType = indexType;
+            this.step = step;
+            this.buildNanos = buildNanos;
+            this.centerX = centerX;
+            this.centerZ = centerZ;
+            this.minY = minY;
+            this.maxY = maxY;
+        }
+    }
+
+    private static void ensureAtlas() {
+        if (sampler != null) return;
+        sampler = RenderSystem.getSamplerCache().getClampToEdge(FilterMode.NEAREST);
+        lightSampler = RenderSystem.getSamplerCache().getClampToEdge(FilterMode.LINEAR);
+    }
+
+    private static Slot allocateSlot() {
+        ensureAtlas();
+        for (Page page : PAGES) {
+            for (int i = 0; i < SLOTS; i++) {
+                if (!page.used[i]) {
+                    page.used[i] = true;
+                    return new Slot(page, i);
+                }
+            }
+        }
+        Page page = new Page();
+        page.used[0] = true;
+        PAGES.add(page);
+        return new Slot(page, 0);
+    }
+
+    private static void releaseSlot(Slot slot) {
+        if (slot == null || slot.released) return;
+        slot.released = true;
+        slot.page.used[slot.index] = false;
+        for (boolean used : slot.page.used) {
+            if (used) return;
+        }
+        PAGES.remove(slot.page);
+        slot.page.view.close();
+        slot.page.texture.close();
+    }
+
+    private static void retireBuffer(GpuBuffer buffer) {
+        if (buffer == null) return;
+        RETIRED.add(new RetiredBuffer(buffer, frameCounter));
+    }
+
+    private static void retireTile(TileGpu tile) {
+        retireBuffer(tile.vertices);
+        retireBuffer(tile.indices);
+        gpuBytes -= tile.bytes;
+    }
+
+    private static void flushRetired() {
+        for (Iterator<RetiredBuffer> it = RETIRED.iterator(); it.hasNext(); ) {
+            RetiredBuffer r = it.next();
+            if (frameCounter - r.frame < RETIRE_FRAMES) continue;
+            try {
+                r.buffer.close();
+            } catch (Throwable ignored) {
+            }
+            it.remove();
+        }
+    }
+
+    private static void evictUnloaded(LiveTileStore live) {
+        for (Iterator<Map.Entry<Long, TileGpu>> it = TILES.entrySet().iterator(); it.hasNext(); ) {
+            Map.Entry<Long, TileGpu> entry = it.next();
+            long k = entry.getKey();
+            int tx = (int) (k >> 32);
+            int tz = (int) k;
+            LiveTileStore.LiveTile current = live.get(tx, tz);
+            if (current != null && current.rgb != null) continue;
+            TileGpu old = entry.getValue();
+            it.remove();
+            CANCELLED.add(k);
+            retireTile(old);
+            if (!IN_FLIGHT.contains(k)) releaseSlot(old.slot);
+        }
+    }
+
+    private static void ensureProjection() {
+        if (projection == null) projection = new ProjectionMatrixBuffer("voxymap_gpu3d_projection");
+    }
+
+    private static void ensureDepth(int width, int height) {
+        if (depthTexture != null && depthWidth == width && depthHeight == height) return;
+        if (depthView != null) depthView.close();
+        if (depthTexture != null) depthTexture.close();
+        depthTexture = RenderSystem.getDevice().createTexture("voxymap_gpu3d_depth",
+                GpuTexture.USAGE_RENDER_ATTACHMENT, GpuFormat.D32_FLOAT, width, height, 1, 1);
+        depthView = RenderSystem.getDevice().createTextureView(depthTexture);
+        depthWidth = width;
+        depthHeight = height;
+    }
+
+    public static void tick(MapData data, Map3D.Camera camera) {
+        LiveTileStore live = data.getLiveTiles();
+        if (live == null || camera == null) return;
+        drainResults(live);
+        refreshOverlayTextures(live);
+        frameCounter++;
+        flushRetired();
+        evictUnloaded(live);
+        int submitted = 0;
+        int gen = generation;
+        List<LiveTileStore.LiveTile> candidates = new ArrayList<>();
+        for (LiveTileStore.LiveTile tile : live.tilesView()) {
+            if (tile.rgb != null && tile.pixels != null) candidates.add(tile);
+        }
+        double eyeX = camera.eyeX();
+        double eyeY = camera.eyeY();
+        double eyeZ = camera.eyeZ();
+        double vscale = VoxyMapConfig.VERTICAL_SCALE_3D.get();
+        int pb = Math.max(1, MapData.INSTANCE.getPixelBlocks());
+        candidates.sort((a, b) -> Double.compare(
+                tileDistance(a, eyeX, eyeY, eyeZ, vscale, pb),
+                tileDistance(b, eyeX, eyeY, eyeZ, vscale, pb)));
+        // First pass: every loaded tile gets a cheap step-32 mesh. Only after the whole map is
+        // covered do we refine near tiles to step 4 and then step 1.
+        boolean filling = TILES.size() < candidates.size();
+        for (LiveTileStore.LiveTile tile : candidates) {
+            long key = key(tile.tx, tile.tz);
+            if (IN_FLIGHT.contains(key)) continue;
+            TileGpu old = TILES.get(key);
+            long stamp = stamp(live, tile);
+            int targetStep;
+            if (filling) {
+                if (old != null) continue;
+                targetStep = meshStep(VoxyMapConfig.GPU_TERRAIN_FAR_STEP.get());
+            } else {
+                double distance = tileDistance(tile, eyeX, eyeY, eyeZ, vscale, pb);
+                targetStep = desiredStep(distance, old == null
+                        ? meshStep(VoxyMapConfig.GPU_TERRAIN_FAR_STEP.get()) : old.step);
+            }
+            if (old != null && old.stamp == stamp && old.step == targetStep) continue;
+            if (submitted >= batchBuild() || IN_FLIGHT.size() >= MAX_JOBS) break;
+            Slot slot = old == null ? allocateSlot() : old.slot;
+            int[] rgb = tile.rgb;
+            long[] pixels = tile.pixels;
+            int step = targetStep;
+            CANCELLED.remove(key);
+            IN_FLIGHT.add(key);
+            BUILD_POOL.execute(() -> {
+                try {
+                    BuildResult r = build(gen, key, stamp, slot, step, tile, pixels, rgb);
+                    if (r == null) {
+                        if (gen == generation) IN_FLIGHT.remove(key);
+                    } else if (CANCELLED.remove(key) || gen != generation) {
+                        IN_FLIGHT.remove(key);
+                        if (gen == generation) releaseSlot(slot);
+                    } else {
+                        RESULTS.add(r);
+                    }
+                } catch (Throwable t) {
+                    if (gen == generation) IN_FLIGHT.remove(key);
+                    System.out.println("[voxymap] gpu3d build failed: " + t);
+                }
+            });
+            submitted++;
+        }
+        long now = System.currentTimeMillis();
+        if (now - lastLog > 2000L) {
+            lastLog = now;
+            System.out.println("[voxymap] gpu3d tiles=" + TILES.size()
+                    + " inflight=" + IN_FLIGHT.size());
+        }
+    }
+
+    private static void drainResults(LiveTileStore live) {
+        BuildResult r;
+        List<BuildResult> batch = new ArrayList<>();
+        while ((r = RESULTS.poll()) != null) batch.add(r);
+        if (batch.isEmpty()) return;
+        long uploadStart = System.nanoTime();
+        int uploaded = 0;
+        long buildNanos = 0;
+        var encoder = RenderSystem.getDevice().createCommandEncoder();
+        for (BuildResult b : batch) {
+            if (b.generation != generation) continue;
+            IN_FLIGHT.remove(b.key);
+            LiveTileStore.LiveTile current = live.get((int) (b.key >> 32), (int) b.key);
+            if (current == null || stamp(live, current) != b.stamp || current.rgb == null) {
+                if (TILES.get(b.key) == null) releaseSlot(b.slot);
+                continue;
+            }
+            uploadTileTexture(encoder, b.slot, current.rgb, current);
+            GpuBuffer vbuf = upload(encoder, "voxymap_gpu3d_v", GpuBuffer.USAGE_VERTEX, b.vertices);
+            GpuBuffer ibuf = upload(encoder, "voxymap_gpu3d_i", GpuBuffer.USAGE_INDEX, b.indices);
+            long bytes = b.vertices.remaining() + b.indices.remaining();
+            TileGpu old = TILES.put(b.key, new TileGpu(vbuf, ibuf, b.indexCount, b.indexType,
+                    b.step, b.stamp, b.centerX, b.centerZ, b.minY, b.maxY, b.slot, bytes));
+            gpuBytes += bytes;
+            if (old != null) retireTile(old);
+            uploaded++;
+            buildNanos += b.buildNanos;
+        }
+        encoder.submit();
+        if (uploaded > 0) {
+            lastUploadNanos = System.nanoTime() - uploadStart;
+            lastUploadTiles = uploaded;
+            lastBuildNanos = buildNanos / uploaded;
+            lastGpuBytes = gpuBytes;
+            lastAtlasPages = PAGES.size();
+        }
+    }
+
+    private static long key(int tx, int tz) {
+        return ((long) tx << 32) ^ (tz & 0xFFFFFFFFL);
+    }
+
+    /** Spherical distance from the real camera eye to the tile centre. */
+    private static double tileDistance(LiveTileStore.LiveTile tile,
+                                       double ex, double ey, double ez,
+                                       double vscale, int pb) {
+        double cx = tile.minWX + LiveTileStore.TILE_PIXELS * pb * 0.5;
+        double cz = tile.minWZ + LiveTileStore.TILE_PIXELS * pb * 0.5;
+        double cy = MapData.INSTANCE.heightAt((int) cx, (int) cz) * vscale;
+        double dx = cx - ex;
+        double dy = cy - ey;
+        double dz = cz - ez;
+        return Math.sqrt(dx * dx + dy * dy + dz * dz);
+    }
+
+    private static int desiredStep(double distance, int oldStep) {
+        double near = VoxyMapConfig.GPU_TERRAIN_NEAR_DISTANCE.get();
+        double mid = VoxyMapConfig.GPU_TERRAIN_MID_DISTANCE.get();
+        int nearStep = meshStep(VoxyMapConfig.GPU_TERRAIN_NEAR_STEP.get());
+        int midStep = meshStep(VoxyMapConfig.GPU_TERRAIN_MID_STEP.get());
+        int farStep = meshStep(VoxyMapConfig.GPU_TERRAIN_FAR_STEP.get());
+        double hysteresis = Math.max(0, Math.min(50,
+                VoxyMapConfig.GPU_TERRAIN_HYSTERESIS_PCT.get())) / 100.0;
+        double expand = 1.0 + hysteresis;
+        double shrink = 1.0 - hysteresis;
+        if (oldStep <= nearStep) {
+            if (distance <= near * expand) return nearStep;
+            return distance <= mid * expand ? midStep : farStep;
+        }
+        if (oldStep <= midStep) {
+            if (distance < near * shrink) return nearStep;
+            return distance <= mid * expand ? midStep : farStep;
+        }
+        if (distance < near * shrink) return nearStep;
+        if (distance < mid * shrink) return midStep;
+        return farStep;
+    }
+
+    /** Mesh steps must divide the 256-pixel tile exactly. */
+    private static int meshStep(int configured) {
+        int step = Math.max(1, Math.min(256, configured));
+        while (step > 1 && LiveTileStore.TILE_PIXELS % step != 0) step--;
+        return step;
+    }
+
+    private static long stamp(LiveTileStore live, LiveTileStore.LiveTile tile) {
+        long stamp = ((long) tile.version << 32) ^ (tile.coloredVersion & 0xFFFFFFFFL);
+        stamp = stamp * 31L + tile.colorStyleHash;
+        // Boundary vertices use the right/bottom neighbour's first pixel. Rebuild this tile when
+        // those neighbours change, otherwise two tiles would keep different heights at the seam.
+        for (int dz = 0; dz <= 1; dz++) {
+            for (int dx = 0; dx <= 1; dx++) {
+                if (dx == 0 && dz == 0) continue;
+                LiveTileStore.LiveTile n = live.get(tile.tx + dx, tile.tz + dz);
+                stamp = stamp * 31L + (n == null ? 0 : n.coloredVersion);
+            }
+        }
+        return stamp;
+    }
+
+    /** Biome overlay only changes the atlas texture, never the terrain geometry. */
+    private static long overlayKey() {
+        // Edge pixels are derived per tile, so only the toggle state matters. There is no
+        // viewport-sized biome edge texture to rebuild as the 3D camera moves.
+        return MapData.INSTANCE.isBiomeOverlay() ? 1L : 0L;
+    }
+
+    private static void refreshOverlayTextures(LiveTileStore live) {
+        long key = overlayKey();
+        if (key != lastOverlayKey) {
+            lastOverlayKey = key;
+            TEXTURE_REFRESH.clear();
+            TEXTURE_REFRESH.addAll(TILES.keySet());
+        }
+        if (TEXTURE_REFRESH.isEmpty()) return;
+        var encoder = RenderSystem.getDevice().createCommandEncoder();
+        int budget = 32;
+        while (budget-- > 0 && !TEXTURE_REFRESH.isEmpty()) {
+            long key2 = TEXTURE_REFRESH.removeFirst();
+            TileGpu tile = TILES.get(key2);
+            if (tile == null) continue;
+            LiveTileStore.LiveTile current = live.get((int) (key2 >> 32), (int) key2);
+            if (current == null || current.rgb == null) continue;
+            uploadTileTexture(encoder, tile.slot, current.rgb, current);
+        }
+        encoder.submit();
+    }
+
+    private static BuildResult build(int gen, long key, long stamp, Slot slot, int step,
+                                     LiveTileStore.LiveTile tile, long[] pixels, int[] rgb) {
+        long buildStart = System.nanoTime();
+        int pb = Math.max(1, MapData.INSTANCE.getPixelBlocks());
+        int grid = LiveTileStore.TILE_PIXELS / step;
+        int gw = grid + 1;
+        int perim = 4 * grid;
+        int maxVerts = gw * gw + perim * 2;
+        float[] px = new float[maxVerts];
+        float[] py = new float[maxVerts];
+        float[] pz = new float[maxVerts];
+        float[] pu = new float[maxVerts];
+        float[] pv = new float[maxVerts];
+        boolean[] empty = new boolean[gw * gw];
+        int[] idx = new int[grid * grid * 6 + perim * 12];
+        int vi = 0, ii = 0;
+        int sea = MapData.INSTANCE.seaLevel();
+        double vscale = VoxyMapConfig.VERTICAL_SCALE_3D.get();
+        int sx = (slot.index % COLS) * CELL;
+        int sy = (slot.index / COLS) * CELL;
+        float u0 = (sx + 0.5f) / ATLAS;
+        float u1 = (sx + CELL - 0.5f) / ATLAS;
+        float v0 = (sy + 0.5f) / ATLAS;
+        float v1 = (sy + CELL - 0.5f) / ATLAS;
+        double minY = Double.MAX_VALUE, maxY = -Double.MAX_VALUE;
+        for (int gz = 0; gz <= grid; gz++) {
+            int z = gz * step;
+            long wz = tile.minWZ + (long) z * pb;
+            float v = v0 + (v1 - v0) * (z / (float) LiveTileStore.TILE_PIXELS);
+            for (int gx = 0; gx <= grid; gx++) {
+                int x = gx * step;
+                long wx = tile.minWX + (long) x * pb;
+                int sxm = Math.min(LiveTileStore.TILE_PIXELS - 1, x);
+                int szm = Math.min(LiveTileStore.TILE_PIXELS - 1, z);
+                long packed = sampleBoundary(tile, pixels, x, z, sxm, szm);
+                int top = packed == VoxyMerge.LONG_EMPTY ? VoxyMerge.NO_TOP
+                        : (int) ((packed >>> 24) & 0xFFFF) - 32768;
+                int floor = packed == VoxyMerge.LONG_EMPTY ? VoxyMerge.NO_SOLID
+                        : (int) (packed & 0xFFFF) - 32768;
+                boolean e = packed == VoxyMerge.LONG_EMPTY
+                        || (top == VoxyMerge.NO_TOP && floor == VoxyMerge.NO_SOLID);
+                float y;
+                if (e) {
+                    y = 0f;
+                } else if ((packed & (1L << 52)) != 0) {
+                    y = (float) (sea * vscale);
+                } else if (top == VoxyMerge.NO_TOP) {
+                    y = (float) (floor * vscale);
+                } else {
+                    y = (float) (top * vscale);
+                }
+                px[vi] = wx;
+                py[vi] = y;
+                pz[vi] = wz;
+                pu[vi] = u0 + (u1 - u0) * (x / (float) LiveTileStore.TILE_PIXELS);
+                pv[vi] = v;
+                empty[vi++] = e;
+                if (!e) {
+                    minY = Math.min(minY, y);
+                    maxY = Math.max(maxY, y);
+                }
+            }
+        }
+        for (int gz = 0; gz < grid; gz++) {
+            for (int gx = 0; gx < grid; gx++) {
+                int a = gz * gw + gx;
+                int b = a + 1;
+                int c = a + gw;
+                int d = c + 1;
+                if (empty[a] || empty[b] || empty[c] || empty[d]) continue;
+                idx[ii++] = a; idx[ii++] = c; idx[ii++] = b;
+                idx[ii++] = b; idx[ii++] = c; idx[ii++] = d;
+            }
+        }
+        // Vertical skirt around the tile hides cracks between different LOD steps.
+        int[] border = new int[perim];
+        int bp = 0;
+        for (int x = 0; x <= grid; x++) border[bp++] = x;
+        for (int z = 1; z <= grid; z++) border[bp++] = z * gw + grid;
+        for (int x = grid - 1; x >= 0; x--) border[bp++] = grid * gw + x;
+        for (int z = grid - 1; z >= 1; z--) border[bp++] = z * gw;
+        for (int s = 0; s < perim; s++) {
+            int ta = border[s];
+            int tb = border[(s + 1) % perim];
+            int ba = vi;
+            addSkirtVertex(px, py, pz, pu, pv, ba, ta);
+            int bb = vi + 1;
+            addSkirtVertex(px, py, pz, pu, pv, bb, tb);
+            vi += 2;
+            minY = Math.min(minY, py[ba]);
+            // Both windings: skirt visibility must not depend on tile border direction / culling.
+            idx[ii++] = ta; idx[ii++] = ba; idx[ii++] = tb;
+            idx[ii++] = tb; idx[ii++] = ba; idx[ii++] = bb;
+            idx[ii++] = ta; idx[ii++] = tb; idx[ii++] = ba;
+            idx[ii++] = tb; idx[ii++] = bb; idx[ii++] = ba;
+        }
+        if (ii == 0) return null;
+        VertexFormat format = PIPELINE.getVertexFormatBinding(0);
+        if (format == null) return null;
+        ByteBufferBuilder alloc = new ByteBufferBuilder(Math.max(1024, vi * format.getVertexSize()));
+        BufferBuilder bb = new BufferBuilder(alloc, PrimitiveTopology.TRIANGLES, format);
+        for (int i = 0; i < vi; i++) {
+            bb.addVertex(px[i], py[i], pz[i])
+                    .setColor(255, 255, 255, 255)
+                    .setUv(pu[i], pv[i])
+                    .setUv2(240, 240)
+                    .setNormal(0f, 1f, 0f);
+        }
+        MeshData mesh = bb.buildOrThrow();
+        ByteBuffer vdata = copy(mesh.vertexBuffer());
+        mesh.close();
+        alloc.close();
+        ByteBuffer idata = ByteBuffer.allocateDirect(ii * Integer.BYTES).order(ByteOrder.nativeOrder());
+        for (int i = 0; i < ii; i++) idata.putInt(idx[i]);
+        idata.flip();
+        double cx = tile.minWX + LiveTileStore.TILE_PIXELS * pb * 0.5;
+        double cz = tile.minWZ + LiveTileStore.TILE_PIXELS * pb * 0.5;
+        return new BuildResult(gen, key, stamp, slot, vdata, idata, ii, IndexType.INT, step,
+                cx, cz, minY, maxY, System.nanoTime() - buildStart);
+    }
+
+    private static void addSkirtVertex(float[] px, float[] py, float[] pz,
+                                       float[] pu, float[] pv, int target, int source) {
+        px[target] = px[source];
+        py[target] = (float) (py[source]
+                - VoxyMapConfig.GPU_TERRAIN_SKIRT_DEPTH.get());
+        pz[target] = pz[source];
+        pu[target] = pu[source];
+        pv[target] = pv[source];
+    }
+
+    /**
+     * Boundary vertices must use exactly the same pixel the neighbouring tile uses for its first
+     * row/column. Sampling through MapData here could read a different (snapshot/live) value and
+     * produced visible vertical seams even though both tiles had the same 4x4 resolution.
+     */
+    private static long sampleBoundary(LiveTileStore.LiveTile tile, long[] pixels,
+                                       int x, int z, int sxm, int szm) {
+        if (x < LiveTileStore.TILE_PIXELS && z < LiveTileStore.TILE_PIXELS) {
+            return pixels[szm * LiveTileStore.TILE_PIXELS + sxm];
+        }
+        int ntx = tile.tx + (x == LiveTileStore.TILE_PIXELS ? 1 : 0);
+        int ntz = tile.tz + (z == LiveTileStore.TILE_PIXELS ? 1 : 0);
+        int nx = x == LiveTileStore.TILE_PIXELS ? 0 : x;
+        int nz = z == LiveTileStore.TILE_PIXELS ? 0 : z;
+        LiveTileStore live = MapData.INSTANCE.getLiveTiles();
+        LiveTileStore.LiveTile n = live == null ? null : live.get(ntx, ntz);
+        if (n != null && n.pixels != null) {
+            return n.pixels[nz * LiveTileStore.TILE_PIXELS + nx];
+        }
+        return pixels[szm * LiveTileStore.TILE_PIXELS + sxm];
+    }
+
+    private static ByteBuffer copy(ByteBuffer src) {
+        src.rewind();
+        ByteBuffer out = ByteBuffer.allocateDirect(src.remaining()).order(ByteOrder.nativeOrder());
+        out.put(src);
+        out.flip();
+        return out;
+    }
+
+    private static GpuBuffer upload(com.mojang.blaze3d.systems.CommandEncoder encoder,
+                                    String label, int usage, ByteBuffer data) {
+        int size = data.remaining();
+        GpuBuffer buffer = RenderSystem.getDevice().createBuffer(
+                () -> label, usage | GpuBuffer.USAGE_COPY_DST, size);
+        encoder.writeToBuffer(new GpuBufferSlice(buffer, 0L, size), data);
+        return buffer;
+    }
+
+    private static void uploadTileTexture(com.mojang.blaze3d.systems.CommandEncoder encoder,
+                                          Slot slot, int[] rgb, LiveTileStore.LiveTile tile) {
+        MapData data = MapData.INSTANCE;
+        boolean biomes = data.isBiomeOverlay();
+        long[] pixels = tile.pixels;
+        LiveTileStore live = data.getLiveTiles();
+        LiveTileStore.LiveTile right = biomes && live != null ? live.get(tile.tx + 1, tile.tz) : null;
+        LiveTileStore.LiveTile bottom = biomes && live != null ? live.get(tile.tx, tile.tz + 1) : null;
+        long[] rightPixels = right == null ? null : right.pixels;
+        long[] bottomPixels = bottom == null ? null : bottom.pixels;
+        Page page = slot.page;
+        int ox = (slot.index % COLS) * CELL;
+        int oy = (slot.index / COLS) * CELL;
+        ByteBuffer cell = ByteBuffer.allocateDirect(CELL * CELL * 4).order(ByteOrder.nativeOrder());
+        for (int y = 0; y < CELL; y++) {
+            int row = y * LiveTileStore.TILE_PIXELS;
+            for (int x = 0; x < CELL; x++) {
+                int c = rgb[row + x];
+                if (biomes && pixels != null) {
+                    long packed = pixels[row + x];
+                    if (packed != VoxyMerge.LONG_EMPTY) {
+                        int biome = (int) ((packed >>> 53) & 0x1FF);
+                        long east = x < LiveTileStore.TILE_PIXELS - 1
+                                ? pixels[row + x + 1]
+                                : (rightPixels == null ? VoxyMerge.LONG_EMPTY
+                                        : rightPixels[row]);
+                        long south = y < LiveTileStore.TILE_PIXELS - 1
+                                ? pixels[row + LiveTileStore.TILE_PIXELS + x]
+                                : (bottomPixels == null ? VoxyMerge.LONG_EMPTY
+                                        : bottomPixels[x]);
+                        boolean edge = (east != VoxyMerge.LONG_EMPTY
+                                && biome != (int) ((east >>> 53) & 0x1FF))
+                                || (south != VoxyMerge.LONG_EMPTY
+                                && biome != (int) ((south >>> 53) & 0x1FF));
+                        if (edge) {
+                            int alpha = ((x + y) & 1) == 0 ? 0xC0 : 0x40;
+                            int r = (c >> 16) & 0xFF;
+                            int g = (c >> 8) & 0xFF;
+                            int b = c & 0xFF;
+                            r = (r * (255 - alpha) + 0x00 * alpha) / 255;
+                            g = (g * (255 - alpha) + 0xFF * alpha) / 255;
+                            b = (b * (255 - alpha) + 0xCC * alpha) / 255;
+                            c = (0xFF << 24) | (r << 16) | (g << 8) | b;
+                        }
+                    }
+                }
+                cell.put((byte) ((c >> 16) & 0xFF));
+                cell.put((byte) ((c >> 8) & 0xFF));
+                cell.put((byte) (c & 0xFF));
+                cell.put((byte) 0xFF);
+            }
+        }
+        cell.flip();
+        encoder.writeToTexture(page.texture, cell, 0, 0, ox, oy, CELL, CELL);
+    }
+
+    /**
+     * Builds the yellow render-distance ribbon on the terrain surface. Unlike the CPU rasteriser
+     * this stays a dynamic mesh: only ~500 vertices are updated per frame, no atlas rebake.
+     */
+    private static boolean prepareOverlay() {
+        Minecraft mc = Minecraft.getInstance();
+        MapData data = MapData.INSTANCE;
+        var player = mc.player;
+        if (player == null || !data.isReady() || !data.isRenderDistanceOverlay()) return false;
+        int pb = Math.max(1, data.getPixelBlocks());
+        double vscale = VoxyMapConfig.VERTICAL_SCALE_3D.get();
+        double dist = mc.options.renderDistance().get() * 16.0;
+        double cx = player.getX();
+        double cz = player.getZ();
+        double width = Math.max(1.0, pb * 1.5);
+        int maxVerts = 4 * (OVERLAY_SEGMENTS + 1) * 2;
+        int maxIndices = 4 * OVERLAY_SEGMENTS * 6;
+        if (overlayVbo == null) {
+            overlayVbo = RenderSystem.getDevice().createBuffer(
+                    () -> "voxymap_gpu3d_overlay_v",
+                    GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_COPY_DST, maxVerts * 16);
+            overlayIbo = RenderSystem.getDevice().createBuffer(
+                    () -> "voxymap_gpu3d_overlay_i",
+                    GpuBuffer.USAGE_INDEX | GpuBuffer.USAGE_COPY_DST, maxIndices * 4);
+        }
+        ByteBuffer vb = ByteBuffer.allocateDirect(maxVerts * 16).order(ByteOrder.nativeOrder());
+        ByteBuffer ib = ByteBuffer.allocateDirect(maxIndices * 4).order(ByteOrder.nativeOrder());
+        int vi = 0, ii = 0;
+        for (int side = 0; side < 4; side++) {
+            int base = vi;
+            for (int i = 0; i <= OVERLAY_SEGMENTS; i++) {
+                double t = i / (double) OVERLAY_SEGMENTS;
+                double wx, wz, nx, nz;
+                switch (side) {
+                    case 0 -> { wx = cx - dist + 2 * dist * t; wz = cz - dist; nx = 0; nz = -1; }
+                    case 1 -> { wx = cx + dist; wz = cz - dist + 2 * dist * t; nx = 1; nz = 0; }
+                    case 2 -> { wx = cx + dist - 2 * dist * t; wz = cz + dist; nx = 0; nz = 1; }
+                    default -> { wx = cx - dist; wz = cz + dist - 2 * dist * t; nx = -1; nz = 0; }
+                }
+                double y = data.heightAt((int) Math.floor(wx), (int) Math.floor(wz)) * vscale + 1.05;
+                float ax = (float) (wx + nx * width * 0.5);
+                float az = (float) (wz + nz * width * 0.5);
+                float bx = (float) (wx - nx * width * 0.5);
+                float bz = (float) (wz - nz * width * 0.5);
+                putOverlayVertex(vb, ax, (float) y, az);
+                putOverlayVertex(vb, bx, (float) y, bz);
+                vi += 2;
+            }
+            for (int i = 0; i < OVERLAY_SEGMENTS; i++) {
+                int a = base + i * 2;
+                int b = a + 1;
+                int c = a + 2;
+                int d = a + 3;
+                ib.putInt(a).putInt(c).putInt(b);
+                ib.putInt(b).putInt(c).putInt(d);
+                ii += 6;
+            }
+        }
+        vb.flip();
+        ib.flip();
+        var encoder = RenderSystem.getDevice().createCommandEncoder();
+        encoder.writeToBuffer(new GpuBufferSlice(overlayVbo, 0L, vb.remaining()), vb);
+        encoder.writeToBuffer(new GpuBufferSlice(overlayIbo, 0L, ib.remaining()), ib);
+        encoder.submit();
+        overlayIndexCount = ii;
+        return ii > 0;
+    }
+
+    private static void putOverlayVertex(ByteBuffer vb, float x, float y, float z) {
+        vb.putFloat(x);
+        vb.putFloat(y);
+        vb.putFloat(z);
+        vb.put((byte) 0xFF);
+        vb.put((byte) 0xFF);
+        vb.put((byte) 0x00);
+        vb.put((byte) 0xC0);
+    }
+
+    private static void drawOverlay(RenderPass pass, GpuBufferSlice transforms) {
+        if (overlayIndexCount <= 0 || overlayVbo == null) return;
+        pass.setPipeline(OVERLAY_PIPELINE);
+        RenderSystem.bindDefaultUniforms(pass);
+        pass.setUniform("DynamicTransforms", transforms);
+        pass.setVertexBuffer(0, overlayVbo.slice());
+        pass.setIndexBuffer(overlayIbo, IndexType.INT);
+        pass.drawIndexed(overlayIndexCount, 1, 0, 0, 0);
+    }
+
+    public static void render() {
+        Minecraft mc = Minecraft.getInstance();
+        if (!(mc.gui.screen() instanceof MapScreen screen)) return;
+        if (!screen.isGpu3dView()) return;
+        Map3D.Camera cam = screen.gpu3dCamera();
+        if (cam == null || TILES.isEmpty()) return;
+        ensureProjection();
+        int w = mc.getWindow().getGuiScaledWidth();
+        int h = mc.getWindow().getGuiScaledHeight();
+        if (w <= 0 || h <= 0) return;
+        float fov = Math.max(30, Math.min(110, VoxyMapConfig.FOV_3D.get()));
+        net.minecraft.client.renderer.Projection p = new net.minecraft.client.renderer.Projection();
+        p.setupPerspective(0.05f, 60000f, fov, w, h);
+        Matrix4f proj = p.getMatrix(new Matrix4f());
+        Matrix4f view = cam.viewMatrix();
+        Matrix4f viewProj = new Matrix4f(proj).mul(view);
+        RenderTarget target = mc.gameRenderer.mainRenderTarget();
+        if (target.getColorTextureView() == null) return;
+        ensureDepth(target.width, target.height);
+        overlayIndexCount = 0;
+        boolean drawOverlay = prepareOverlay();
+
+        RenderSystem.backupProjectionMatrix();
+        try {
+            RenderSystem.setProjectionMatrix(projection.getBuffer(proj),
+                    com.mojang.blaze3d.ProjectionType.PERSPECTIVE);
+            GpuBufferSlice transforms = RenderSystem.getDynamicUniforms()
+                    .writeTransform(view, COLOR_MODULATOR, MODEL_OFFSET, TEXTURE_MATRIX);
+            try (RenderPass pass = RenderSystem.getDevice().createCommandEncoder().createRenderPass(
+                    () -> "voxymap_gpu3d", target.getColorTextureView(),
+                    Optional.of(new Vector4f(0.02f, 0.02f, 0.03f, 1f)),
+                    depthView, OptionalDouble.of(0.0))) {
+                pass.setPipeline(PIPELINE);
+                RenderSystem.bindDefaultUniforms(pass);
+                pass.setUniform("DynamicTransforms", transforms);
+                pass.bindTexture("Sampler2", mc.gameRenderer.lightmap(), lightSampler);
+                float half = mc.level == null ? 128f
+                        : LiveTileStore.TILE_PIXELS * MapData.INSTANCE.getPixelBlocks() * 0.5f;
+                int visible = 0;
+                for (TileGpu tile : TILES.values()) {
+                    AABB box = new AABB(tile.centerX - half, tile.minY, tile.centerZ - half,
+                            tile.centerX + half, tile.maxY, tile.centerZ + half);
+                    if (!boxVisible(viewProj, box)) continue;
+                    visible++;
+                    pass.bindTexture("Sampler0", tile.slot.page.view, sampler);
+                    pass.setVertexBuffer(0, tile.vertices.slice());
+                    pass.setIndexBuffer(tile.indices, tile.indexType);
+                    pass.drawIndexed(tile.indexCount, 1, 0, 0, 0);
+                }
+                lastVisible = visible;
+                lastTotal = TILES.size();
+                lastDrawTiles = visible;
+                lastAtlasPages = PAGES.size();
+                if (drawOverlay) drawOverlay(pass, transforms);
+            }
+        } finally {
+            RenderSystem.restoreProjectionMatrix();
+        }
+    }
+
+    private static boolean boxVisible(Matrix4f m, AABB b) {
+        // Six clip planes from projection * view. Clip z is 0..w (26.2 reversed Z), so the
+        // near plane is w-z>=0 and the far plane is z>=0.
+        float[] planes = new float[24];
+        setPlane(planes, 0, m.m03() + m.m00(), m.m13() + m.m10(), m.m23() + m.m20(), m.m33() + m.m30());
+        setPlane(planes, 4, m.m03() - m.m00(), m.m13() - m.m10(), m.m23() - m.m20(), m.m33() - m.m30());
+        setPlane(planes, 8, m.m03() + m.m01(), m.m13() + m.m11(), m.m23() + m.m21(), m.m33() + m.m31());
+        setPlane(planes, 12, m.m03() - m.m01(), m.m13() - m.m11(), m.m23() - m.m21(), m.m33() - m.m31());
+        setPlane(planes, 16, m.m03() - m.m02(), m.m13() - m.m12(), m.m23() - m.m22(), m.m33() - m.m32());
+        setPlane(planes, 20, m.m02(), m.m12(), m.m22(), m.m32());
+        float minX = (float) b.minX, minY = (float) b.minY, minZ = (float) b.minZ;
+        float maxX = (float) b.maxX, maxY = (float) b.maxY, maxZ = (float) b.maxZ;
+        for (int i = 0; i < 24; i += 4) {
+            float a = planes[i], bb = planes[i + 1], c = planes[i + 2], d = planes[i + 3];
+            float x = a >= 0 ? maxX : minX;
+            float y = bb >= 0 ? maxY : minY;
+            float z = c >= 0 ? maxZ : minZ;
+            if (a * x + bb * y + c * z + d < 0) return false;
+        }
+        return true;
+    }
+
+    private static void setPlane(float[] planes, int o, float a, float b, float c, float d) {
+        planes[o] = a;
+        planes[o + 1] = b;
+        planes[o + 2] = c;
+        planes[o + 3] = d;
+    }
+
+    /** Visible/total tile count after frustum culling, for the Q debug panel. */
+    public static String debugStats() {
+        return "gpu3d: visible=" + lastVisible + "/" + lastTotal;
+    }
+
+    public static List<String> debugLines() {
+        List<String> out = new ArrayList<>();
+        out.add("gpu3d tiles: " + TILES.size() + "  visible=" + lastVisible
+                + "  draw=" + lastDrawTiles + "  inflight=" + IN_FLIGHT.size());
+        out.add(String.format(java.util.Locale.ROOT,
+                "gpu3d build=%.2fms upload=%.2fms x%d  atlas=%d  gpu=%.1fMB",
+                lastBuildNanos / 1_000_000.0, lastUploadNanos / 1_000_000.0,
+                lastUploadTiles, lastAtlasPages, lastGpuBytes / (1024.0 * 1024.0)));
+        return out;
+    }
+
+    private static void closeQuietly(TileGpu tile) {
+        try {
+            tile.vertices.close();
+            tile.indices.close();
+            gpuBytes -= tile.bytes;
+        } catch (Throwable ignored) {
+        }
+    }
+
+    public static void clear() {
+        generation++;
+        for (TileGpu tile : TILES.values()) closeQuietly(tile);
+        TILES.clear();
+        IN_FLIGHT.clear();
+        CANCELLED.clear();
+        RESULTS.clear();
+        TEXTURE_REFRESH.clear();
+        for (RetiredBuffer r : RETIRED) {
+            try {
+                r.buffer.close();
+            } catch (Throwable ignored) {
+            }
+        }
+        RETIRED.clear();
+        for (Page page : PAGES) {
+            page.view.close();
+            page.texture.close();
+        }
+        PAGES.clear();
+        gpuBytes = 0;
+        lastGpuBytes = 0;
+        lastAtlasPages = 0;
+        lastUploadTiles = 0;
+        lastDrawTiles = 0;
+        if (overlayVbo != null) {
+            overlayVbo.close();
+            overlayVbo = null;
+        }
+        if (overlayIbo != null) {
+            overlayIbo.close();
+            overlayIbo = null;
+        }
+        overlayIndexCount = 0;
+        if (projection != null) {
+            projection.close();
+            projection = null;
+        }
+        if (depthView != null) {
+            depthView.close();
+            depthView = null;
+        }
+        if (depthTexture != null) {
+            depthTexture.close();
+            depthTexture = null;
+        }
+        depthWidth = depthHeight = 0;
+    }
+}
