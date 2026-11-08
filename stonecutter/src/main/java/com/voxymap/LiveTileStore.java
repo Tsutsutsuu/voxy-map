@@ -417,6 +417,10 @@ public final class LiveTileStore {
                 if (dx == 0 && dz == 0) continue;
                 LiveTile t = tiles.get(key(tx + dx, tz + dz));
                 if (t == null || t.seedEpoch >= 0) continue;
+                // If the neighbour has not started colouring yet, its first colour pass will
+                // already include this tile's halo. Queueing a recolour here only created a storm
+                // of full colour jobs during initial tile loading.
+                if (t.coloredVersion < 0 && !t.colorPending) continue;
                 t.liveDirty = true;
                 t.coloredVersion = -1;
                 t.colorEpoch++;
