@@ -1311,14 +1311,15 @@ public final class LiveTileStore {
      * Makes sure a texture exists for this live tile. Full-style colouring is queued on the
      * map loader (serialized with global refreshes) and the GPU upload is rate-limited.
      */
-    public Identifier textureFor(LiveTile tile, String style, int sea, int colorEpoch) {
+    public Identifier textureFor(LiveTile tile, String style, int sea, int colorEpoch,
+                                 int textureSize) {
         if (tile == null) return null;
         visibleTiles.add(tile);
         tile.lastAccessFrame = textureFrame;
         visibleTextures.add(tile);
         tile.lastTextureFrame = textureFrame;
         int styleHash = ((style == null ? 0 : style.hashCode()) * 31 + sea) * 31 + colorEpoch;
-        styleHash = styleHash * 31 + (VoxyMapConfig.TILE_TEXTURE_HALF_RES.get() ? 128 : TILE_PIXELS);
+        styleHash = styleHash * 31 + textureSize;
         if (tile.seedEpoch >= 0) {
             // Tiles covered by the base snapshot keep the proven base colour pipeline. Live
             // colouring is currently only used for genuinely new tiles outside the snapshot.
@@ -1329,7 +1330,7 @@ public final class LiveTileStore {
             if (tile.rgb == null) return tile.texture;
             if (tile.texture == null || tile.textureDirty || tile.textureEpoch != styleHash) {
                 if (createdThisFrame.get() >= 12) return tile.texture;
-                buildTexture(tile, styleHash);
+                buildTexture(tile, styleHash, textureSize);
             }
             return tile.texture;
         }
@@ -1338,7 +1339,7 @@ public final class LiveTileStore {
             if (tile.rgb == null) return tile.texture;
             if (tile.texture == null || tile.textureDirty || tile.textureEpoch != styleHash) {
                 if (createdThisFrame.get() >= 12) return tile.texture;
-                buildTexture(tile, styleHash);
+                buildTexture(tile, styleHash, textureSize);
             }
             return tile.texture;
         }
@@ -1360,7 +1361,7 @@ public final class LiveTileStore {
         }
         if (tile.rgb == null) return tile.texture;
         if (createdThisFrame.get() >= 12) return tile.texture;
-        buildTexture(tile, styleHash);
+        buildTexture(tile, styleHash, textureSize);
         return tile.texture;
     }
 
@@ -1468,11 +1469,10 @@ public final class LiveTileStore {
         return withHalo;
     }
 
-    private void buildTexture(LiveTile tile, int styleHash) {
+    private void buildTexture(LiveTile tile, int styleHash, int size) {
         createdThisFrame.incrementAndGet();
         MapPerf.INSTANCE.textureBuilds.increment();
         final long textureStartNs = System.nanoTime();
-        final int size = VoxyMapConfig.TILE_TEXTURE_HALF_RES.get() ? 128 : TILE_PIXELS;
         if (TileTrace.enabled()) TileTrace.stage(tile.tx, tile.tz, "texture_build", "style=" + styleHash + " size=" + size);
         NativeImage image = new NativeImage(size, size, false);
         int[] rgb = tile.rgb;

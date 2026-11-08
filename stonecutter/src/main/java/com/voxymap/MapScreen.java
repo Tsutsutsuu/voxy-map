@@ -550,16 +550,20 @@ public class MapScreen extends Screen {
         int ccx = live.tileIndexX(centerX), ccz = live.tileIndexZ(centerZ);
         int maxR = Math.max(Math.max(Math.abs(tx0 - ccx), Math.abs(tx1 - ccx)),
                 Math.max(Math.abs(tz0 - ccz), Math.abs(tz1 - ccz)));
+        // Display-LOD is based on actual window pixels: screenPxPerBlock = zoom * guiScale / pb.
+        // Below 1:1 use 128, otherwise 256. Do not use zoom alone: GUI scale 4 makes zoom 0.5 a
+        // 2:1 display on screen.
+        int textureSize = (zoom * uiScale < pb) ? 128 : LiveTileStore.TILE_PIXELS;
         // Seed/draw from the viewport centre outwards: with asynchronous seed creation this keeps
         // the player's immediate area sharp instead of filling top-to-bottom.
         for (int r = 0; r <= maxR; r++) {
             for (int tx = ccx - r; tx <= ccx + r; tx++) {
-                drawUnifiedTile(g, data, live, tx, ccz - r, style, sea, pb, tx0, tx1, tz0, tz1);
-                if (r != 0) drawUnifiedTile(g, data, live, tx, ccz + r, style, sea, pb, tx0, tx1, tz0, tz1);
+                drawUnifiedTile(g, data, live, tx, ccz - r, style, sea, pb, tx0, tx1, tz0, tz1, textureSize);
+                if (r != 0) drawUnifiedTile(g, data, live, tx, ccz + r, style, sea, pb, tx0, tx1, tz0, tz1, textureSize);
             }
             for (int tz = ccz - r + 1; tz <= ccz + r - 1; tz++) {
-                drawUnifiedTile(g, data, live, ccx - r, tz, style, sea, pb, tx0, tx1, tz0, tz1);
-                if (r != 0) drawUnifiedTile(g, data, live, ccx + r, tz, style, sea, pb, tx0, tx1, tz0, tz1);
+                drawUnifiedTile(g, data, live, ccx - r, tz, style, sea, pb, tx0, tx1, tz0, tz1, textureSize);
+                if (r != 0) drawUnifiedTile(g, data, live, ccx + r, tz, style, sea, pb, tx0, tx1, tz0, tz1, textureSize);
             }
         }
         int viewRadius = Math.max(tx1 - tx0, tz1 - tz0) / 2 + 4;
@@ -571,7 +575,7 @@ public class MapScreen extends Screen {
 
     private void drawUnifiedTile(GuiGraphicsExtractor g, MapData data, LiveTileStore live,
                                  int tx, int tz, String style, int sea, int pb,
-                                 int tx0, int tx1, int tz0, int tz1) {
+                                 int tx0, int tx1, int tz0, int tz1, int textureSize) {
         if (tx < tx0 || tx > tx1 || tz < tz0 || tz > tz1) return;
         LiveTileStore.LiveTile tile = live.get(tx, tz);
         if (tile == null || tile.seedEpoch < 0) {
@@ -580,7 +584,7 @@ public class MapScreen extends Screen {
             tile = live.getOrCreateSeed(tx, tz);
         }
         if (tile == null) return;
-        Identifier tex = live.textureFor(tile, style, sea, data.getColorEpoch());
+        Identifier tex = live.textureFor(tile, style, sea, data.getColorEpoch(), textureSize);
         if (tex == null) return;
         MapPerf.INSTANCE.tileDrawn();
         double sx = width / 2.0 + (tile.minWX - centerX) * zoom / pb;

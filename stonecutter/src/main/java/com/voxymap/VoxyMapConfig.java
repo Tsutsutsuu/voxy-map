@@ -72,8 +72,6 @@ public final class VoxyMapConfig {
     public static final Value<Integer> TILE_RESIDENT_CAP = new Value<>("tileResidentCap", 1024);
     /** Estimated VRAM budget for tile textures (256×256 RGBA ≈ 256 KiB each). */
     public static final Value<Integer> GPU_TEXTURE_BUDGET_MB = new Value<>("gpuTextureBudgetMb", 256);
-    /** Optional display LOD: 128×128 tile textures (quarter the VRAM, slightly softer map). */
-    public static final Value<Boolean> TILE_TEXTURE_HALF_RES = new Value<>("tileTextureHalfRes", false);
     /** Disk .vxt cache soft limit. Oldest files are removed first. */
     public static final Value<Integer> DISK_CACHE_MAX_MB = new Value<>("diskCacheMaxMb", 8192);
     public static final Value<Boolean> SKIP_WORLD_RENDER = new Value<>("skipWorldRender", true);
