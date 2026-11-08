@@ -1176,11 +1176,29 @@ public final class LiveTileStore {
      * bumps the neighbour version and would immediately cancel this tile's colour job.
      */
     private boolean neighbourHaloReady(LiveTile tile) {
+        VoxyTileSource src = source;
         for (int dz = -1; dz <= 1; dz++) {
             for (int dx = -1; dx <= 1; dx++) {
                 if (dx == 0 && dz == 0) continue;
-                LiveTile n = tiles.get(key(tile.tx + dx, tile.tz + dz));
-                if (n != null && !n.sourceFilled) return false;
+                int ntx = tile.tx + dx;
+                int ntz = tile.tz + dz;
+                long nk = key(ntx, ntz);
+                LiveTile n = tiles.get(nk);
+                if (n != null) {
+                    if (!n.sourceFilled) return false;
+                    continue;
+                }
+                if (sourceEmpty.contains(nk)) continue;
+                if (src == null) continue;
+                if (!src.hasTileData(ntx, ntz)) {
+                    sourceEmpty.add(nk);
+                    continue;
+                }
+                // Make the neighbour participate in the normal cache/source pipeline, then wait
+                // for it instead of colouring this tile with a clamped halo that will be cancelled
+                // as soon as the neighbour arrives.
+                getOrCreateSeed(ntx, ntz);
+                return false;
             }
         }
         return true;
