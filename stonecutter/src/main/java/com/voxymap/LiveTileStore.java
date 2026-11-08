@@ -1116,7 +1116,7 @@ public final class LiveTileStore {
             long now = System.currentTimeMillis();
             // Coalesce the burst of neighbour/invalidation updates that happens while tiles first
             // load. Without this debounce every arriving neighbour queued another full colour job.
-            if (!tile.colorPending && now - tile.colorDirtySinceMs >= 200L
+            if (!tile.colorPending && now - tile.colorDirtySinceMs >= 400L
                     && colorRequestsThisFrame.get() < 12) {
                 requestColor(tile, styleHash);
             }
@@ -1143,6 +1143,9 @@ public final class LiveTileStore {
         MapData.INSTANCE.submitTileColor(hw, hw, minX, minZ, pixelBlocks, full -> {
             tile.colorPending = false;
             if (full == null || full.length < hw * hw) {
+                // The job was cancelled because the tile/neighbour changed again. Back off before
+                // queueing another full halo+colour job; busy live updates otherwise form a loop.
+                tile.colorDirtySinceMs = System.currentTimeMillis();
                 if (TileTrace.enabled()) TileTrace.timed(tile.tx, tile.tz, "color_empty", colorStartNs, "null");
                 return;
             }
