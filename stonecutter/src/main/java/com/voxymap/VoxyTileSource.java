@@ -4,7 +4,13 @@ import net.minecraft.client.Minecraft;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
@@ -21,7 +27,10 @@ import java.util.function.Consumer;
  * <p>A small dedicated I/O pool; callbacks are forwarded to the client thread.</p>
  */
 public final class VoxyTileSource {
+    private static final int INDEX_MAGIC = 0x56585349;
+    private static final int INDEX_VERSION = 1;
     private final Path storage;
+    private final Path indexCache;
     private final long minWX, minWZ;
     private final int pixelBlocks;
     private final int maxLod;
@@ -67,17 +76,23 @@ public final class VoxyTileSource {
 
     public VoxyTileSource(Path storage, long minWX, long minWZ, int pixelBlocks, int maxLod,
                           Set<Long> waterIds) {
-        this(storage, minWX, minWZ, pixelBlocks, maxLod, () -> waterIds);
+        this(storage, minWX, minWZ, pixelBlocks, maxLod, () -> waterIds, null);
     }
 
     public VoxyTileSource(Path storage, long minWX, long minWZ, int pixelBlocks, int maxLod,
                           java.util.function.Supplier<Set<Long>> waterIds) {
+        this(storage, minWX, minWZ, pixelBlocks, maxLod, waterIds, null);
+    }
+
+    public VoxyTileSource(Path storage, long minWX, long minWZ, int pixelBlocks, int maxLod,
+                          java.util.function.Supplier<Set<Long>> waterIds, Path indexCache) {
         this.storage = storage;
         this.minWX = minWX;
         this.minWZ = minWZ;
         this.pixelBlocks = Math.max(1, pixelBlocks);
         this.maxLod = maxLod;
         this.waterIds = waterIds;
+        this.indexCache = indexCache;
     }
 
     public int indexedTileCount() {
@@ -150,6 +165,14 @@ public final class VoxyTileSource {
         if (waterIds.get().isEmpty()) {
             ownWaterIds = MapData.loadWaterIdsFromDb(db, handles.get(2));
         }
+        long signature = storageSignature();
+        if (loadIndexCache(signature)) {
+            indexed = true;
+            if (TileTrace.enabled()) {
+                TileTrace.timed(-1, -1, "index_cache_hit", indexStartNs, "tiles=" + byTile.size());
+            }
+            return;
+        }
         Object it = RocksBridge.newIterator(db, sectionsHandle);
         final long tileWorld = (long) LiveTileStore.TILE_PIXELS * pixelBlocks;
         try {
@@ -184,9 +207,86 @@ public final class VoxyTileSource {
             RocksBridge.close(it);
         }
         indexed = true;
+        saveIndexCacheAsync(signature);
         if (TileTrace.enabled()) {
             TileTrace.timed(-1, -1, "index_scan_done", indexStartNs, "tiles=" + byTile.size());
         }
+    }
+
+    /** Cheap-ish RocksDB storage fingerprint: path + file size/mtime over the top two levels. */
+    private long storageSignature() {
+        long h = 1125899906842597L;
+        try (java.util.stream.Stream<Path> stream = Files.walk(storage, 2)) {
+            for (Path p : stream.filter(Files::isRegularFile).toList()) {
+                try {
+                    h = h * 31 + p.getFileName().toString().hashCode();
+                    h = h * 31 + Files.size(p);
+                    h = h * 31 + Files.getLastModifiedTime(p).toMillis();
+                } catch (Throwable ignored) {
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return h;
+    }
+
+    private boolean loadIndexCache(long signature) {
+        if (indexCache == null || !Files.isRegularFile(indexCache)) return false;
+        try (DataInputStream in = new DataInputStream(new BufferedInputStream(Files.newInputStream(indexCache)))) {
+            if (in.readInt() != INDEX_MAGIC || in.readInt() != INDEX_VERSION) return false;
+            if (in.readLong() != signature || in.readLong() != minWX || in.readLong() != minWZ
+                    || in.readInt() != pixelBlocks || in.readInt() != maxLod) return false;
+            int count = in.readInt();
+            if (count < 0 || count > 2_000_000) return false;
+            for (int i = 0; i < count; i++) {
+                long key = in.readLong();
+                int n = in.readInt();
+                if (n < 0 || n > 1_000_000) return false;
+                KeyList list = new KeyList();
+                list.keys = new long[Math.max(4, n)];
+                for (int k = 0; k < n; k++) list.keys[k] = in.readLong();
+                list.size = n;
+                byTile.put(key, list);
+            }
+            return true;
+        } catch (Throwable t) {
+            try {
+                Files.deleteIfExists(indexCache);
+            } catch (Throwable ignored) {
+            }
+            byTile.clear();
+            return false;
+        }
+    }
+
+    private void saveIndexCacheAsync(long signature) {
+        if (indexCache == null) return;
+        io.submit(() -> {
+            try {
+                Files.createDirectories(indexCache.getParent());
+                Path tmp = indexCache.resolveSibling(indexCache.getFileName() + ".tmp");
+                try (DataOutputStream out = new DataOutputStream(
+                        new BufferedOutputStream(Files.newOutputStream(tmp)))) {
+                    out.writeInt(INDEX_MAGIC);
+                    out.writeInt(INDEX_VERSION);
+                    out.writeLong(signature);
+                    out.writeLong(minWX);
+                    out.writeLong(minWZ);
+                    out.writeInt(pixelBlocks);
+                    out.writeInt(maxLod);
+                    out.writeInt(byTile.size());
+                    for (java.util.Map.Entry<Long, KeyList> e : byTile.entrySet()) {
+                        KeyList list = e.getValue();
+                        out.writeLong(e.getKey());
+                        out.writeInt(list.size);
+                        for (int k = 0; k < list.size; k++) out.writeLong(list.keys[k]);
+                    }
+                }
+                Files.move(tmp, indexCache, StandardCopyOption.REPLACE_EXISTING,
+                        StandardCopyOption.ATOMIC_MOVE);
+            } catch (Throwable ignored) {
+            }
+        });
     }
 
     private static long tileKey(int tx, int tz) {
@@ -280,6 +380,10 @@ public final class VoxyTileSource {
             byTile.clear();
             sectionCache.clear();
             indexed = false;
+            try {
+                if (indexCache != null) Files.deleteIfExists(indexCache);
+            } catch (Throwable ignored) {
+            }
         });
     }
 

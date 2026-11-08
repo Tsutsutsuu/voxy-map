@@ -3496,7 +3496,8 @@ public final class MapData {
         LiveTileStore next = new LiveTileStore(s.minWX, s.minWZ, s.pixelBlocks, tileCache);
         if (snapStorage != null) {
             next.setSource(new VoxyTileSource(snapStorage, s.minWX, s.minWZ, s.pixelBlocks,
-                    lodCap(), this::waterIdsSnapshot));
+                    lodCap(), this::waterIdsSnapshot,
+                    tileCache == null ? null : tileCache.resolve("source-index.bin")));
         }
         ColorFrame f = colorFrame;
         if (f != null && f.width == s.width && f.height == s.height) {
@@ -3523,7 +3524,8 @@ public final class MapData {
                 : worldCacheDir(storage).resolve("tiles").resolve("pb" + pb);
         LiveTileStore next = new LiveTileStore(0L, 0L, pb, cache);
         if (storage != null) {
-            next.setSource(new VoxyTileSource(storage, 0L, 0L, pb, lodCap(), this::waterIdsSnapshot));
+            next.setSource(new VoxyTileSource(storage, 0L, 0L, pb, lodCap(), this::waterIdsSnapshot,
+                    cache == null ? null : cache.resolve("source-index.bin")));
         }
         next.setCacheReady(waterIdsLoaded);
         liveTiles = next;
