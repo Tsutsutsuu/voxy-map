@@ -3288,8 +3288,10 @@ public final class MapData {
     }
 
     /** Render the colour grid off the render thread, then upload it on the client thread. */
-    public void submitTileColor(long[] pixels, int width, int height, long minWX, long minWZ,
-                                int pixelBlocks, java.util.function.Consumer<int[]> done) {
+    public void submitTileColor(int width, int height, long minWX, long minWZ, int pixelBlocks,
+                                java.util.function.Consumer<int[]> done,
+                                java.util.function.Supplier<long[]> haloSupplier,
+                                java.util.function.BooleanSupplier stillValid) {
         final long submittedNs = System.nanoTime();
         final int tileWorld = LiveTileStore.TILE_PIXELS * Math.max(1, pixelBlocks);
         final int traceTx = (int) Math.floorDiv(minWX + 8L * pixelBlocks, (long) tileWorld);
@@ -3298,6 +3300,22 @@ public final class MapData {
             final long workStartNs = System.nanoTime();
             if (TileTrace.enabled()) TileTrace.timed(traceTx, traceTz, "color_wait", submittedNs, "loader-queue");
             try {
+                if (!stillValid.getAsBoolean()) {
+                    if (TileTrace.enabled()) TileTrace.timed(traceTx, traceTz, "color_cancelled", submittedNs, "stale-before-work");
+                    Minecraft.getInstance().execute(() -> done.accept(null));
+                    return;
+                }
+                final long haloStartNs = System.nanoTime();
+                long[] pixels = haloSupplier.get();
+                if (TileTrace.enabled()) {
+                    TileTrace.timed(traceTx, traceTz, "color_halo", haloStartNs,
+                            "px=" + (pixels == null ? -1 : pixels.length));
+                }
+                if (!stillValid.getAsBoolean()) {
+                    if (TileTrace.enabled()) TileTrace.timed(traceTx, traceTz, "color_cancelled", submittedNs, "stale-after-halo");
+                    Minecraft.getInstance().execute(() -> done.accept(null));
+                    return;
+                }
                 int[] rgb = renderTileColor(pixels, width, height, minWX, minWZ, pixelBlocks);
                 if (TileTrace.enabled()) {
                     TileTrace.timed(traceTx, traceTz, "color_work", workStartNs,
@@ -3307,6 +3325,7 @@ public final class MapData {
             } catch (Throwable t) {
                 if (TileTrace.enabled()) TileTrace.stage(traceTx, traceTz, "color_error", t.getClass().getSimpleName());
                 t.printStackTrace();
+                Minecraft.getInstance().execute(() -> done.accept(null));
             }
         });
     }

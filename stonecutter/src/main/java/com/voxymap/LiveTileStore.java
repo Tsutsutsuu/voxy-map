@@ -1135,33 +1135,9 @@ public final class LiveTileStore {
         final int epoch = tile.colorEpoch;
         final int halo = 8;
         final int hw = TILE_PIXELS + halo * 2;
-        long[] withHalo = new long[hw * hw];
-        int baseX = tile.tx * TILE_PIXELS - halo;
-        int baseZ = tile.tz * TILE_PIXELS - halo;
-        for (int z = 0; z < hw; z++) {
-            int gz = baseZ + z;
-            int tz = Math.floorDiv(gz, TILE_PIXELS);
-            int lz = gz - tz * TILE_PIXELS;
-            for (int x = 0; x < hw; x++) {
-                int gx = baseX + x;
-                int tx = Math.floorDiv(gx, TILE_PIXELS);
-                int lx = gx - tx * TILE_PIXELS;
-                LiveTile src = tiles.get(key(tx, tz));
-                if (src != null) {
-                    withHalo[z * hw + x] = src.pixels[lz * TILE_PIXELS + lx];
-                } else {
-                    // No neighbour loaded yet: clamp this tile's edge instead of leaving an
-                    // empty halo. Empty halo pixels made the contour pass draw a false frame
-                    // along every tile border after a map-scale change.
-                    int ownX = Math.max(0, Math.min(TILE_PIXELS - 1, gx - tile.tx * TILE_PIXELS));
-                    int ownZ = Math.max(0, Math.min(TILE_PIXELS - 1, gz - tile.tz * TILE_PIXELS));
-                    withHalo[z * hw + x] = tile.pixels[ownZ * TILE_PIXELS + ownX];
-                }
-            }
-        }
         long minX = tile.minWX - (long) halo * pixelBlocks;
         long minZ = tile.minWZ - (long) halo * pixelBlocks;
-        MapData.INSTANCE.submitTileColor(withHalo, hw, hw, minX, minZ, pixelBlocks, full -> {
+        MapData.INSTANCE.submitTileColor(hw, hw, minX, minZ, pixelBlocks, full -> {
             tile.colorPending = false;
             if (full == null || full.length < hw * hw) {
                 if (TileTrace.enabled()) TileTrace.timed(tile.tx, tile.tz, "color_empty", colorStartNs, "null");
@@ -1184,7 +1160,38 @@ public final class LiveTileStore {
             colorVersion.incrementAndGet();
             MapPerf.INSTANCE.colorDone.increment();
             if (TileTrace.enabled()) TileTrace.timed(tile.tx, tile.tz, "color_done", colorStartNs, "version=" + version);
-        });
+        }, () -> buildColorHalo(tile, halo),
+                () -> tile.version == version && tile.colorEpoch == epoch);
+    }
+
+    /**
+     * Builds the 8px neighbour halo on the loader thread. Doing this on the render thread cost
+     * ~74k ConcurrentHashMap lookups per tile and produced frame hitches while colour jobs queued.
+     */
+    private long[] buildColorHalo(LiveTile tile, int halo) {
+        int hw = TILE_PIXELS + halo * 2;
+        long[] withHalo = new long[hw * hw];
+        int baseX = tile.tx * TILE_PIXELS - halo;
+        int baseZ = tile.tz * TILE_PIXELS - halo;
+        for (int z = 0; z < hw; z++) {
+            int gz = baseZ + z;
+            int tz = Math.floorDiv(gz, TILE_PIXELS);
+            int lz = gz - tz * TILE_PIXELS;
+            for (int x = 0; x < hw; x++) {
+                int gx = baseX + x;
+                int tx = Math.floorDiv(gx, TILE_PIXELS);
+                int lx = gx - tx * TILE_PIXELS;
+                LiveTile src = tiles.get(key(tx, tz));
+                if (src != null) {
+                    withHalo[z * hw + x] = src.pixels[lz * TILE_PIXELS + lx];
+                } else {
+                    int ownX = Math.max(0, Math.min(TILE_PIXELS - 1, gx - tile.tx * TILE_PIXELS));
+                    int ownZ = Math.max(0, Math.min(TILE_PIXELS - 1, gz - tile.tz * TILE_PIXELS));
+                    withHalo[z * hw + x] = tile.pixels[ownZ * TILE_PIXELS + ownX];
+                }
+            }
+        }
+        return withHalo;
     }
 
     private void buildTexture(LiveTile tile, int styleHash) {
