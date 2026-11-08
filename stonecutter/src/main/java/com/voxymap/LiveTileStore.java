@@ -857,11 +857,11 @@ public final class LiveTileStore {
             if (!visibleTextures.contains(tile)) candidates.add(tile);
         }
         if (candidates.isEmpty()) return;
-        // Two watermarks: start trimming at 75% and stop at 50% of the VRAM budget. The hard
-        // budget alone let hundreds of off-screen textures sit at 85% forever.
-        long high = budget * 3L / 4L;
-        long low = budget / 2L;
-        if (used <= high) return;
+        // Only trim after the hard budget is exceeded; trimming at 75% caused constant
+        // off-screen texture release/re-upload when the viewport moved slightly. Hysteresis:
+        // release down to 85% once over the budget, then leave the remaining textures alone.
+        if (used <= budget) return;
+        long low = budget * 85L / 100L;
         candidates.sort(java.util.Comparator.comparingLong(t -> t.lastTextureFrame));
         for (LiveTile tile : candidates) {
             if (used <= low) break;
