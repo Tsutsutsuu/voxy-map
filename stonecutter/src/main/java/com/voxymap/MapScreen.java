@@ -60,10 +60,12 @@ public class MapScreen extends Screen {
                 return t;
             });
     private float fov3d = 55f;
+    /** 2D zoom captured when entering 3D from the 2D view; -1 when unknown (camera restored). */
+    private double zoomAt3dEnter = -1.0;
+    /** camera distance at that moment, used to detect "the player never zoomed while in 3D". */
+    private float distanceAt3dEnter = -1f;
     private int labels3dDrawn;
     private int labels3dTotal;
-    /** set once the screen is closing so late background work never touches released resources */
-    private boolean screenClosed;
     /** middle-drag started in 2D: switch to 3D on the first move and keep orbiting */
     private boolean pending3dOrbit;
     private boolean styleMenuOpen;
@@ -254,9 +256,9 @@ public class MapScreen extends Screen {
 
     @Override
     protected void init() {
-        // init() also runs when this screen is resumed from the config screen, so clear the flag
-        // that invalidates frames from a temporarily released 3D framebuffer
-        screenClosed = false;
+        // init() also runs when this screen is resumed from the config screen. The 3D camera and
+        // the GPU terrain survive that round trip (removed() only restores the process-wide
+        // overrides), so only the transition state is reset here.
         openT = 0f;
         closing = false;
         closeT = 0f;
@@ -269,6 +271,10 @@ public class MapScreen extends Screen {
         // restore this world's last 3D mode if the player asked to remember it
         if (!view3d && VoxyMapConfig.REMEMBER_3D_VIEW.get() && data0.getView3d()) {
             toggle3D(true);
+        } else if (view3d) {
+            // Resumed from another screen while 3D was still active: removed() had to restore the
+            // process-wide overrides for that screen, so re-apply the 3D-only ones here.
+            apply3dOverrides();
         }
         // restore the last zoom for this world (or the configured default)
         zoom = VoxyMapConfig.REMEMBER_ZOOM.get() ? MapData.INSTANCE.getZoom() : VoxyMapConfig.DEFAULT_ZOOM.get();
@@ -357,6 +363,9 @@ public class MapScreen extends Screen {
         long nowNs = System.nanoTime();
         frameDt = lastAnimNs == 0 ? 0.016f : (nowNs - lastAnimNs) / 1_000_000_000f;
         lastAnimNs = nowNs;
+        // Keep the overlay/picking FOV identical to the value Gpu3DMap reads every frame for the
+        // terrain pass: a FOV change made in the config screen must not desync the two.
+        syncFov3d();
         // The GPU 3D view owns the full-screen background (and the world is skipped); drawing the
         // normal opaque map background here would cover the GPU pass.
         if (!view3d) {
@@ -412,6 +421,8 @@ public class MapScreen extends Screen {
             pump3DTiles(data);
             Gpu3DMap.tick(data, cam3d);
             drawPlayerMarker3d(g);
+            // The 3D render-distance overlay is not drawn here: Gpu3DMap's overlay pass builds the
+            // yellow terrain ribbon with the same camera/projection as the GPU terrain itself.
             // the label blockers (buttons, plates) are the same controls in 3D; without this the
             // 3D labels could be drawn on top of them because the 2D branch never ran
             collectLabelBlockers(mouseX, mouseY);
@@ -544,16 +555,7 @@ public class MapScreen extends Screen {
         pose.popMatrix();
     }
 
-    /** Event-fed tiles outside the base snapshot; the base tile always wins where it has data. */
-    
-
-    /** Cheap whole-map backdrop used until the visible tile textures have been created. */
-    
-
-    /** Draws only the tiles intersecting the viewport, one independent texture per tile. */
-    
-
-    /** Layer 2: things drawn on top of the map - biome boundaries, player marker, render-distance box. */
+    /** Layer 2: things drawn on top of the map - player marker, render-distance box. */
     private void drawMapOverlays(GuiGraphicsExtractor g, MapData data) {
         if (data.isBiomeOverlay()) {
             data.ensureBiomeLabelsGlobal();
@@ -562,27 +564,6 @@ public class MapScreen extends Screen {
         if (data.isRenderDistanceOverlay()) {
             drawRenderDistanceBox(g);
         }
-    }
-
-    private void drawTileBiomeOverlay(GuiGraphicsExtractor g, MapData data) {
-        int halfW = (int) Math.ceil(width / (2.0 * Math.max(1.0e-6, zoom))) + 32;
-        int halfH = (int) Math.ceil(height / (2.0 * Math.max(1.0e-6, zoom))) + 32;
-        data.ensureBiomeTexture((int) Math.round(centerPx()), (int) Math.round(centerPz()), halfW, halfH);
-        Identifier tex = data.getBiomeTexture();
-        int w = data.getBiomeTextureWidth();
-        int h = data.getBiomeTextureHeight();
-        if (tex == null || w <= 0 || h <= 0) return;
-        double x0 = width / 2.0 + (data.getBiomeTextureMinWX() - centerPx()) * zoom;
-        double y0 = height / 2.0 + (data.getBiomeTextureMinWZ() - centerPz()) * zoom;
-        // Same exact double-pose path as the map tiles: rounding the blit position independently
-        // makes the overlay slide by one GUI pixel while the tiles move continuously.
-        var pose = g.pose();
-        pose.pushMatrix();
-        pose.translate((float) x0, (float) y0);
-        pose.scale((float) zoom, (float) zoom);
-        g.blit(RenderPipelines.GUI_TEXTURED, tex,
-                0, 0, 0f, 0f, w, h, w, h, w, h);
-        pose.popMatrix();
     }
 
     private void drawPlayerArrow(GuiGraphicsExtractor g) {
@@ -724,6 +705,10 @@ public class MapScreen extends Screen {
             cam3d.yaw = data.getView3dYaw();
             cam3d.pitch = data.getView3dPitch();
             cam3d.distance = data.getView3dDistance();
+            // There is no matching 2D zoom for a restored camera: exit recomputes it from the
+            // current distance.
+            zoomAt3dEnter = -1.0;
+            distanceAt3dEnter = -1f;
         } else {
             // seamless switch: keep the 2D focus, match the 2D scale, look straight down
             focusX = centerX;
@@ -731,19 +716,21 @@ public class MapScreen extends Screen {
             cam3d.setTarget(focusX, groundMeshY(focusX, focusZ), focusZ);
             double pb = data.getPixelBlocks();
             double tanHalf = Math.tan(Math.toRadians(fov3d * 0.5));
+            // 2D: world units per screen pixel = pb / zoom. 3D: the view covers
+            // 2 * distance * tan(fov/2) world units vertically. Matching the two gives the distance
+            // below, so entering 3D looks like the same top-down map (modulo the -89 deg pitch).
             double dist = pb * height / (2.0 * Math.max(0.05, zoom) * Math.max(1e-4, tanHalf));
             dist = Math.max(minDistance3d(), Math.min(maxDistance3d(), dist));
             cam3d.distance = (float) dist;
+            // The distance may have been clamped (2D zoomed further out than MAX_DISTANCE_3D), so
+            // inverting the formula on exit would not return the original zoom. Remember the pair:
+            // if the player never zooms in 3D, finish3dExit() restores the exact 2D zoom.
+            zoomAt3dEnter = zoom;
+            distanceAt3dEnter = cam3d.distance;
             cam3d.yaw = 0f;
             cam3d.pitch = PITCH_STRAIGHT_DOWN;
         }
-        data.skipBiomeLabels = true;
-        if (VoxyMapConfig.AUTO_HIDE_CONTOURS_3D.get()
-                && VoxyMapConfig.DRAW_CONTOURS.get() && MapData.contourOverride == null) {
-            // contours are a 2D decoration: hide them in 3D (cheap colour-only re-render)
-            MapData.contourOverride = Boolean.FALSE;
-            data.requestColorRerender();
-        }
+        apply3dOverrides();
     }
 
     /** Finishes the exit: switch to 2D, match position and scale, restore overlays. */
@@ -755,15 +742,25 @@ public class MapScreen extends Screen {
         if (cam3d != null) {
             centerX = cam3d.targetX;
             centerZ = cam3d.targetZ;
-            // invert the enter formula so the 2D scale matches the 3D view
-            double pb = data.getPixelBlocks();
-            double tanHalf = Math.tan(Math.toRadians(fov3d * 0.5));
-            double z = pb * height / (2.0 * Math.max(1.0, cam3d.distance) * Math.max(1e-4, tanHalf));
-            zoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, z));
+            if (zoomAt3dEnter > 0.0 && Math.abs(cam3d.distance - distanceAt3dEnter) < 1.0e-3f) {
+                // Never zoomed while in 3D: restore the original 2D zoom. This keeps the
+                // 2D -> 3D -> 2D round trip lossless even when the enter distance was clamped to
+                // MAX_DISTANCE_3D.
+                zoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, zoomAt3dEnter));
+            } else {
+                // invert the enter formula so the 2D scale matches the 3D view
+                double pb = data.getPixelBlocks();
+                double tanHalf = Math.tan(Math.toRadians(fov3d * 0.5));
+                double z = pb * height / (2.0 * Math.max(1.0, cam3d.distance) * Math.max(1e-4, tanHalf));
+                zoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, z));
+            }
         }
+        zoomAt3dEnter = -1.0;
+        distanceAt3dEnter = -1f;
         restore3dOverrides();
         // Keep the GPU tiles across 2D/3D toggles: re-entering 3D should not rebuild every tile.
-        // They are released when the screen is removed, or immediately if the config asks for it.
+        // They are released when the screen is really closed (finishClose) or by MapData when the
+        // world changes.
         if (!VoxyMapConfig.KEEP_3D_TILES_IN_2D.get()) Gpu3DMap.clear();
         data.clearTileColorFrame();
     }
@@ -780,6 +777,30 @@ public class MapScreen extends Screen {
             MapData.contourOverride = null;
             data.requestColorRerender();
         }
+    }
+
+    /**
+     * Applies the process-wide 3D-only overrides (no 2D label rebuilds, contours hidden). Called
+     * whenever the 3D view becomes active, including on `init()` when the map is resumed from the
+     * config screen while 3D was already active.
+     */
+    private void apply3dOverrides() {
+        MapData data = MapData.INSTANCE;
+        data.skipBiomeLabels = true;
+        if (VoxyMapConfig.AUTO_HIDE_CONTOURS_3D.get()
+                && VoxyMapConfig.DRAW_CONTOURS.get() && MapData.contourOverride == null) {
+            // contours are a 2D decoration: hide them in 3D (cheap colour-only re-render)
+            MapData.contourOverride = Boolean.FALSE;
+            data.requestColorRerender();
+        }
+    }
+
+    /**
+     * Keeps overlay/picking FOV in sync with the value {@code Gpu3DMap} reads for the terrain pass
+     * every frame, so a FOV change made in the config screen applies immediately and consistently.
+     */
+    private void syncFov3d() {
+        fov3d = Math.max(30f, Math.min(110f, VoxyMapConfig.FOV_3D.get()));
     }
 
     /** Closest allowed 3D camera distance (tolerates a swapped min/max config). */
@@ -809,7 +830,7 @@ public class MapScreen extends Screen {
         double ty = groundMeshY(tx, tz);
         cam3d.setTarget(tx, ty, tz);
         cam3d.distance = 1500f;
-        fov3d = VoxyMapConfig.FOV_3D.get();
+        syncFov3d();
     }
 
     private void pump3DTiles(MapData data) {
@@ -1005,9 +1026,24 @@ public class MapScreen extends Screen {
         if (ey <= groundMeshY(ex, ez) && cam3d.distance < 4.0) {
             return new double[]{ex, ey / meshScale(), ez};
         }
-        double maxT = Math.max(4000.0, cam3d.distance * 10.0);
-        double step = Math.max(1.0, cam3d.distance * 0.003);
+        // March only as far as the camera can see (far plane) and the map can extend; without the
+        // AABB clip a ray aimed at the sky outside the map would loop until maxT and, worse, the
+        // out-of-map samples below would report sea level as terrain.
+        double maxT = Math.min(60000.0, Math.max(4000.0, cam3d.distance * 10.0));
+        double mapWX = data.getRenderMinWX();
+        double mapWZ = data.getRenderMinWZ();
+        double mapWidth = data.getRenderWidthPx() * (double) data.getPixelBlocks();
+        double mapHeight = data.getRenderHeightPx() * (double) data.getPixelBlocks();
+        if (mapWidth > 0 && mapHeight > 0) {
+            double exitT = rayBoxExit(ex, ez, dx, dz, mapWX, mapWZ, mapWX + mapWidth, mapWZ + mapHeight);
+            if (exitT <= 0.0) return null;
+            maxT = Math.min(maxT, exitT);
+        }
+        // Cap the step: at the far end of the zoom range 0.3 % of the distance exceeds the width of
+        // a 1-block ridge and the ray would tunnel through it.
+        double step = Math.max(1.0, Math.min(4.0, cam3d.distance * 0.003));
         double prevT = 0.0;
+        int emptyCrossings = 0;
         for (double t = step; t <= maxT; t += step) {
             double px = ex + dx * t;
             double py = ey + dy * t;
@@ -1027,12 +1063,48 @@ public class MapScreen extends Screen {
                 double ht = (lo + hi) * 0.5;
                 double hx = ex + dx * ht;
                 double hz = ez + dz * ht;
+                // heightAt()/isWaterAt() return seaLevel()/false outside the mapped area and for
+                // unexplored cells, so a crossing there is not real terrain: skip it (a hole inside
+                // the map can still hit the ground behind it) and give up after a few holes.
+                if (data.isEmptyAt((int) Math.floor(hx), (int) Math.floor(hz))) {
+                    if (++emptyCrossings > 8) return null;
+                    prevT = t;
+                    continue;
+                }
                 // display the picked point in world blocks, not in the vertically stretched space
                 return new double[]{hx, groundYAt(hx, hz), hz};
             }
             prevT = t;
         }
         return null;
+    }
+
+    /**
+     * Distance along the horizontal ray at which it leaves the given X/Z rectangle, or a negative
+     * value when the ray never enters it. Used to clip the pick march to the mapped area.
+     */
+    private static double rayBoxExit(double ox, double oz, double dx, double dz,
+                                     double minX, double minZ, double maxX, double maxZ) {
+        double tMin = Double.NEGATIVE_INFINITY;
+        double tMax = Double.POSITIVE_INFINITY;
+        if (Math.abs(dx) < 1e-9) {
+            if (ox < minX || ox > maxX) return -1.0;
+        } else {
+            double t1 = (minX - ox) / dx;
+            double t2 = (maxX - ox) / dx;
+            tMin = Math.max(tMin, Math.min(t1, t2));
+            tMax = Math.min(tMax, Math.max(t1, t2));
+        }
+        if (Math.abs(dz) < 1e-9) {
+            if (oz < minZ || oz > maxZ) return -1.0;
+        } else {
+            double t1 = (minZ - oz) / dz;
+            double t2 = (maxZ - oz) / dz;
+            tMin = Math.max(tMin, Math.min(t1, t2));
+            tMax = Math.min(tMax, Math.max(t1, t2));
+        }
+        if (tMax < Math.max(0.0, tMin)) return -1.0;
+        return tMax;
     }
 
     /** Terrain (or water surface) height used by the 3D ray picker, in world blocks. */
@@ -1206,72 +1278,9 @@ public class MapScreen extends Screen {
         g.fill(x0, z1, x1 + 1, z1 + 1, yellow);
     }
 
-    /** Render-distance box projected onto the 3D terrain surface. */
-    private void drawRenderDistanceBox3d(GuiGraphicsExtractor g) {
-        if (!MapData.INSTANCE.isRenderDistanceOverlay() || cam3d == null) return;
-        var player = Minecraft.getInstance().player;
-        MapData data = MapData.INSTANCE;
-        if (player == null || !data.isReady()) return;
-        double dist = Minecraft.getInstance().options.renderDistance().get() * 16.0;
-        double px = player.getX();
-        double pz = player.getZ();
-        org.joml.Matrix4f vp = cam3d.viewProjection(
-                (float) width / Math.max(1f, (float) height), fov3d);
-        final int steps = 48;
-        int yellow = 0xE0FFFF00;
-        double prevX = 0, prevY = 0;
-        boolean prevOk = false;
-        for (int side = 0; side < 4; side++) {
-            for (int i = 0; i <= steps; i++) {
-                double t = i / (double) steps;
-                double wx;
-                double wz;
-                switch (side) {
-                    case 0 -> { wx = px - dist + 2 * dist * t; wz = pz - dist; }
-                    case 1 -> { wx = px + dist; wz = pz - dist + 2 * dist * t; }
-                    case 2 -> { wx = px + dist - 2 * dist * t; wz = pz + dist; }
-                    default -> { wx = px - dist; wz = pz + dist - 2 * dist * t; }
-                }
-                org.joml.Vector3f p = cam3d.worldToScreen(wx, groundMeshY(wx, wz) + 0.75,
-                        wz, vp, width, height);
-                if (p == null) {
-                    prevOk = false;
-                    continue;
-                }
-                if (prevOk) drawLine(g, (int) Math.round(prevX), (int) Math.round(prevY),
-                        (int) Math.round(p.x), (int) Math.round(p.y), yellow);
-                prevX = p.x;
-                prevY = p.y;
-                prevOk = true;
-            }
-            prevOk = false;
-        }
-    }
-
-    /** Integer Bresenham line for overlays that are not axis-aligned on screen. */
-    private void drawLine(GuiGraphicsExtractor g, int x0, int y0, int x1, int y1, int color) {
-        int dx = Math.abs(x1 - x0);
-        int dy = Math.abs(y1 - y0);
-        int sx = x0 < x1 ? 1 : -1;
-        int sy = y0 < y1 ? 1 : -1;
-        int err = dx - dy;
-        int guard = 0;
-        while (guard++ < 20000) {
-            if (x0 >= 0 && y0 >= 0 && x0 < width && y0 < height) {
-                g.fill(x0, y0, x0 + 1, y0 + 1, color);
-            }
-            if (x0 == x1 && y0 == y1) break;
-            int e2 = 2 * err;
-            if (e2 > -dy) {
-                err -= dy;
-                x0 += sx;
-            }
-            if (e2 < dx) {
-                err += dx;
-                y0 += sy;
-            }
-        }
-    }
+    // The 3D render-distance overlay is drawn by Gpu3DMap's overlay pass (Gpu3DMap.prepareOverlay):
+    // it builds the yellow ribbon on the terrain with the same camera/projection as the GPU
+    // terrain. The old 2D-projected box + Bresenham line helpers were dead code and are removed.
 
     /**
      * Layout of the LOD dialog. The width follows the wrapped message (so long English strings stay
@@ -1893,6 +1902,12 @@ public class MapScreen extends Screen {
         // closing the map while still in 3D used to leave the contour/label overrides set for the
         // rest of the session (2D contours vanished, biome labels stopped rebuilding)
         restore3dOverrides();
+        // Real close: release the GPU terrain unless the player asked to keep 3D tiles around.
+        // A config-screen round trip goes through removed() only (no finishClose) and keeps them;
+        // MapData clears them on a world change.
+        if (!VoxyMapConfig.KEEP_3D_TILES_IN_2D.get()) {
+            Gpu3DMap.clear();
+        }
         if (VoxyMapConfig.RELEASE_TEXTURES_ON_CLOSE.get()) {
             try {
                 MapData.INSTANCE.releaseTextures();
@@ -1905,12 +1920,16 @@ public class MapScreen extends Screen {
 
     @Override
     public void removed() {
-        // reached both when the map is closed and when another screen temporarily replaces it
-        // (e.g. the config screen); init() clears screenClosed again on return
-        screenClosed = true;
+        // Reached both when the map is really closed and when another screen temporarily replaces
+        // it (e.g. the config screen). The process-wide 3D overrides must not leak into the
+        // replacing screen, so restore them here (idempotent); init() re-applies them when the map
+        // comes back while `view3d` is still on.
+        restore3dOverrides();
         MapData.INSTANCE.onMapClosed();
-        Gpu3DMap.clear();
         releaseArrowTexture();
+        // Gpu3DMap is intentionally NOT cleared here: a 3D -> config screen -> map round trip must
+        // keep the built terrain. finishClose() releases it on a real close (unless
+        // keep3dTilesIn2d) and MapData clears it when the world changes.
         super.removed();
     }
 
@@ -2239,9 +2258,12 @@ public class MapScreen extends Screen {
             double zoomStep = 1.0 + 0.15 * VoxyMapConfig.ZOOM_SENS_3D.get();
             // a horizontal-only scroll (scrollY == 0) must not zoom the 3D view
             if (scrollY == 0) return false;
-            cam3d.distance = (float) Math.max(minDistance3d(),
-                    Math.min(maxDistance3d(),
-                            cam3d.distance * (scrollY > 0 ? 1.0 / zoomStep : zoomStep)));
+            double next = cam3d.distance * (scrollY > 0 ? 1.0 / zoomStep : zoomStep);
+            // The enter distance can exceed MAX_DISTANCE_3D (2D zoomed further out than the 3D
+            // limit); do not snap it back on the first scroll. Clamp to the configured range once
+            // the current distance is inside it, and never allow zooming out past the current one.
+            double upper = Math.max(maxDistance3d(), cam3d.distance);
+            cam3d.distance = (float) Math.max(minDistance3d(), Math.min(upper, next));
             return true;
         }
         if (scrollY == 0) return false;

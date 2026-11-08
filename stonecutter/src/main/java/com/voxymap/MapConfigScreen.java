@@ -36,7 +36,7 @@ public class MapConfigScreen extends Screen {
     }
 
     private record Item(Group group, String name, String descKey, VoxyMapConfig.Value<?> value,
-                        int min, int max, String[] options, boolean sep, boolean header) {
+                        double min, double max, String[] options, boolean header) {
     }
 
     private static final int TAB_H = 20;
@@ -82,7 +82,7 @@ public class MapConfigScreen extends Screen {
         add(Group.GENERAL, "showHint", VoxyMapConfig.SHOW_HINT, 0, 0, null);
         section(Group.GENERAL, "voxymap.config.section.interaction");
         add(Group.GENERAL, "teleportEnabled", VoxyMapConfig.TELEPORT_ENABLED, 0, 0, null);
-        add(Group.GENERAL, "defaultZoom", VoxyMapConfig.DEFAULT_ZOOM, 0, 0, null);
+        add(Group.GENERAL, "defaultZoom", VoxyMapConfig.DEFAULT_ZOOM, 0.04, 8.0, null);
         add(Group.GENERAL, "rememberZoom", VoxyMapConfig.REMEMBER_ZOOM, 0, 0, null);
         add(Group.GENERAL, "arrowStyle", VoxyMapConfig.ARROW_STYLE, 0, 0, new String[]{"clean", "classic"});
 
@@ -133,15 +133,18 @@ public class MapConfigScreen extends Screen {
         section(Group.DATA, "voxymap.config.section.cache");
         add(Group.DATA, "cacheKeepCount", VoxyMapConfig.CACHE_KEEP_COUNT, 1, 100, null);
         add(Group.DATA, "diskCacheMaxMb", VoxyMapConfig.DISK_CACHE_MAX_MB, 256, 65536, null);
+        // Highest Voxy LOD level that is merged into the index; a change invalidates the cached
+        // index, hence it lives next to the cache settings.
+        add(Group.DATA, "maxLodLevel", VoxyMapConfig.MAX_LOD_LEVEL, 0, 4, null);
 
         section(Group.THREE_D, "voxymap.config.section.camera");
         add(Group.THREE_D, "fov3d", VoxyMapConfig.FOV_3D, 30, 110, null);
-        add(Group.THREE_D, "verticalScale3d", VoxyMapConfig.VERTICAL_SCALE_3D, 0, 0, null);
+        add(Group.THREE_D, "verticalScale3d", VoxyMapConfig.VERTICAL_SCALE_3D, 0.1, 3.0, null);
         add(Group.THREE_D, "minDistance3d", VoxyMapConfig.MIN_DISTANCE_3D, 16, 4096, null);
         add(Group.THREE_D, "maxDistance3d", VoxyMapConfig.MAX_DISTANCE_3D, 512, 32768, null);
-        add(Group.THREE_D, "rotateSens3d", VoxyMapConfig.ROTATE_SENS_3D, 0, 0, null);
-        add(Group.THREE_D, "panSens3d", VoxyMapConfig.PAN_SENS_3D, 0, 0, null);
-        add(Group.THREE_D, "zoomSens3d", VoxyMapConfig.ZOOM_SENS_3D, 0, 0, null);
+        add(Group.THREE_D, "rotateSens3d", VoxyMapConfig.ROTATE_SENS_3D, 0.2, 5.0, null);
+        add(Group.THREE_D, "panSens3d", VoxyMapConfig.PAN_SENS_3D, 0.2, 5.0, null);
+        add(Group.THREE_D, "zoomSens3d", VoxyMapConfig.ZOOM_SENS_3D, 0.2, 5.0, null);
         add(Group.THREE_D, "remember3dView", VoxyMapConfig.REMEMBER_3D_VIEW, 0, 0, null);
         section(Group.THREE_D, "voxymap.config.section.terrainMesh");
         add(Group.THREE_D, "gpuTerrainNearDistance", VoxyMapConfig.GPU_TERRAIN_NEAR_DISTANCE, 64, 4096, null);
@@ -178,17 +181,12 @@ public class MapConfigScreen extends Screen {
         add(Group.DEBUG, "debugTileTrace", VoxyMapConfig.DEBUG_TILE_TRACE, 0, 0, null);
     }
 
-    private void add(Group g, String name, VoxyMapConfig.Value<?> value, int min, int max, String[] options) {
-        add(g, name, value, min, max, options, false);
-    }
-
-    private void add(Group g, String name, VoxyMapConfig.Value<?> value, int min, int max,
-                     String[] options, boolean sep) {
-        items.add(new Item(g, name, "voxymap.config.desc." + name, value, min, max, options, sep, false));
+    private void add(Group g, String name, VoxyMapConfig.Value<?> value, double min, double max, String[] options) {
+        items.add(new Item(g, name, "voxymap.config.desc." + name, value, min, max, options, false));
     }
 
     private void section(Group g, String key) {
-        items.add(new Item(g, key, "", null, 0, 0, null, false, true));
+        items.add(new Item(g, key, "", null, 0.0, 0.0, null, true));
     }
 
     private static int withAlpha(int color, float t) {
@@ -233,6 +231,7 @@ public class MapConfigScreen extends Screen {
     }
 
     private void applyDraft() {
+        int oldLodCap = VoxyMapConfig.MAX_LOD_LEVEL.get();
         for (Item it : items) {
             if (it.header()) continue;
             ((VoxyMapConfig.Value<Object>) it.value()).set(draft.get(it));
@@ -242,6 +241,11 @@ public class MapConfigScreen extends Screen {
         // Rendering changes must re-colour existing tiles; otherwise the ramp toggle only
         // affects tiles loaded after the config screen closes.
         MapData.INSTANCE.requestColorRerender();
+        if (oldLodCap != VoxyMapConfig.MAX_LOD_LEVEL.get()) {
+            // The section index stores the LOD cap it was built with; a change invalidates it, so
+            // request a rebuild instead of waiting for the next manual refresh.
+            MapData.INSTANCE.updateAsync(true);
+        }
     }
 
     private void resetDraft() {
@@ -448,17 +452,12 @@ public class MapConfigScreen extends Screen {
         try {
             if (v instanceof Integer) {
                 int parsed = Integer.parseInt(editText.trim());
-                set(it, Math.max(it.min(), Math.min(it.max(), parsed)));
+                set(it, (int) Math.max(it.min(), Math.min(it.max(), parsed)));
             } else if (v instanceof Double) {
                 double parsed = Double.parseDouble(editText.trim());
-                // use the control's own range (like the Integer branch); 0.04..8.0 only as a
-                // fallback for controls that do not declare one
-                double lo = it.min();
-                double hi = it.max();
-                if (hi <= lo) {
-                    lo = 0.04;
-                    hi = 8.0;
-                }
+                // the control's declared range is authoritative; every Double item now has one
+                double lo = Math.min(it.min(), it.max());
+                double hi = Math.max(it.min(), it.max());
                 set(it, Math.max(lo, Math.min(hi, Math.round(parsed * 100.0) / 100.0)));
             }
         } catch (NumberFormatException ignored) {
@@ -480,18 +479,12 @@ public class MapConfigScreen extends Screen {
     private void applySlider(Item it, double mx) {
         double ratio = Math.max(0, Math.min(1, (mx - controlX()) / (double) SLIDER_W));
         Object v = dv(it);
+        double min = Math.min(it.min(), it.max());
+        double max = Math.max(it.min(), it.max());
         if (v instanceof Integer) {
-            int val = it.min() + (int) Math.round(ratio * (it.max() - it.min()));
-            set(it, val);
+            set(it, (int) Math.round(min + ratio * (max - min)));
         } else if (v instanceof Double) {
-            // use the configured range; fall back to the historic 0.04..8 range when none is given
-            double minD = it.min();
-            double maxD = it.max();
-            if (maxD <= minD) {
-                minD = 0.04;
-                maxD = 8.0;
-            }
-            double val = minD + ratio * (maxD - minD);
+            double val = min + ratio * (max - min);
             set(it, Math.round(val * 100.0) / 100.0);
         }
     }
@@ -565,10 +558,8 @@ public class MapConfigScreen extends Screen {
             if (rh > 0.01f) {
                 g.fill(PAD, y, rowRight(), y + ROW_H, withAlpha(COL_ROW_HOVER, rowT * rh * 0.8f));
             }
-            // section rows draw only the thicker divider, other rows get the thin line
-            if (it.sep()) {
-                g.fill(PAD, y, rowRight(), y + 2, withAlpha(0x20FFFFFF, rowT));
-            } else if (i > scroll) {
+            // rows below the first get a thin divider; section headers are their own row type
+            if (i > scroll) {
                 g.fill(PAD, y, rowRight(), y + 1, withAlpha(0x20FFFFFF, rowT));
             }
 
@@ -671,8 +662,10 @@ public class MapConfigScreen extends Screen {
         }
 
         if (v instanceof Integer n) {
-            int range = Math.max(1, it.max() - it.min());
-            double t = (n - it.min()) / (double) range;
+            double min = Math.min(it.min(), it.max());
+            double max = Math.max(it.min(), it.max());
+            double range = Math.max(1.0, max - min);
+            double t = (n - min) / range;
             int x = cx;
             g.fill(x, cy - 1, x + SLIDER_W, cy + 1, withAlpha(0x60FFFFFF, alpha));
             int knobX = x + (int) Math.round(t * SLIDER_W);
@@ -683,13 +676,10 @@ public class MapConfigScreen extends Screen {
         }
 
         if (v instanceof Double d) {
-            double minD = it.min();
-            double maxD = it.max();
-            if (maxD <= minD) {
-                minD = 0.04;
-                maxD = 8.0;
-            }
-            double t = Math.max(0, Math.min(1, (d - minD) / (maxD - minD)));
+            double min = Math.min(it.min(), it.max());
+            double max = Math.max(it.min(), it.max());
+            double span = Math.max(1.0e-9, max - min);
+            double t = Math.max(0, Math.min(1, (d - min) / span));
             int x = cx;
             g.fill(x, cy - 1, x + SLIDER_W, cy + 1, withAlpha(0x60FFFFFF, alpha));
             int knobX = x + (int) Math.round(t * SLIDER_W);

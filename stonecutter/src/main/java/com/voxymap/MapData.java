@@ -169,8 +169,37 @@ public final class MapData {
     /** viewport (map pixels) the current biome snapshot was built for */
     private int biomeViewCenterPxX, biomeViewCenterPzX, biomeViewHalfW, biomeViewHalfH;
     private int biomeLabelsViewCenterPxX, biomeLabelsViewCenterPzX, biomeLabelsViewHalfW, biomeLabelsViewHalfH;
-    private volatile Snapshot biomeLabelsGlobalSnapshot;
+    /**
+     * Label builds are position-only: the flat {@code int[]} triples are the product and the pixel
+     * snapshot is only a build input. Publishing a full-map snapshot here used to pin a whole-map
+     * {@code long[]} (256 MB at the old 32M px cap) for the entire session, so the completed build
+     * only publishes a token (ready flag + version) now and lets the snapshot be collected.
+     */
+    private volatile boolean biomeLabelsGlobalReady;
     private volatile int biomeLabelsGlobalVersion = -1;
+    /** viewport-fallback label set: built from a bounded region when the whole store is too big */
+    private volatile boolean biomeLabelsRegionReady;
+    private volatile int biomeLabelsRegionVersion = -1;
+    /** render thread only: scratch for {@link LiveTileStore#visibleTileBounds(int[])} */
+    private final int[] biomeViewportBounds = new int[4];
+    /** backoff for the whole-store label build (kept separate from the viewport path backoff) */
+    private volatile long nextBiomeFullAttemptMs;
+    /** throttle for label rebuilds (labels are background information; no need for per-frame work) */
+    private long lastBiomeLabelBuildMs;
+    /**
+     * Upper bound for the pixels one label build may materialise. A build costs ~8 B/px for the
+     * snapshot plus ~10 B/px of scratch inside {@link #buildBiomeLabels(Snapshot)} (plus the
+     * region-size queue), i.e. roughly 18 B/px, so 6M px caps a build at ~110 MB transient and
+     * nothing stays referenced afterwards. The old whole-map path allowed 32M px (~0.8-1.1 GB
+     * peak) which could exhaust a default 2 GB client heap.
+     */
+    private static final long BIOME_LABEL_MAX_PIXELS = 6_000_000L;
+    /** Viewport fallback: the region centre is quantised to this world-pixel cell. */
+    private static final int BIOME_LABEL_VIEW_CELL_PX = 1024;
+    /** Label rebuilds are throttled to this interval; labels do not need per-frame updates. */
+    private static final long BIOME_LABEL_BUILD_INTERVAL_MS = 400L;
+    /** Optional override from the screen: when false no label build is started at all. */
+    private volatile boolean biomeLabelsWanted = true;
     private long lastBiomeViewBuildMs;
     private final AtomicBoolean buildingBiome = new AtomicBoolean();
     private volatile boolean loading;
@@ -796,6 +825,10 @@ public final class MapData {
             LiveTileStore store = liveTiles;
             biomeContentVersion = store == null ? -1 : store.contentVersion();
             lastBiomeRefreshMs = System.currentTimeMillis();
+        } else if (!value && biomeOverlay) {
+            // switching the overlay off has no cached texture/label to reuse: drop them so the
+            // whole-store snapshot and the label array are not kept while the overlay is off (M2)
+            clearBiomeLabels();
         }
         biomeOverlay = value;
         saveUiState();
@@ -1188,6 +1221,9 @@ public final class MapData {
         releaseTextures();
         dropAnalysisCaches();
         releaseLiveTiles();
+        // GPU-side 3D tiles belong to the previous world as well; the screen's clear on close is
+        // not a reliable world-change path (leaving the world need not close the map) (fix 7)
+        clearGpu3DTiles();
         tile2dStorage = null;
         // 3D and forced-grid state is per-world too: without this a new world could inherit the
         // previous world's 3D mode/camera or its safety-grid choice, and the first saveUiState()
@@ -1219,9 +1255,7 @@ public final class MapData {
         terrainCache = null;
         biomeEdgePx = null;
         biomeEdgeVersion = 0;
-        biomeLabelsSnapshot = null;
-        biomeLabelsGlobalSnapshot = null;
-        biomeLabelsGlobalVersion = -1;
+        clearBiomeLabels();
     }
 
     /** True when the kept snapshot does not belong to the world that is loaded now. */
@@ -1231,8 +1265,13 @@ public final class MapData {
         return storage == null || !storage.equals(snapStorage);
     }
 
-    /** Drops the kept snapshot and its textures before a different world is built. */
+    /**
+     * Drops the kept snapshot and its textures before a different world is built. The GPU-side 3D
+     * tiles belong to the old world as well, so they are cleared here too (the screen's own clear
+     * is not guaranteed to run, e.g. when the world is left without closing the map screen).
+     */
     public void dropSnapshotForWorldChange() {
+        clearGpu3DTiles();
         if (snap == null && colorFrame == null) return;
         snap = null;
         snapStorage = null;
@@ -1240,7 +1279,6 @@ public final class MapData {
         pendingBuiltIndex = null;
         colorFrame = null;
         lastRenderedStyle = null;
-        biomeLabelsFlat = new int[0];
         dropAnalysisCaches();
         releaseLiveTiles();
         releaseAllTextures();
@@ -2391,6 +2429,8 @@ public final class MapData {
         mapClosedAtMs = System.currentTimeMillis();
         openRefreshPending = false;
         cancelActiveRefresh();
+        // label arrays are derived from the tiles and are cheap to rebuild: do not keep them (M2)
+        clearBiomeLabels();
         LiveTileStore store = liveTiles;
         if (store != null) {
             // Keep memory resident for instant reopen, but persist the dirty tiles so moving away
@@ -3451,6 +3491,22 @@ public final class MapData {
         releaseOne(mc, biomeTextureId);
         biomeTextureId = null;
         biomeImage = null;
+        // derived label state must not survive the texture release (M2)
+        clearBiomeLabels();
+    }
+
+    /**
+     * Drops the GPU-side 3D tile buffers. Safe from any thread: the actual release is queued to
+     * the render thread when this is not called from it (world-change paths run on the loader).
+     */
+    private static void clearGpu3DTiles() {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc == null) return;
+        if (mc.isSameThread()) {
+            Gpu3DMap.clear();
+        } else {
+            mc.execute(Gpu3DMap::clear);
+        }
     }
 
     /** Kept for callers that still use the generic name. */
@@ -3482,6 +3538,15 @@ public final class MapData {
         if (!isTile2DMode()) return;
         LiveTileStore live = ensure2DStore();
         if (live != null) live.pumpFor3D(centerX, centerZ, radiusTiles, style, sea, colorEpoch);
+    }
+
+    /**
+     * Cheap accessor for code that runs every frame and only needs the store that already exists:
+     * unlike {@link #getLiveTiles()} it never reaches {@code findStorage()} (directory IO). Render
+     * thread only, because the store is created and disposed there.
+     */
+    public LiveTileStore currentLiveTiles() {
+        return liveTiles;
     }
 
     public LiveTileStore getLiveTiles() {
@@ -3567,7 +3632,12 @@ public final class MapData {
         store.invalidateAllColors();
     }
 
-    /** Rebuilds the biome overlay/labels at a low frequency while tiles keep updating. */
+    /**
+     * Keeps the biome bookkeeping in sync while tiles update. The borders are baked per tile and
+     * invalidate themselves through {@code textureDirty}, and the label sets are keyed by
+     * {@link LiveTileStore#biomeVersion()}, so this must NOT bump the build generation any more:
+     * doing that every 3 s discarded in-flight label builds and re-triggered full rebuilds (M3).
+     */
     private void maybeRefreshTileBiome(LiveTileStore store, long now) {
         if (!biomeOverlay) {
             biomeContentVersion = store.contentVersion();
@@ -3578,7 +3648,6 @@ public final class MapData {
         if (now - lastBiomeRefreshMs < 3000L) return;
         biomeContentVersion = version;
         lastBiomeRefreshMs = now;
-        markTileBiomeStale();
     }
 
     /** Keep the old overlay visible while a fresh snapshot/labels are built in the background. */
@@ -3596,11 +3665,7 @@ public final class MapData {
         biomeImage = null;
         biomeEdgePx = null;
         biomeEdgeVersion = 0;
-        biomeLabelsFlat = new int[0];
-        biomeLabelsSnapshot = null;
-        biomeLabelsGlobalSnapshot = null;
-        biomeLabelsGlobalVersion = -1;
-        nextTileBiomeAttemptMs = 0L;
+        clearBiomeLabels();
         biomeBuildGeneration++;
     }
 
@@ -3698,16 +3763,37 @@ public final class MapData {
         }
         LiveTileStore live = liveTiles;
         if (live == null || !live.hasBounds()) return;
-        int version = live.contentVersion();
-        if (biomeLabelsGlobalSnapshot != null && biomeLabelsGlobalVersion == version) return;
+        if (!biomeLabelsWanted) return;
+        int version = live.biomeVersion();
+        if (biomeLabelsGlobalReady && biomeLabelsGlobalVersion == version) return;
+        long now = System.currentTimeMillis();
+        if (!biomeLabelsLikelyVisible(live)) return;
+        if (!biomeLabelsFullAllowed(live)) {
+            // B2: a whole-store snapshot would exceed the label budget. Fall back to the bounded
+            // viewport region path instead of silently freezing the labels (biomeLabelsFullAllowed
+            // re-evaluates every call, so a store that shrinks again gets the full path back).
+            ensureBiomeLabelsViewportFallback(live);
+            return;
+        }
+        if (now < nextBiomeFullAttemptMs) {
+            // a previous whole-store build failed or was too large: keep the labels alive through
+            // the bounded viewport path while the full build backs off
+            ensureBiomeLabelsViewportFallback(live);
+            return;
+        }
+        if (now - lastBiomeLabelBuildMs < BIOME_LABEL_BUILD_INTERVAL_MS) return;
         if (!buildingBiome.compareAndSet(false, true)) return;
+        lastBiomeLabelBuildMs = now;
         final int epochAtStart = worldEpoch;
         final int generationAtStart = biomeBuildGeneration;
         final Map<Integer, String> names = tileBiomeNames;
         loader.submit(() -> {
             try {
                 Snapshot s = live.buildSnapshot(names);
-                if (s == null) {
+                if (s == null || (long) s.width * s.height > BIOME_LABEL_MAX_PIXELS) {
+                    // too large for a full label pass: back off, the next calls use the viewport
+                    // fallback above instead of resubmitting this build every frame
+                    nextBiomeFullAttemptMs = System.currentTimeMillis() + 5_000L;
                     buildingBiome.set(false);
                     return;
                 }
@@ -3719,20 +3805,25 @@ public final class MapData {
                     labels[i + 1] += offZ;
                 }
                 final int[] finalLabels = labels;
-                final Snapshot snapshot = s;
+                // deliberately no `final Snapshot snapshot = s` capture: the pixel array must be
+                // collectable as soon as the label array is built (B1)
                 Minecraft.getInstance().execute(() -> {
                     try {
                         if (epochAtStart != worldEpoch || liveTiles != live
                                 || generationAtStart != biomeBuildGeneration) return;
                         biomeLabelsFlat = finalLabels;
-                        biomeLabelsSnapshot = snapshot;
-                        biomeLabelsGlobalSnapshot = snapshot;
-                        biomeLabelsGlobalVersion = version;
+                        biomeLabelsSnapshot = null;
+                        biomeLabelsRegionReady = false;
+                        biomeLabelsGlobalReady = true;
+                        // re-sample after the build (M3): publishing the version observed before the
+                        // build guaranteed one extra full rebuild whenever data changed meanwhile
+                        biomeLabelsGlobalVersion = live.biomeVersion();
                     } finally {
                         buildingBiome.set(false);
                     }
                 });
             } catch (Throwable t) {
+                nextBiomeFullAttemptMs = System.currentTimeMillis() + 5_000L;
                 buildingBiome.set(false);
                 t.printStackTrace();
             }
@@ -3742,23 +3833,31 @@ public final class MapData {
     /**
      * Labels-only variant: biome borders are now derived per tile, so 2D/3D only need the label
      * anchors for the current viewport. This never allocates a viewport-sized edge texture.
+     *
+     * <p>Used as the fallback for {@link #ensureBiomeLabelsGlobal()} when the whole store is too
+     * large for a full snapshot (and available to any caller that has a map-pixel viewport).</p>
      */
     public void ensureBiomeLabels(int centerPxX, int centerPzX, int halfW, int halfH) {
         if (!isTile2DMode()) {
             ensureBiomeTexture();
             return;
         }
+        if (!biomeLabelsWanted) return;
         int reqHalfW = Math.max(32, Math.min(2048, halfW));
         int reqHalfH = Math.max(32, Math.min(2048, halfH));
+        LiveTileStore live = liveTiles;
+        if (live == null) return;
+        int version = live.biomeVersion();
         boolean sameView = centerPxX == biomeLabelsViewCenterPxX
                 && centerPzX == biomeLabelsViewCenterPzX
                 && reqHalfW == biomeLabelsViewHalfW && reqHalfH == biomeLabelsViewHalfH;
-        if (biomeLabelsSnapshot != null && sameView) return;
+        if (biomeLabelsRegionReady && biomeLabelsRegionVersion == version && sameView) return;
+        if ((long) (reqHalfW * 2) * (reqHalfH * 2) > BIOME_LABEL_MAX_PIXELS) return;
         long now = System.currentTimeMillis();
         if (now < nextTileBiomeAttemptMs) return;
-        LiveTileStore live = liveTiles;
-        if (live == null) return;
+        if (now - lastBiomeLabelBuildMs < BIOME_LABEL_BUILD_INTERVAL_MS) return;
         if (!buildingBiome.compareAndSet(false, true)) return;
+        lastBiomeLabelBuildMs = now;
         final int epochAtStart = worldEpoch;
         final int generationAtStart = biomeBuildGeneration;
         final Map<Integer, String> names = tileBiomeNames;
@@ -3779,13 +3878,16 @@ public final class MapData {
                     labels[i + 1] += offZ;
                 }
                 final int[] finalLabels = labels;
-                final Snapshot snapshot = s;
+                // no Snapshot capture in the callback: the region pixels are build input only
                 Minecraft.getInstance().execute(() -> {
                     try {
                         if (epochAtStart != worldEpoch || liveTiles != live
                                 || generationAtStart != biomeBuildGeneration) return;
                         biomeLabelsFlat = finalLabels;
-                        biomeLabelsSnapshot = snapshot;
+                        biomeLabelsSnapshot = null;
+                        biomeLabelsGlobalReady = false;
+                        biomeLabelsRegionReady = true;
+                        biomeLabelsRegionVersion = live.biomeVersion();
                         biomeLabelsViewCenterPxX = reqCenterX;
                         biomeLabelsViewCenterPzX = reqCenterZ;
                         biomeLabelsViewHalfW = reqHalfW;
@@ -3800,6 +3902,109 @@ public final class MapData {
                 t.printStackTrace();
             }
         });
+    }
+
+    /**
+     * Derives a bounded label viewport from the tiles the renderer drew in the current frame and
+     * asks the region path for labels. The centre is quantised to a world-aligned cell so panning
+     * inside one cell cannot queue a rebuild per frame; the region is shrunk towards the memory
+     * budget if the viewport is large (labels outside the region are simply not drawn).
+     */
+    private void ensureBiomeLabelsViewportFallback(LiveTileStore live) {
+        if (!live.visibleTileBounds(biomeViewportBounds)) return;
+        int pb = Math.max(1, live.pixelBlocks());
+        int tx0 = biomeViewportBounds[0], tz0 = biomeViewportBounds[1];
+        int tx1 = biomeViewportBounds[2], tz1 = biomeViewportBounds[3];
+        int minPxX = (int) Math.floorDiv(live.tileMinWX(tx0), pb);
+        int minPxZ = (int) Math.floorDiv(live.tileMinWZ(tz0), pb);
+        int maxPxX = (int) Math.floorDiv(live.tileMinWX(tx1), pb) + LiveTileStore.TILE_PIXELS;
+        int maxPxZ = (int) Math.floorDiv(live.tileMinWZ(tz1), pb) + LiveTileStore.TILE_PIXELS;
+        int cell = BIOME_LABEL_VIEW_CELL_PX;
+        int centerX = (int) (Math.floorDiv((long) ((minPxX + maxPxX) / 2), cell) * cell + cell / 2);
+        int centerZ = (int) (Math.floorDiv((long) ((minPxZ + maxPxZ) / 2), cell) * cell + cell / 2);
+        int spanX = Math.max(LiveTileStore.TILE_PIXELS, maxPxX - minPxX);
+        int spanZ = Math.max(LiveTileStore.TILE_PIXELS, maxPxZ - minPxZ);
+        int halfW = Math.max(256, Math.min(2048, spanX / 2 + 256));
+        int halfH = Math.max(256, Math.min(2048, spanZ / 2 + 256));
+        // quantise the extents first: a one-tile change at the viewport edge must not rebuild
+        halfW = (halfW + 255) & ~255;
+        halfH = (halfH + 255) & ~255;
+        // ... then shrink in 256 px steps until the region fits the label budget, so the guard in
+        // ensureBiomeLabels() is never the thing that silently rejects the fallback (B2)
+        while ((long) (halfW * 2) * (halfH * 2) > BIOME_LABEL_MAX_PIXELS
+                && (halfW > 256 || halfH > 256)) {
+            if (halfW >= halfH) {
+                halfW = Math.max(256, halfW - 256);
+            } else {
+                halfH = Math.max(256, halfH - 256);
+            }
+        }
+        ensureBiomeLabels(centerX, centerZ, halfW, halfH);
+    }
+
+    /**
+     * True when a whole-store label snapshot fits the label budget. Evaluated before any
+     * allocation and re-checked on every call so a store that shrinks (evictions, map scale
+     * change) gets the full path back.
+     */
+    private static boolean biomeLabelsFullAllowed(LiveTileStore live) {
+        if (!live.hasBounds()) return false;
+        long tilesX = (long) live.maxTileX() - live.minTileX() + 1L;
+        long tilesZ = (long) live.maxTileZ() - live.minTileZ() + 1L;
+        if (tilesX <= 0L || tilesZ <= 0L) return false;
+        long wpx = tilesX * LiveTileStore.TILE_PIXELS;
+        long hpx = tilesZ * LiveTileStore.TILE_PIXELS;
+        if (wpx > 16_384L || hpx > 16_384L) return false;
+        return wpx * hpx <= BIOME_LABEL_MAX_PIXELS;
+    }
+
+    /**
+     * Cheap "is the label layer actually drawn" gate (M4). The renderer draws labels only while
+     * {@code zoom * guiScale >= 1}; the visible tile span covers at least the GUI width, so a very
+     * wide span means the label layer is off. Skipping the build keeps a zoomed-out map from
+     * paying for labels nobody sees (the full build is retried as soon as the span shrinks).
+     */
+    private boolean biomeLabelsLikelyVisible(LiveTileStore live) {
+        // 3D gates its labels on a camera-derived zoom, and pumpFor3D's tile span is the terrain
+        // pipeline radius rather than the screen footprint, so the 2D estimate below does not apply
+        if (view3d) return true;
+        if (!live.visibleTileBounds(biomeViewportBounds)) return false;
+        long spanPx = (long) (biomeViewportBounds[2] - biomeViewportBounds[0] + 1)
+                * LiveTileStore.TILE_PIXELS;
+        Minecraft mc = Minecraft.getInstance();
+        if (mc == null) return true;
+        int guiWidth = mc.getWindow().getGuiScaledWidth();
+        if (guiWidth <= 0) return true;
+        // tiles cover at least the GUI width, so this under-estimates the real zoom a little
+        double zoomEstimate = guiWidth / (double) Math.max(1L, spanPx);
+        // the renderer threshold is 1.0; only skip when clearly below it
+        return zoomEstimate * mc.getWindow().getGuiScale() >= 0.75;
+    }
+
+    /**
+     * Drops every derived label array. Labels are cheap compared to the pixel snapshots, but the
+     * release paths should still leave no biome state behind after the map closes or the overlay
+     * is switched off (M2).
+     */
+    private void clearBiomeLabels() {
+        biomeLabelsFlat = new int[0];
+        biomeLabelsSnapshot = null;
+        biomeLabelsGlobalReady = false;
+        biomeLabelsGlobalVersion = -1;
+        biomeLabelsRegionReady = false;
+        biomeLabelsRegionVersion = -1;
+        nextBiomeFullAttemptMs = 0L;
+        nextTileBiomeAttemptMs = 0L;
+        lastBiomeLabelBuildMs = 0L;
+    }
+
+    /**
+     * Optional hint from the map screen: when labels cannot be drawn at the current zoom the
+     * screen may switch label building off entirely. Defaults to true, so callers that never set
+     * it keep the previous behaviour.
+     */
+    public void setBiomeLabelsWanted(boolean wanted) {
+        biomeLabelsWanted = wanted;
     }
 
     public void ensureBiomeTexture() {
@@ -4062,14 +4267,28 @@ public final class MapData {
         return bimg;
     }
 
+    /**
+     * Biome id stored in a packed pixel column (bits 53..61). Callers must exclude
+     * {@link #LONG_EMPTY} first: the empty sentinel has bit 63 set and would decode to 0.
+     */
+    private static int biomeOf(long packed) {
+        return (int) ((packed >>> 53) & 0x1FF);
+    }
+
+    /**
+     * Label anchors for a snapshot, as flat {@code {x, z, biomeId}} triples in snapshot pixels.
+     *
+     * <p>Peak memory (the reason this stays bounded): {@code visited} + {@code inRegion} are
+     * 1 B/px, {@code dist} and {@code bq} are 4 B/px each, so 10 B/px here, plus the region-sized
+     * queue in {@link #pickLabelPoint} (worst case another 4 B/px). The caller caps the snapshot at
+     * {@link #BIOME_LABEL_MAX_PIXELS}, i.e. ~110 MB transient for one build at the cap, and nothing
+     * is retained afterwards. The former {@code biomeArr} (another 4 B/px) was dropped: the biome
+     * id is decoded from the packed pixel on demand instead.</p>
+     */
     private static int[] buildBiomeLabels(Snapshot s) {
         int w = s.width, h = s.height;
         long[] pixels = s.pixels;
         int n = w * h;
-        int[] biomeArr = new int[n];
-        for (int i = 0; i < n; i++) {
-            if (pixels[i] != LONG_EMPTY) biomeArr[i] = (int) ((pixels[i] >>> 53) & 0x1FF);
-        }
         boolean[] visited = new boolean[n];
         boolean[] inRegion = new boolean[n];
         int[] dist = new int[n];
@@ -4083,14 +4302,14 @@ public final class MapData {
             bq[qt++] = st;
             visited[st] = true;
             inRegion[st] = true;
-            int b0 = biomeArr[st];
+            int b0 = biomeOf(pixels[st]);
             while (qh < qt) {
                 int ii = bq[qh++];
                 int x = ii % w, z = ii / w;
-                if (x > 0) { int j = ii - 1; if (!visited[j] && pixels[j] != LONG_EMPTY && biomeArr[j] == b0) { visited[j] = true; inRegion[j] = true; bq[qt++] = j; } }
-                if (x < w - 1) { int j = ii + 1; if (!visited[j] && pixels[j] != LONG_EMPTY && biomeArr[j] == b0) { visited[j] = true; inRegion[j] = true; bq[qt++] = j; } }
-                if (z > 0) { int j = ii - w; if (!visited[j] && pixels[j] != LONG_EMPTY && biomeArr[j] == b0) { visited[j] = true; inRegion[j] = true; bq[qt++] = j; } }
-                if (z < h - 1) { int j = ii + w; if (!visited[j] && pixels[j] != LONG_EMPTY && biomeArr[j] == b0) { visited[j] = true; inRegion[j] = true; bq[qt++] = j; } }
+                if (x > 0) { int j = ii - 1; if (!visited[j] && pixels[j] != LONG_EMPTY && biomeOf(pixels[j]) == b0) { visited[j] = true; inRegion[j] = true; bq[qt++] = j; } }
+                if (x < w - 1) { int j = ii + 1; if (!visited[j] && pixels[j] != LONG_EMPTY && biomeOf(pixels[j]) == b0) { visited[j] = true; inRegion[j] = true; bq[qt++] = j; } }
+                if (z > 0) { int j = ii - w; if (!visited[j] && pixels[j] != LONG_EMPTY && biomeOf(pixels[j]) == b0) { visited[j] = true; inRegion[j] = true; bq[qt++] = j; } }
+                if (z < h - 1) { int j = ii + w; if (!visited[j] && pixels[j] != LONG_EMPTY && biomeOf(pixels[j]) == b0) { visited[j] = true; inRegion[j] = true; bq[qt++] = j; } }
             }
             if (qt >= minArea) {
                 int point = pickLabelPoint(bq, qt, inRegion, dist, w, h);

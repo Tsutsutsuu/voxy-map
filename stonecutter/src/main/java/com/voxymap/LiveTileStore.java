@@ -165,6 +165,8 @@ public final class LiveTileStore {
     private volatile long lastMaxPersistMs;
     private final AtomicInteger rampVersion = new AtomicInteger();
     private final AtomicInteger contentVersion = new AtomicInteger();
+    /** Bumped only when tile pixels change; biome labels are keyed by this (not by evictions). */
+    private final AtomicInteger biomeVersion = new AtomicInteger();
     private final AtomicInteger colorVersion = new AtomicInteger();
     private volatile long lastRampChangeMs;
 
@@ -383,6 +385,7 @@ public final class LiveTileStore {
         maxLandY.set(persistedMaxLand);
         rampVersion.incrementAndGet();
         contentVersion.incrementAndGet();
+        biomeVersion.incrementAndGet();
         lastRampChangeMs = System.currentTimeMillis();
         minTileX.set(Integer.MAX_VALUE);
         maxTileX.set(Integer.MIN_VALUE);
@@ -567,6 +570,15 @@ public final class LiveTileStore {
     /** Increments whenever terrain pixels change; biome overlay/labels rebuild on this cheaply. */
     public int contentVersion() {
         return contentVersion.get();
+    }
+
+    /**
+     * Bumped only when tile pixels change (new sections, source/target fills, cache loads). Biome
+     * label sets are keyed by this instead of {@link #contentVersion()} so evictions and recolours
+     * cannot trigger whole-label rebuilds.
+     */
+    public int biomeVersion() {
+        return biomeVersion.get();
     }
 
     public int colorVersion() {
@@ -755,6 +767,7 @@ public final class LiveTileStore {
                 invalidateNeighborColors(tx, tz);
                 observeTile(tile);
                 contentVersion.incrementAndGet();
+                biomeVersion.incrementAndGet();
                 scheduleSave(tile);
             } else {
                 previous.sourceFilled = true;
@@ -849,6 +862,7 @@ public final class LiveTileStore {
             tile.borderHashKnown = false;
             observeTile(tile);
             contentVersion.incrementAndGet();
+            biomeVersion.incrementAndGet();
             invalidateNeighborColors(tile.tx, tile.tz);
         }
     }
@@ -935,29 +949,30 @@ public final class LiveTileStore {
         int ccx = tileIndexX(centerX);
         int ccz = tileIndexZ(centerZ);
         int radius = Math.max(1, Math.min(32, radiusTiles));
-        int styleHash = ((style == null ? 0 : style.hashCode()) * 31 + sea) * 31 + colorEpoch;
+        // same colour identity as textureFor(): 3D never bakes textures, so no texture hash here
+        int colorHash = tileColorHash(style, sea, colorEpoch);
         for (int r = 0; r <= radius; r++) {
             for (int tx = ccx - r; tx <= ccx + r; tx++) {
-                pump3DTile(tx, ccz - r, styleHash);
-                if (r != 0) pump3DTile(tx, ccz + r, styleHash);
+                pump3DTile(tx, ccz - r, colorHash);
+                if (r != 0) pump3DTile(tx, ccz + r, colorHash);
             }
             for (int tz = ccz - r + 1; tz <= ccz + r - 1; tz++) {
-                pump3DTile(ccx - r, tz, styleHash);
-                if (r != 0) pump3DTile(ccx + r, tz, styleHash);
+                pump3DTile(ccx - r, tz, colorHash);
+                if (r != 0) pump3DTile(ccx + r, tz, colorHash);
             }
         }
         int cap = Math.max(256, VoxyMapConfig.TILE_RESIDENT_CAP.get());
         trimResident(cap, Math.max(256, cap * 7 / 10));
     }
 
-    private void pump3DTile(int tx, int tz, int styleHash) {
+    private void pump3DTile(int tx, int tz, int colorHash) {
         LiveTile tile = getOrCreateSeed(tx, tz);
         if (tile == null) return;
         visibleTiles.add(tile);
         tile.lastAccessFrame = textureFrame;
-        if (tile.version != tile.coloredVersion || tile.colorStyleHash != styleHash) {
+        if (tile.version != tile.coloredVersion || tile.colorStyleHash != colorHash) {
             if (!tile.colorPending && colorRequestsThisFrame.get() < 12) {
-                requestColor(tile, styleHash);
+                requestColor(tile, colorHash);
             }
         }
     }
@@ -1031,6 +1046,7 @@ public final class LiveTileStore {
                         invalidateNeighborColors(tx, tz);
                         observeTile(cached);
                         contentVersion.incrementAndGet();
+                        biomeVersion.incrementAndGet();
                     }
                 });
             });
@@ -1061,6 +1077,7 @@ public final class LiveTileStore {
                     invalidateNeighborColors(tx, tz);
                     observeTile(result);
                     contentVersion.incrementAndGet();
+                    biomeVersion.incrementAndGet();
                 }
             });
         });
@@ -1330,6 +1347,7 @@ public final class LiveTileStore {
             t.borderHashKnown = false;
             observeTile(t);
             contentVersion.incrementAndGet();
+            biomeVersion.incrementAndGet();
             invalidateNeighborColors(t.tx, t.tz);
         }
     }
@@ -1344,8 +1362,12 @@ public final class LiveTileStore {
         tile.lastAccessFrame = textureFrame;
         visibleTextures.add(tile);
         tile.lastTextureFrame = textureFrame;
-        int styleHash = ((style == null ? 0 : style.hashCode()) * 31 + sea) * 31 + colorEpoch;
-        styleHash = styleHash * 31 + (MapData.INSTANCE.isBiomeOverlay() ? 1 : 0);
+        // M1: two identities. The colour hash is shared with pumpFor3D, the texture hash adds the
+        // render-only biome-border flag. Mixing them made every 2D<->3D switch look stale and
+        // forced a full CPU recolour; and toggling the biome overlay recoloured instead of only
+        // re-baking the texture.
+        int colorHash = tileColorHash(style, sea, colorEpoch);
+        int textureHash = tileTextureHash(style, sea, colorEpoch);
         if (tile.seedEpoch >= 0) {
             // Tiles covered by the base snapshot keep the proven base colour pipeline. Live
             // colouring is currently only used for genuinely new tiles outside the snapshot.
@@ -1354,45 +1376,58 @@ public final class LiveTileStore {
                 refreshSeed(tile);
             }
             if (tile.rgb == null) return tile.texture;
-            if (tile.texture == null || tile.textureDirty || tile.textureEpoch != styleHash) {
+            if (tile.texture == null || tile.textureDirty || tile.textureEpoch != textureHash) {
                 if (createdThisFrame.get() >= 12) return tile.texture;
-                buildTexture(tile, styleHash);
+                buildTexture(tile, textureHash);
             }
             return tile.texture;
         }
         if (!tile.liveDirty) {
             if (tile.seedEpoch != seedEpoch) refreshSeed(tile);
             if (tile.rgb == null) return tile.texture;
-            if (tile.texture == null || tile.textureDirty || tile.textureEpoch != styleHash) {
+            if (tile.texture == null || tile.textureDirty || tile.textureEpoch != textureHash) {
                 if (createdThisFrame.get() >= 12) return tile.texture;
-                buildTexture(tile, styleHash);
+                buildTexture(tile, textureHash);
             }
             return tile.texture;
         }
-        if (tile.texture != null && tile.textureEpoch == styleHash && !tile.textureDirty) {
+        if (tile.texture != null && tile.textureEpoch == textureHash && !tile.textureDirty) {
             return tile.texture;
         }
         // Live-created tiles can be partial until their source fill arrives. Colouring them now
         // guarantees the fill will bump their version and cancel the in-flight colour job.
         if (!tile.sourceFilled || !neighbourHaloReady(tile)) return tile.texture;
-        if (tile.version != tile.coloredVersion || tile.colorStyleHash != styleHash) {
+        if (tile.version != tile.coloredVersion || tile.colorStyleHash != colorHash) {
             long now = System.currentTimeMillis();
             // One deadline per invalidation burst: continuous neighbour/live updates coalesce into
             // one recolour per ~500ms instead of cancelling and rebuilding every second.
             if (!tile.colorPending
                     && (tile.colorRetryAtMs == 0L || now >= tile.colorRetryAtMs)
                     && colorRequestsThisFrame.get() < 12) {
-                requestColor(tile, styleHash);
+                requestColor(tile, colorHash);
             }
             return tile.texture;
         }
         if (tile.rgb == null) return tile.texture;
         if (createdThisFrame.get() >= 12) return tile.texture;
-        buildTexture(tile, styleHash);
+        buildTexture(tile, textureHash);
         return tile.texture;
     }
 
-    private void requestColor(LiveTile tile, int styleHash) {
+    /**
+     * Colour cache identity. Must stay identical to the hash {@link #pumpFor3D} uses: any
+     * render-only flag added here would invalidate the other path's colour jobs.
+     */
+    private static int tileColorHash(String style, int sea, int colorEpoch) {
+        return ((style == null ? 0 : style.hashCode()) * 31 + sea) * 31 + colorEpoch;
+    }
+
+    /** Texture identity: the colour hash plus render-only flags (baked biome borders). */
+    private static int tileTextureHash(String style, int sea, int colorEpoch) {
+        return tileColorHash(style, sea, colorEpoch) * 31 + (MapData.INSTANCE.isBiomeOverlay() ? 1 : 0);
+    }
+
+    private void requestColor(LiveTile tile, int colorHash) {
         tile.colorPending = true;
         tile.colorRetryAtMs = 0L;
         colorRequestsThisFrame.incrementAndGet();
@@ -1420,14 +1455,14 @@ public final class LiveTileStore {
                 MapPerf.INSTANCE.colorStale.increment();
                 return; // a newer section/neighbour update won the race; a later frame requests again
             }
-            if (tile.coloredVersion == version && tile.colorStyleHash == styleHash) return;
+            if (tile.coloredVersion == version && tile.colorStyleHash == colorHash) return;
             int[] cropped = new int[TILE_PIXELS * TILE_PIXELS];
             for (int z = 0; z < TILE_PIXELS; z++) {
                 System.arraycopy(full, (z + halo) * hw + halo, cropped, z * TILE_PIXELS, TILE_PIXELS);
             }
             tile.rgb = cropped;
             tile.coloredVersion = version;
-            tile.colorStyleHash = styleHash;
+            tile.colorStyleHash = colorHash;
             tile.textureDirty = true;
             colorVersion.incrementAndGet();
             MapPerf.INSTANCE.colorDone.increment();
@@ -1498,11 +1533,12 @@ public final class LiveTileStore {
         return withHalo;
     }
 
-    private void buildTexture(LiveTile tile, int styleHash) {
+    /** @param textureHash identity of the baked texture (colour hash + render-only flags) */
+    private void buildTexture(LiveTile tile, int textureHash) {
         createdThisFrame.incrementAndGet();
         MapPerf.INSTANCE.textureBuilds.increment();
         final long textureStartNs = System.nanoTime();
-        if (TileTrace.enabled()) TileTrace.stage(tile.tx, tile.tz, "texture_build", "style=" + styleHash);
+        if (TileTrace.enabled()) TileTrace.stage(tile.tx, tile.tz, "texture_build", "tex=" + textureHash);
         NativeImage image = new NativeImage(TILE_PIXELS, TILE_PIXELS, false);
         int[] rgb = tile.rgb;
         boolean biomes = MapData.INSTANCE.isBiomeOverlay();
@@ -1548,12 +1584,12 @@ public final class LiveTileStore {
         }
         DynamicTexture dynamic = new DynamicTexture(() -> "voxymap_live_tile", image);
         Identifier id = Identifier.fromNamespaceAndPath("voxymap",
-                "live_" + tile.tx + "_" + tile.tz + "_" + Math.abs(styleHash));
+                "live_" + tile.tx + "_" + tile.tz + "_" + Math.abs(textureHash));
         if (tile.texture != null) tile.dispose();
         Minecraft.getInstance().getTextureManager().register(id, dynamic);
         tile.texture = id;
         tile.dynamic = dynamic;
-        tile.textureEpoch = styleHash;
+        tile.textureEpoch = textureHash;
         tile.textureDirty = false;
         if (TileTrace.enabled()) TileTrace.timed(tile.tx, tile.tz, "texture_done", textureStartNs, "px=" + TILE_PIXELS * TILE_PIXELS);
     }
@@ -1606,6 +1642,31 @@ public final class LiveTileStore {
 
     public int visibleTileCount() {
         return visibleTiles.size();
+    }
+
+    /**
+     * Viewport bounds (tile indices: minTx, minTz, maxTx, maxTz) of the tiles drawn in the current
+     * texture frame. {@link #beginFrame()} clears the set and {@code textureFor}/{@code pumpFor3D}
+     * repopulate it, so callers must be on the render thread and read it between the two.
+     *
+     * @param out int[4] receiving the bounds
+     * @return false when no tile was drawn yet (empty viewport / store without data)
+     */
+    public boolean visibleTileBounds(int[] out) {
+        if (visibleTiles.isEmpty()) return false;
+        int minTx = Integer.MAX_VALUE, maxTx = Integer.MIN_VALUE;
+        int minTz = Integer.MAX_VALUE, maxTz = Integer.MIN_VALUE;
+        for (LiveTile tile : visibleTiles) {
+            if (tile.tx < minTx) minTx = tile.tx;
+            if (tile.tx > maxTx) maxTx = tile.tx;
+            if (tile.tz < minTz) minTz = tile.tz;
+            if (tile.tz > maxTz) maxTz = tile.tz;
+        }
+        out[0] = minTx;
+        out[1] = minTz;
+        out[2] = maxTx;
+        out[3] = maxTz;
+        return true;
     }
 
     public void dispose() {
