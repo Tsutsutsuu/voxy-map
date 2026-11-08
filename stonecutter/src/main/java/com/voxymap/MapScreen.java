@@ -964,8 +964,10 @@ public class MapScreen extends Screen {
             Map3D.Mesh mesh = Map3D.buildTileMesh(data, tile.minWX, tile.minWZ,
                     ex, ey, ez, VoxyMapConfig.VERTICAL_SCALE_3D.get(), step, debugTint);
             if (mesh == null) {
-                tileMesh3d.remove(key);
-                tileMeshStamp3d.remove(key);
+                // A tile can briefly have no complete data while it is being recoloured/loaded.
+                // Keep the previous mesh for that tile instead of deleting it: deleting made whole
+                // tiles vanish and reappear, which read as the 3D view flashing loaded/unloaded.
+                if (!tileMesh3d.containsKey(key)) tileMeshStamp3d.remove(key);
             } else {
                 tileMesh3d.put(key, mesh);
                 tileMeshStamp3d.put(key, stamp);
