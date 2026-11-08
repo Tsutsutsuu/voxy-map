@@ -55,3 +55,21 @@ tasks.named<Jar>("jar") {
         )
     }
 }
+// ---------------------------------------------------------------------------
+// Standalone GPU-rendering feasibility spike. This is packaged as a separate
+// mod jar (gpu-spike.jar), not part of the voxy-map mod.
+// ---------------------------------------------------------------------------
+val gpuSpike: SourceSet by sourceSets.creating {
+    java.srcDir(rootProject.projectDir.parentFile.resolve("gpu-spike/src/main/java"))
+    resources.srcDir(rootProject.projectDir.parentFile.resolve("gpu-spike/src/main/resources"))
+    compileClasspath += sourceSets.main.get().compileClasspath
+    runtimeClasspath += sourceSets.main.get().runtimeClasspath
+}
+
+tasks.register<Jar>("gpuSpikeJar") {
+    group = "build"
+    description = "Builds the standalone GPU cube spike mod"
+    archiveFileName = "gpu-spike.jar"
+    destinationDirectory = layout.buildDirectory.dir("libs")
+    from(gpuSpike.output)
+}
