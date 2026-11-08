@@ -36,6 +36,11 @@ import java.util.concurrent.atomic.AtomicLong;
 public final class LiveTileStore {
     public static final int TILE_PIXELS = 256;
     public static final long TEXTURE_BYTES = (long) TILE_PIXELS * TILE_PIXELS * 4L;
+    /**
+     * How long a live-created tile may wait for its source fill / neighbour halo before it is
+     * coloured with the clamped halo anyway (see {@link #liveTileDrawable}).
+     */
+    private static final long LIVE_PARTIAL_DRAW_GRACE_MS = 2_000L;
     private static final int CACHE_MAGIC = 0x56585431;
     private static final int CACHE_VERSION = 9;
     private static final ExecutorService CACHE_IO = Executors.newFixedThreadPool(2, r -> {
@@ -85,6 +90,8 @@ public final class LiveTileStore {
         volatile boolean tileMaxLandKnown;
         long borderHash;
         boolean borderHashKnown;
+        /** wall-clock creation time: bounds how long a live-only tile may wait for its source fill */
+        final long createdMs = System.currentTimeMillis();
 
         LiveTile(int tx, int tz, long minWX, long minWZ) {
             this(tx, tz, minWX, minWZ, new long[TILE_PIXELS * TILE_PIXELS]);
@@ -690,10 +697,26 @@ public final class LiveTileStore {
         persistMaxLand();
     }
 
-    /** Rebuilds the lazy source's section index after a manual refresh. */
+    /**
+     * Rebuilds the lazy source's section index (manual refresh, SeedGen resync).
+     *
+     * <p>The negative "this tile has no source data" set is produced by the old index, so it must
+     * be dropped together with it: a tile that was empty when the index was built may well have
+     * real sections by the time the new index is scanned (new worlds / SeedGen). Without this the
+     * map stayed permanently black outside the first snapshot even after a successful rescan.</p>
+     */
     public void invalidateSourceIndex() {
+        sourceEpoch.incrementAndGet();
+        sourcePending.clear();
+        sourceEmpty.clear();
         VoxyTileSource src = source;
         if (src != null) src.invalidateIndex();
+    }
+
+    /** Duration of the last source index scan in milliseconds (0 when it came from the disk cache). */
+    public long sourceIndexScanMs() {
+        VoxyTileSource src = source;
+        return src == null ? 0L : src.lastIndexScanNanos() / 1_000_000L;
     }
 
     /** Cancel decode work for a viewport that is no longer relevant. */
@@ -718,9 +741,9 @@ public final class LiveTileStore {
         if (src != null) src.cancelPending();
         sourcePending.clear();
         seedPending.clear();
-        // Keep the negative (empty) set across automatic LOD recalibration. Clearing it made every
-        // empty margin tile retry cache+source after each of the 4s/14s/34s passes. Manual refresh
-        // drops the whole store and still re-probes everything.
+        // The index the negatives came from is being replaced: a tile that had no sections then may
+        // have them now, so negative results must be re-probed instead of freezing the map edge.
+        sourceEmpty.clear();
         for (LiveTile tile : tiles.values()) {
             // Cached tiles are already complete; re-reading Voxy storage for them defeats the
             // purpose of the .vxt cache. Manual refresh still forces a full source rebuild.
@@ -1396,7 +1419,7 @@ public final class LiveTileStore {
         }
         // Live-created tiles can be partial until their source fill arrives. Colouring them now
         // guarantees the fill will bump their version and cancel the in-flight colour job.
-        if (!tile.sourceFilled || !neighbourHaloReady(tile)) return tile.texture;
+        if (!liveTileDrawable(tile)) return tile.texture;
         if (tile.version != tile.coloredVersion || tile.colorStyleHash != colorHash) {
             long now = System.currentTimeMillis();
             // One deadline per invalidation burst: continuous neighbour/live updates coalesce into
@@ -1472,13 +1495,21 @@ public final class LiveTileStore {
     }
 
     /**
-     * Builds the 8px neighbour halo on the loader thread. Doing this on the render thread cost
-     * ~74k ConcurrentHashMap lookups per tile and produced frame hitches while colour jobs queued.
-     */
-    /**
      * Wait for already-created neighbours to finish their source fill before colouring: a fill
      * bumps the neighbour version and would immediately cancel this tile's colour job.
+     *
+     * <p>A live tile that has been waiting longer than {@link #LIVE_PARTIAL_DRAW_GRACE_MS} is
+     * drawn anyway: its own live pixels are real, {@link #buildColorHalo} clamps missing neighbours
+     * to the tile edge, and the later source fill bumps the version and recolours it. Without this
+     * fallback a fresh world whose sections are newer than the source index stayed permanently
+     * black instead of showing the data it already had.</p>
      */
+    private boolean liveTileDrawable(LiveTile tile) {
+        if (tile.sourceFilled && neighbourHaloReady(tile)) return true;
+        return System.currentTimeMillis() - tile.createdMs >= LIVE_PARTIAL_DRAW_GRACE_MS;
+    }
+
+    /** Wait for already-created neighbours to finish their source fill before colouring. */
     private boolean neighbourHaloReady(LiveTile tile) {
         VoxyTileSource src = source;
         for (int dz = -1; dz <= 1; dz++) {
@@ -1508,7 +1539,12 @@ public final class LiveTileStore {
         return true;
     }
 
-    private long[] buildColorHalo(LiveTile tile, int halo) {        int hw = TILE_PIXELS + halo * 2;
+    /**
+     * Builds the 8px neighbour halo on the loader thread. Doing this on the render thread cost
+     * ~74k ConcurrentHashMap lookups per tile and produced frame hitches while colour jobs queued.
+     */
+    private long[] buildColorHalo(LiveTile tile, int halo) {
+        int hw = TILE_PIXELS + halo * 2;
         long[] withHalo = new long[hw * hw];
         int baseX = tile.tx * TILE_PIXELS - halo;
         int baseZ = tile.tz * TILE_PIXELS - halo;

@@ -130,9 +130,15 @@ public final class MapData {
     private volatile LiveTileStore liveTiles;
     /** storage path the 2D tile store was created for (independent of the global snapshot) */
     private volatile Path tile2dStorage;
-    /** automatic source resyncs after first open (Voxy may still be flushing fine LOD sections) */
+    /**
+     * Automatic source resyncs after first open. The source index is a snapshot of a read-only
+     * RocksDB handle and goes stale as soon as Voxy/SeedGen writes new sections, so it has to be
+     * rebuilt periodically (reopening the handle), not just three times at fixed delays.
+     */
     private volatile long tileResyncAtMs;
-    private int tileResyncStage;
+    /** a live section arrived after the last rescan: the source index is known to be stale */
+    private volatile boolean tileRescanNeeded;
+    private volatile long lastTileRescanMs;
     private long lastTileCacheSaveMs;
     private volatile long lastLiveSectionMs;
     /** highest-point colour ramp changes trigger a full tile recolour */
@@ -1317,7 +1323,13 @@ public final class MapData {
                 // decoded storage: clear the cache and rebuild only from the authoritative DB.
                 store.dropAllTiles(false);
                 store.clearCacheFiles();
+                // invalidateSourceIndex() also reopens the read-only DB handle, otherwise the
+                // rescan below would only ever see the data that existed when the map opened.
                 store.invalidateSourceIndex();
+                // SeedGen may keep writing after the refresh: keep the periodic rescan alive.
+                tileRescanNeeded = true;
+                lastTileRescanMs = System.currentTimeMillis();
+                tileResyncAtMs = System.currentTimeMillis() + 4_000L;
             }
             return;
         }
@@ -2503,26 +2515,33 @@ public final class MapData {
             LiveTileStore store = ensure2DStore();
             long now = System.currentTimeMillis();
             if (tileResyncAtMs > 0 && now >= tileResyncAtMs) {
-                // Voxy SeedGen flushes a large ring of LOD sections over ~20s. Rescanning the
-                // source index while that stream is still active produces partial tile ranges and
-                // makes the map churn between empty/coarse/fine tiles. Wait until live sections
-                // have been quiet for a moment, then do the calibration rescan once.
-                if (now - lastLiveSectionMs < 1_500L) {
-                    tileResyncAtMs = now + 750L;
-                    return;
-                }
-                // Voxy may still be flushing fine LOD sections when the map first opens. The
-                // first source index then only contains coarse sections (e.g. y=64 encoded as a
-                // 16-block voxel top at 79). Re-scan and replace coarse pixels once/twice.
-                tileResyncAtMs = 0;
-                MapPerf.INSTANCE.resyncs.increment();
-                store.invalidateSourceIndex();
-                store.markAllSourceUnfilled();
-                if (tileResyncStage < 3) {
-                    tileResyncAtMs = now + (tileResyncStage == 1 ? 10_000L : 20_000L);
-                    tileResyncStage++;
+                // The source index is a snapshot of a read-only RocksDB handle and does not see
+                // sections written after it was opened. Rescanning therefore reopens the handle
+                // (VoxyTileSource.invalidateIndex) and must keep happening WHILE SeedGen streams,
+                // otherwise a map opened during world creation freezes at the first snapshot
+                // (the reported "loads half then stops, refresh does nothing" bug).
+                // Cost control: live events mark the index dirty and we wait up to 3s between
+                // rescans; with no live events a 30s safety rescan picks up disk-side growth.
+                boolean liveRecent = now - lastLiveSectionMs < 1_500L;
+                boolean due = tileRescanNeeded || liveRecent || now - lastTileRescanMs >= 30_000L;
+                if (!due) {
+                    // nothing was written since the last rescan: check again shortly, but do not
+                    // skip the rest of the tile housekeeping
+                    tileResyncAtMs = now + 5_000L;
                 } else {
-                    tileResyncStage = 0;
+                    tileResyncAtMs = 0;
+                    tileRescanNeeded = false;
+                    lastTileRescanMs = now;
+                    MapPerf.INSTANCE.resyncs.increment();
+                    // Drops the negatives produced by the old index and forces every not-yet-
+                    // coloured tile to re-query the (reopened) storage.
+                    store.invalidateSourceIndex();
+                    store.markAllSourceUnfilled();
+                    // Pace the next rescan by the previous scan cost: a huge world must not spend
+                    // more time rebuilding the index than showing the map. 3s floor, 60s ceiling.
+                    long scanMs = store.sourceIndexScanMs();
+                    long liveDelay = Math.max(3_000L, Math.min(60_000L, scanMs * 8L));
+                    tileResyncAtMs = now + (liveRecent ? liveDelay : 10_000L);
                 }
             }
             maybeRecolorForTileRamp(store, now);
@@ -3635,10 +3654,11 @@ public final class MapData {
         tile2dStorage = storage;
         if (storage != null) pruneCaches(worldCacheDir(storage));
         invalidateTileBiomeCache();
-        if (tileResyncStage == 0) {
-            tileResyncStage = 1;
-            tileResyncAtMs = System.currentTimeMillis() + 4_000L;
-        }
+        // Voxy/SeedGen may still be flushing sections: schedule rescans (each one reopens the
+        // read-only DB view, see tileResyncAtMs) starting shortly after the map opens.
+        tileResyncAtMs = System.currentTimeMillis() + 4_000L;
+        tileRescanNeeded = true;
+        lastTileRescanMs = 0L;
         ensureWaterIdsAsync();
         return next;
     }
@@ -3760,6 +3780,9 @@ public final class MapData {
         if (isTile2DMode()) {
             if (store == null || !store.matches(0L, 0L, effectivePixelBlocks())) return;
             store.applySection(key, raw, waterIdsCache);
+            // New sections are newer than the source index snapshot: schedule a rescan so the
+            // on-demand source (and its reopened read-only DB view) can fill the new area too.
+            tileRescanNeeded = true;
             return;
         }
         Snapshot s = snap;
@@ -3775,7 +3798,8 @@ public final class MapData {
         liveTiles = null;
         tile2dStorage = null;
         tileResyncAtMs = 0;
-        tileResyncStage = 0;
+        tileRescanNeeded = false;
+        lastTileRescanMs = 0L;
         waterIdsLoaded = false;
         waterIdsCache = Set.of();
         if (current != null) current.dispose();

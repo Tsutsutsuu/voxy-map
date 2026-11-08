@@ -43,6 +43,18 @@ public final class VoxyTileSource {
     });
     private final AtomicBoolean closed = new AtomicBoolean();
     private volatile boolean indexed;
+    /**
+     * Serialises index rebuilds against tile decodes. A read-only RocksDB instance keeps its own
+     * version/memtable view and NEVER sees writes made after it was opened, so refreshing the map
+     * has to close and reopen it. Decodes hold the read lock, the reopen takes the write lock:
+     * the connection is only closed once no decode can still be reading it.
+     */
+    private final java.util.concurrent.locks.ReentrantReadWriteLock dbLock =
+            new java.util.concurrent.locks.ReentrantReadWriteLock();
+    /** coalesces repeated invalidate requests (SeedGen resyncs can fire faster than a scan). */
+    private final AtomicBoolean invalidateQueued = new AtomicBoolean();
+    /** duration of the last completed index scan; callers pace their rescans by it. */
+    private volatile long lastIndexScanNanos;
     /** bumped to discard queued/running decode work after the viewport moved */
     private final java.util.concurrent.atomic.AtomicInteger requestGeneration =
             new java.util.concurrent.atomic.AtomicInteger();
@@ -117,31 +129,47 @@ public final class VoxyTileSource {
         final int generation = requestGeneration.get();
         final long submittedNs = System.nanoTime();
         if (TileTrace.enabled()) TileTrace.stage(tx, tz, "src_submit", "gen=" + generation);
-        io.submit(() -> {
-            if (closed.get() || generation != requestGeneration.get()) return;
-            final long workNs = System.nanoTime();
-            if (TileTrace.enabled()) {
-                TileTrace.timed(tx, tz, "src_queue", submittedNs, "worker-start");
-            }
+        try {
+            io.submit(() -> requestOnWorker(tx, tz, generation, submittedNs, callback));
+        } catch (java.util.concurrent.RejectedExecutionException rejected) {
+            // closed between the check above and the submit: the caller will never get a callback
+            // (it is being disposed anyway), do not let it escape into the render thread
+        }
+    }
+
+    private void requestOnWorker(int tx, int tz, int generation, long submittedNs,
+                                 Consumer<long[]> callback) {
+        if (closed.get() || generation != requestGeneration.get()) return;
+        final long workNs = System.nanoTime();
+        if (TileTrace.enabled()) {
+            TileTrace.timed(tx, tz, "src_queue", submittedNs, "worker-start");
+        }
+        try {
+            long[] pixels;
+            // A read lock keeps the DB connection alive for the whole decode; the reopen in
+            // invalidateIndex() waits for it, so a decode can never read a closed handle.
+            dbLock.readLock().lock();
             try {
                 ensureIndex();
                 if (generation != requestGeneration.get()) return;
-                long[] pixels = buildTile(tx, tz);
-                if (TileTrace.enabled()) {
-                    TileTrace.timed(tx, tz, "src_decode", workNs,
-                            "pixels=" + (pixels == null ? "null" : String.valueOf(pixels.length)));
-                }
-                if (closed.get() || generation != requestGeneration.get()) return;
-                Minecraft.getInstance().execute(() -> callback.accept(pixels));
-            } catch (Throwable t) {
-                if (generation == requestGeneration.get()) {
-                    if (TileTrace.enabled()) {
-                        TileTrace.stage(tx, tz, "src_error", t.getClass().getSimpleName());
-                    }
-                    Minecraft.getInstance().execute(() -> callback.accept(null));
-                }
+                pixels = buildTile(tx, tz);
+            } finally {
+                dbLock.readLock().unlock();
             }
-        });
+            if (TileTrace.enabled()) {
+                TileTrace.timed(tx, tz, "src_decode", workNs,
+                        "pixels=" + (pixels == null ? "null" : String.valueOf(pixels.length)));
+            }
+            if (closed.get() || generation != requestGeneration.get()) return;
+            Minecraft.getInstance().execute(() -> callback.accept(pixels));
+        } catch (Throwable t) {
+            if (generation == requestGeneration.get()) {
+                if (TileTrace.enabled()) {
+                    TileTrace.stage(tx, tz, "src_error", t.getClass().getSimpleName());
+                }
+                Minecraft.getInstance().execute(() -> callback.accept(null));
+            }
+        }
     }
 
     private synchronized void ensureIndex() throws Exception {
@@ -169,6 +197,7 @@ public final class VoxyTileSource {
         if (signature < 0) signature = storageSignature();
         if (loadIndexCache(signature)) {
             indexed = true;
+            lastIndexScanNanos = 0L; // came from the disk cache: a fresh close/reopen is cheap
             return;
         }
         Object it = RocksBridge.newIterator(db, sectionsHandle);
@@ -205,10 +234,16 @@ public final class VoxyTileSource {
             RocksBridge.close(it);
         }
         indexed = true;
+        lastIndexScanNanos = System.nanoTime() - indexStartNs;
         saveIndexCacheAsync(signature);
         if (TileTrace.enabled()) {
             TileTrace.timed(-1, -1, "index_scan_done", indexStartNs, "tiles=" + byTile.size());
         }
+    }
+
+    /** Duration of the last completed index scan (0 when the index came from the disk cache). */
+    public long lastIndexScanNanos() {
+        return lastIndexScanNanos;
     }
 
     /** Cheap-ish RocksDB storage fingerprint: path + file size/mtime over the top two levels. */
@@ -372,28 +407,54 @@ public final class VoxyTileSource {
         if (!closed.compareAndSet(false, true)) return;
         io.shutdown();
         try {
-            io.awaitTermination(2, java.util.concurrent.TimeUnit.SECONDS);
+            io.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
-        closeDb();
+        // Belt and braces: if a decode outlived the await, do not close the handle under it.
+        dbLock.writeLock().lock();
+        try {
+            closeDb();
+        } finally {
+            dbLock.writeLock().unlock();
+        }
     }
 
-    /** Rebuilds the section index on the next request (manual refresh after new exploration). */
+    /**
+     * Rebuilds the section index on the next request (manual refresh, SeedGen resync).
+     *
+     * <p>A RocksDB instance opened with {@code openReadOnly} keeps its own version/memtable view
+     * and does not observe writes made after it was opened. That made every rescan on the same
+     * connection return the index as it was when the map was first opened, so a map opened while
+     * SeedGen was still writing froze at that first snapshot. The connection is therefore closed
+     * here and reopened (fresh view) by the next {@link #ensureIndex()}.</p>
+     */
     public void invalidateIndex() {
         if (closed.get()) return;
+        // Several resyncs can pile up while a scan is slow; one close/reopen is enough.
+        if (!invalidateQueued.compareAndSet(false, true)) return;
         if (TileTrace.enabled()) TileTrace.stage(-1, -1, "index_invalidate", "");
-        // Do not close the RocksDB connection here: decode tasks may still be reading it. Reusing
-        // the connection is safe and avoids a close/reopen race now that requests use a pool.
-        io.submit(() -> {
-            byTile.clear();
-            sectionCache.clear();
-            indexed = false;
-            try {
-                if (indexCache != null) Files.deleteIfExists(indexCache);
-            } catch (Throwable ignored) {
-            }
-        });
+        try {
+            io.submit(() -> {
+                dbLock.writeLock().lock();
+                try {
+                    byTile.clear();
+                    sectionCache.clear();
+                    indexed = false;
+                    // waits for in-flight decodes (read lock) before closing the handle
+                    closeDb();
+                    try {
+                        if (indexCache != null) Files.deleteIfExists(indexCache);
+                    } catch (Throwable ignored) {
+                    }
+                } finally {
+                    dbLock.writeLock().unlock();
+                    invalidateQueued.set(false);
+                }
+            });
+        } catch (java.util.concurrent.RejectedExecutionException rejected) {
+            invalidateQueued.set(false);
+        }
     }
 
     private void closeDb() {
