@@ -59,6 +59,7 @@ public class MapScreen extends Screen {
     private long meshBuildGeneration;
     private final java.util.Map<Long, Map3D.Mesh> tileMesh3d = new java.util.HashMap<>();
     private final java.util.Map<Long, Long> tileMeshStamp3d = new java.util.HashMap<>();
+    private final java.util.Map<Long, Long> tileMeshSeen3d = new java.util.HashMap<>();
     /** dedicated 3D background pool: mesh build, CPU raster and FXAA must not share the common pool */
     private static final java.util.concurrent.ExecutorService ASYNC_3D =
             java.util.concurrent.Executors.newFixedThreadPool(2, r -> {
@@ -935,6 +936,7 @@ public class MapScreen extends Screen {
         boolean changed = false;
         boolean pending = false;
         java.util.Set<Long> alive = new java.util.HashSet<>();
+        long nowMs = System.currentTimeMillis();
         for (LiveTileStore.LiveTile tile : live.tilesView()) {
             double tx = tile.minWX + LiveTileStore.TILE_PIXELS * (double) data.getPixelBlocks() / 2.0;
             double tz = tile.minWZ + LiveTileStore.TILE_PIXELS * (double) data.getPixelBlocks() / 2.0;
@@ -947,6 +949,7 @@ public class MapScreen extends Screen {
                     : step <= midStep ? 0x20E020 : 0x2020E0;
             long key = ((long) tile.tx << 32) ^ (tile.tz & 0xFFFFFFFFL);
             alive.add(key);
+            tileMeshSeen3d.put(key, nowMs);
             long stamp = ((long) tile.version << 32) ^ (tile.coloredVersion & 0xFFFFFFFFL);
             stamp = stamp * 31L + step;
             stamp = stamp * 31L + tile.colorStyleHash;
@@ -970,8 +973,14 @@ public class MapScreen extends Screen {
             }
             changed = true;
         }
-        // Drop meshes for evicted/out-of-range tiles.
-        tileMesh3d.keySet().removeIf(k -> !alive.contains(k));
+        // Keep recently seen tile meshes during loading: removing them the instant the live tile
+        // view is momentarily short made the combined mesh lose whole tiles and flash back to the
+        // "unloaded" state. Only evict after a grace period.
+        tileMesh3d.keySet().removeIf(k -> {
+            Long seen = tileMeshSeen3d.get(k);
+            return !alive.contains(k) && (seen == null || nowMs - seen > 5000L);
+        });
+        tileMeshSeen3d.keySet().removeIf(k -> !tileMesh3d.containsKey(k));
         tileMeshStamp3d.keySet().removeIf(k -> !tileMesh3d.containsKey(k));
         if (tileMesh3d.isEmpty()) return false;
         // Never display a partially rebuilt tile set: while loading/camera LOD changes, keep the
