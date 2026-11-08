@@ -54,6 +54,7 @@ public class MapScreen extends Screen {
     private Map3D.Mesh mesh3d;
     private boolean mesh3dDirty;
     private boolean soft3dFrameReady;
+    private boolean frame3dShown;
     private long meshBuildGeneration;
     private final java.util.Map<Long, Map3D.Mesh> tileMesh3d = new java.util.HashMap<>();
     private final java.util.Map<Long, Long> tileMeshStamp3d = new java.util.HashMap<>();
@@ -457,7 +458,8 @@ public class MapScreen extends Screen {
             ensureMesh3d();
             updateSoft3d();
             boolean frame3dReady = soft3dFrameReady && tex3dId != null && fb3d != null && mesh3d != null;
-            if (!frame3dReady) {
+            if (frame3dReady) frame3dShown = true;
+            if (!frame3dShown) {
                 // First 3D frame: keep showing the already-rendered 2D map instead of blitting a
                 // missing/stale 3D texture for one frame.
                 drawMap(g, data, uiScale);
@@ -798,6 +800,7 @@ public class MapScreen extends Screen {
             return;
         }
         view3d = true;
+        frame3dShown = false;
         data.setView3d(true);
         ensureCamera3d();
         var player = Minecraft.getInstance().player;
@@ -839,6 +842,7 @@ public class MapScreen extends Screen {
     private void finish3dExit() {
         exit3dT = -1f;
         view3d = false;
+        frame3dShown = false;
         MapData data = MapData.INSTANCE;
         data.setView3d(false);
         if (cam3d != null) {
