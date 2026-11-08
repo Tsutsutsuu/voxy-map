@@ -3290,11 +3290,22 @@ public final class MapData {
     /** Render the colour grid off the render thread, then upload it on the client thread. */
     public void submitTileColor(long[] pixels, int width, int height, long minWX, long minWZ,
                                 int pixelBlocks, java.util.function.Consumer<int[]> done) {
+        final long submittedNs = System.nanoTime();
+        final int tileWorld = LiveTileStore.TILE_PIXELS * Math.max(1, pixelBlocks);
+        final int traceTx = (int) Math.floorDiv(minWX + 8L * pixelBlocks, (long) tileWorld);
+        final int traceTz = (int) Math.floorDiv(minWZ + 8L * pixelBlocks, (long) tileWorld);
         loader.submit(() -> {
+            final long workStartNs = System.nanoTime();
+            if (TileTrace.enabled()) TileTrace.timed(traceTx, traceTz, "color_wait", submittedNs, "loader-queue");
             try {
                 int[] rgb = renderTileColor(pixels, width, height, minWX, minWZ, pixelBlocks);
+                if (TileTrace.enabled()) {
+                    TileTrace.timed(traceTx, traceTz, "color_work", workStartNs,
+                            "px=" + (rgb == null ? -1 : rgb.length));
+                }
                 Minecraft.getInstance().execute(() -> done.accept(rgb));
             } catch (Throwable t) {
+                if (TileTrace.enabled()) TileTrace.stage(traceTx, traceTz, "color_error", t.getClass().getSimpleName());
                 t.printStackTrace();
             }
         });

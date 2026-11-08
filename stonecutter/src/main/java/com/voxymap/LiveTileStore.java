@@ -56,6 +56,7 @@ public final class LiveTileStore {
         public final long[] pixels;
         volatile int version;
         volatile int coloredVersion = -1;
+        volatile int colorEpoch;
         volatile int colorStyleHash;
         volatile boolean colorPending;
         volatile boolean liveDirty;
@@ -418,7 +419,9 @@ public final class LiveTileStore {
                 if (t == null || t.seedEpoch >= 0) continue;
                 t.liveDirty = true;
                 t.coloredVersion = -1;
-                t.colorPending = false;
+                t.colorEpoch++;
+                // Do not clear colorPending: a job is already in flight. Clearing it queued another
+                // full colour job for the same tile on every neighbour arrival (the 26s backlog).
                 t.textureDirty = true;
             }
         }
@@ -1117,6 +1120,7 @@ public final class LiveTileStore {
         final long colorStartNs = System.nanoTime();
         if (TileTrace.enabled()) TileTrace.stage(tile.tx, tile.tz, "color_request", "version=" + tile.version);
         final int version = tile.version;
+        final int epoch = tile.colorEpoch;
         final int halo = 8;
         final int hw = TILE_PIXELS + halo * 2;
         long[] withHalo = new long[hw * hw];
@@ -1151,10 +1155,10 @@ public final class LiveTileStore {
                 if (TileTrace.enabled()) TileTrace.timed(tile.tx, tile.tz, "color_empty", colorStartNs, "null");
                 return;
             }
-            if (tile.version != version) {
-                if (TileTrace.enabled()) TileTrace.timed(tile.tx, tile.tz, "color_stale", colorStartNs, "version-changed");
+            if (tile.version != version || tile.colorEpoch != epoch) {
+                if (TileTrace.enabled()) TileTrace.timed(tile.tx, tile.tz, "color_stale", colorStartNs, "version-or-halo-changed");
                 MapPerf.INSTANCE.colorStale.increment();
-                return; // a newer section update won the race; a later frame requests again
+                return; // a newer section/neighbour update won the race; a later frame requests again
             }
             if (tile.coloredVersion == version && tile.colorStyleHash == styleHash) return;
             int[] cropped = new int[TILE_PIXELS * TILE_PIXELS];
