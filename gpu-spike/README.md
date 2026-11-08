@@ -27,15 +27,16 @@ Copy `gpu-spike.jar` into the 26.2 Fabric profile `mods/` folder and restart the
 - `W/A/S/D` move the cube on X/Z, `Q/E` move on Y.
 - `G` or `Esc` closes.
 
-The cube is rendered in the world render pass with:
+The cube is drawn by a real Blaze3D GPU pass:
 
 ```text
-RenderPipeline DEBUG_FILLED_BOX
+RenderPipeline DEBUG_FILLED_SNIPPET (no depth, no cull)
 StagedVertexBuffer (append -> upload -> execute -> endFrame, every frame)
 one RenderPass per frame to the main render target
 ```
 
-The screen itself is transparent; the cube is rendered by `LevelRenderEvents.AFTER_TRANSLUCENT_TERRAIN` while the screen is open. This isolates the GPU path from voxy-map's tile store, CPU rasteriser, meshes and async frame upload.
+It runs after the complete GUI pass via a tiny `Minecraft#renderFrame` mixin, so it is in front of the fullscreen screen instead of behind the world/UI. The vertex projection is done in screen space on the CPU because this spike is testing GPU buffer/render-pass lifetime, not a full 3D camera pipeline.
+
 
 ## What a pass means
 

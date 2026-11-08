@@ -6,16 +6,12 @@ import com.mojang.blaze3d.pipeline.RenderPipeline;
 import com.mojang.blaze3d.pipeline.RenderTarget;
 import com.mojang.blaze3d.systems.RenderPass;
 import com.mojang.blaze3d.systems.RenderSystem;
-import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexConsumer;
 import com.mojang.blaze3d.vertex.VertexFormat;
-import net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderContext;
-import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.RenderPipelines;
 import net.minecraft.client.renderer.StagedVertexBuffer;
 import net.minecraft.client.renderer.rendertype.RenderType;
-import net.minecraft.world.phys.Vec3;
 import org.joml.Matrix4f;
 import org.joml.Matrix4fc;
 import org.joml.Vector3f;
@@ -25,9 +21,12 @@ import java.util.Optional;
 import java.util.OptionalDouble;
 
 /**
- * Minimal, isolated GPU cube path. Every frame follows the 26.2 documented sequence:
- * appendDraw -> write vertices -> upload -> getExecuteInfo -> one RenderPass -> endFrame.
- * No buffer is reused across frames, so a stale mapped buffer cannot turn into colour blocks.
+ * Screen-space GPU cube overlay. It deliberately runs after the complete GUI pass (a mixin on
+ * Minecraft#renderFrame), so it is in front of the screen instead of behind the world/UI.
+ *
+ * <p>This is still a real Blaze3D path: StagedVertexBuffer + RenderPipeline + RenderPass, one
+ * frame's buffer at a time. Projection is the GUI orthographic projection; only the small cube
+ * vertex projection is done on the CPU.</p>
  */
 public final class GpuCubeRenderer {
     private static final Vector4f COLOR_MODULATOR = new Vector4f(1f, 1f, 1f, 1f);
@@ -35,89 +34,100 @@ public final class GpuCubeRenderer {
     private static final Matrix4f TEXTURE_MATRIX = new Matrix4f();
     private static final StagedVertexBuffer BUFFER =
             new StagedVertexBuffer(() -> "gpu_spike_cube", RenderType.SMALL_BUFFER_SIZE);
+    private static final RenderPipeline PIPELINE = RenderPipelines.register(
+            RenderPipeline.builder(RenderPipelines.DEBUG_FILLED_SNIPPET)
+                    .withLocation(net.minecraft.resources.Identifier.fromNamespaceAndPath(
+                            "gpu_spike", "pipeline/cube_overlay"))
+                    .withDepthStencilState(Optional.empty())
+                    .withCull(false)
+                    .build());
 
     private GpuCubeRenderer() {
     }
 
-    public static void render(LevelRenderContext context) {
+    public static void init() {
+        if (PIPELINE == null) throw new IllegalStateException();
+    }
+
+    public static void renderOverlay() {
         Minecraft mc = Minecraft.getInstance();
         if (mc.player == null || mc.level == null) return;
         if (!(mc.gui.screen() instanceof GpuCubeScreen)) return;
 
-        RenderPipeline pipeline = RenderPipelines.DEBUG_FILLED_BOX;
-        VertexFormat format = pipeline.getVertexFormatBinding(0);
+        int w = mc.getWindow().getGuiScaledWidth();
+        int h = mc.getWindow().getGuiScaledHeight();
+        if (w <= 0 || h <= 0) return;
+        VertexFormat format = PIPELINE.getVertexFormatBinding(0);
         if (format == null) return;
-        PrimitiveTopology topology = pipeline.getPrimitiveTopology();
-        StagedVertexBuffer.Draw draw = BUFFER.appendDraw(format, topology);
-        PoseStack matrices = context.poseStack();
-        Camera camera = mc.gameRenderer.mainCamera();
-        Vec3 cam = camera.position();
+        PrimitiveTopology topology = PIPELINE.getPrimitiveTopology();
+        StagedVertexBuffer.Draw draw = BUFFER.appendDraw(format, topology,
+                topology == PrimitiveTopology.QUADS ? RenderSystem.getProjectionType().vertexSorting() : null);
+        VertexConsumer b = BUFFER.getVertexBuilder(draw);
 
-        matrices.pushPose();
-        matrices.translate(-cam.x, -cam.y, -cam.z);
-        // Put the cube a few blocks in front of the player; screen WASD offsets it.
-        Vec3 p = mc.player.position();
+        // Small CPU-side projection only; vertices are already in GUI-screen coordinates so the
+        // GPU path itself is the thing being tested.
+        double cx = w / 2.0 + GpuCubeScreen.offsetX * 40.0;
+        double cy = h / 2.0 - GpuCubeScreen.offsetY * 40.0;
+        double scale = Math.min(w, h) * 0.18 * (7.0 / Math.max(3.0, GpuCubeScreen.distance));
         float yaw = GpuCubeScreen.yaw;
         float pitch = GpuCubeScreen.pitch;
-        double dist = GpuCubeScreen.distance;
-        float dirX = (float) (-Math.sin(yaw) * Math.cos(pitch) * dist);
-        float dirY = (float) (Math.sin(pitch) * dist);
-        float dirZ = (float) (Math.cos(yaw) * Math.cos(pitch) * dist);
-        matrices.translate(p.x + dirX + GpuCubeScreen.offsetX,
-                p.y + 2.0 + dirY + GpuCubeScreen.offsetY,
-                p.z + dirZ + GpuCubeScreen.offsetZ);
-        matrices.mulPose(com.mojang.math.Axis.YP.rotationDegrees((float) Math.toDegrees(yaw)));
-        matrices.mulPose(com.mojang.math.Axis.XP.rotationDegrees((float) Math.toDegrees(pitch)));
-
-        VertexConsumer builder = BUFFER.getVertexBuilder(draw);
-        Matrix4fc pose = matrices.last().pose();
-        box(pose, builder, -1f, -1f, -1f, 1f, 1f, 1f,
-                0.95f, 0.35f, 0.15f, 1f);
-        matrices.popPose();
+        float cyaw = (float) Math.cos(yaw), syaw = (float) Math.sin(yaw);
+        float cp = (float) Math.cos(pitch), sp = (float) Math.sin(pitch);
+        float[][] p = new float[8][2];
+        for (int i = 0; i < 8; i++) {
+            float x = (i & 1) == 0 ? -1f : 1f;
+            float y = (i & 2) == 0 ? -1f : 1f;
+            float z = (i & 4) == 0 ? -1f : 1f;
+            // yaw around Y
+            float x1 = x * cyaw + z * syaw;
+            float z1 = -x * syaw + z * cyaw;
+            // pitch around X
+            float y1 = y * cp - z1 * sp;
+            float z2 = y * sp + z1 * cp;
+            float zz = z2 + 5f;
+            float s = (float) (scale / zz);
+            p[i][0] = (float) cx + x1 * s;
+            p[i][1] = (float) cy - y1 * s;
+        }
+        int[][] faces = {
+                {4, 5, 7, 6}, {0, 1, 3, 2}, {0, 1, 5, 4},
+                {2, 3, 7, 6}, {0, 2, 6, 4}, {1, 3, 7, 5}
+        };
+        float[][] colors = {
+                {0.95f, 0.55f, 0.25f}, {0.80f, 0.40f, 0.15f}, {0.90f, 0.50f, 0.20f},
+                {0.75f, 0.35f, 0.12f}, {1.00f, 0.65f, 0.30f}, {0.70f, 0.30f, 0.10f}
+        };
+        for (int f = 0; f < faces.length; f++) {
+            int[] q = faces[f];
+            float[] c = colors[f];
+            for (int k : q) {
+                b.addVertex(p[k][0], p[k][1], 0f).setColor(c[0], c[1], c[2], 1f);
+            }
+        }
 
         BUFFER.upload();
         StagedVertexBuffer.ExecuteInfo info = BUFFER.getExecuteInfo(draw);
         if (info != null) {
-            drawToMain(mc, info, pipeline);
+            drawToMain(mc, info);
         }
         BUFFER.endFrame();
     }
 
-    private static void drawToMain(Minecraft mc, StagedVertexBuffer.ExecuteInfo info, RenderPipeline pipeline) {
+    private static void drawToMain(Minecraft mc, StagedVertexBuffer.ExecuteInfo info) {
         RenderTarget target = mc.gameRenderer.mainRenderTarget();
         if (target.getColorTextureView() == null || target.getDepthTextureView() == null) return;
         GpuBufferSlice transforms = RenderSystem.getDynamicUniforms()
-                .writeTransform(RenderSystem.getModelViewMatrixCopy(), COLOR_MODULATOR, MODEL_OFFSET, TEXTURE_MATRIX);
+                .writeTransform(new Matrix4f(), COLOR_MODULATOR, MODEL_OFFSET, TEXTURE_MATRIX);
         try (RenderPass pass = RenderSystem.getDevice().createCommandEncoder().createRenderPass(
-                () -> "gpu_spike_cube", target.getColorTextureView(), Optional.empty(),
+                () -> "gpu_spike_cube_overlay", target.getColorTextureView(), Optional.empty(),
                 target.getDepthTextureView(), OptionalDouble.empty())) {
-            pass.setPipeline(pipeline);
+            pass.setPipeline(PIPELINE);
             RenderSystem.bindDefaultUniforms(pass);
             pass.setUniform("DynamicTransforms", transforms);
             pass.setVertexBuffer(0, info.vertexBuffer().slice());
             pass.setIndexBuffer(info.indexBuffer(), info.indexType());
             pass.drawIndexed(info.indexCount(), 1, info.firstIndex(), info.baseVertex(), 0);
         }
-    }
-
-    private static void box(Matrix4fc m, VertexConsumer b, float x0, float y0, float z0,
-                            float x1, float y1, float z1, float r, float g, float bl, float a) {
-        quad(m, b, x0, y0, z1, x1, y0, z1, x1, y1, z1, x0, y1, z1, r, g, bl, a);
-        quad(m, b, x1, y0, z0, x0, y0, z0, x0, y1, z0, x1, y1, z0, r, g, bl, a);
-        quad(m, b, x0, y0, z0, x0, y0, z1, x0, y1, z1, x0, y1, z0, r, g, bl, a);
-        quad(m, b, x1, y0, z1, x1, y0, z0, x1, y1, z0, x1, y1, z1, r, g, bl, a);
-        quad(m, b, x0, y1, z1, x1, y1, z1, x1, y1, z0, x0, y1, z0, r, g, bl, a);
-        quad(m, b, x0, y0, z0, x1, y0, z0, x1, y0, z1, x0, y0, z1, r, g, bl, a);
-    }
-
-    private static void quad(Matrix4fc m, VertexConsumer b,
-                             float ax, float ay, float az, float bx, float by, float bz,
-                             float cx, float cy, float cz, float dx, float dy, float dz,
-                             float r, float g, float bl, float a) {
-        b.addVertex(m, ax, ay, az).setColor(r, g, bl, a);
-        b.addVertex(m, bx, by, bz).setColor(r, g, bl, a);
-        b.addVertex(m, cx, cy, cz).setColor(r, g, bl, a);
-        b.addVertex(m, dx, dy, dz).setColor(r, g, bl, a);
     }
 
     public static void close() {
