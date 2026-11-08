@@ -62,20 +62,25 @@ Close-up: contour lines, hillshade, water-depth shading, biome boundaries and la
 - Biome boundaries (a 75% / 25% opacity checkerboard) and biome labels (placed at the **centre of the largest inscribed circle** of each region, filtered by area, hidden when a button, menu or text plate would cover them)
 - Unified dark translucent UI: buttons 75%, floating menus 88%, dialogs 90%, info plates 40%, with smooth accent-tint hover animations
 
-**3D view**
+**3D view** (Fabric 26.2)
 
 - **3D** button next to the style selector: an orbitable height-field view built from the same map data (a second rendering mode of the map, not a separate world render)
-- Spherical three-layer LOD (separate near / mid / far sampling steps), CPU multi-threaded rasteriser with a depth buffer and FXAA; render scale, thread count, FOV and vertical scale are configurable
-- 3D biome labels (distance limit + terrain occlusion), a player arrow that floats above the terrain, ray-picked cursor coordinates and the same right-click menu
+- GPU per-tile terrain: every map tile is meshed on a background worker into one immutable vertex/index buffer plus a 256×256 slot in a 1024×1024 texture atlas, then drawn with Minecraft's own block pipeline in a dedicated render pass (above the world, below the GUI)
+- Three mesh precision levels — near step 1 (≤512 blocks), mid step 4 (≤2048), far step 32 (beyond), measured from the real camera eye; the map is first filled at the far step and then refined, with a 15% hysteresis to avoid rebuild churn; vertical skirts (16 blocks by default) hide the seams
+- Independent D32_FLOAT depth buffer with reversed-Z depth testing, frustum culling and back-face culling
+- Atlas memory is bounded by the tile-texture VRAM budget (256 MB → 1024 tiles); the farthest tiles are evicted first, and the debug panel (`Q`) reports `mesh` / `atlas` / `depth` VRAM separately
+- Full-bright by design: the terrain reuses the unlit 2D map colours, so the 3D view does not dim with time of day
+- 3D biome labels (distance limit + terrain occlusion), a player arrow that floats above the terrain, ray-picked cursor coordinates and the same right-click menu (picks are clipped to the mapped area, so the sky or the area outside the map no longer yields fake coordinates)
 - Seamless 2D↔3D switch (position and scale match), a short rotation animation on exit, and a per-world remembered camera
+- `keep3dTilesIn2d` keeps the built GPU terrain when returning to 2D, so re-entering 3D is instant (at the cost of VRAM)
 
 **Config screen**
 
-- Fully self-drawn in-game config screen: five grouped tabs (refresh / data / rendering / 3D / interface), a description for every row, section dividers
+- Fully self-drawn in-game config screen: six tabs (General / Map / Map data / 3D View / Perf / Debug), a description for every row, section dividers
 - Toggles, dropdowns and sliders (drag, or click the value and type a number)
 - **Draft mode**: Cancel discards, Apply saves without closing, Done saves and closes, Reset restores the defaults
 - Open/close fade, options fading in one after another on tab switches, animated hover
-- The NeoForge build uses the same self-drawn screen and writes TOML; Fabric writes JSON
+- The NeoForge build uses a self-drawn screen as well and writes TOML; Fabric writes JSON
 
 **Data and performance**
 
@@ -161,7 +166,7 @@ Every option can be changed in the self-drawn in-game config screen (Fabric: "Co
 - Fabric: `config/voxymap-client.json`
 - NeoForge: `config/voxymap-client.toml`
 
-Options are grouped into `refresh` / `data` / `rendering` / `ui`. Common ones:
+The in-game screen groups options into six tabs (General / Map / Map data / 3D View / Perf / Debug). In the NeoForge TOML the keys are grouped into `refresh` / `data` / `rendering` / `ui`; the Fabric JSON is a flat key list. Common ones:
 
 | Option | Group | Default | Description |
 | --- | --- | --- | --- |
@@ -175,13 +180,27 @@ Options are grouped into `refresh` / `data` / `rendering` / `ui`. Common ones:
 | `defaultZoom` / `rememberZoom` | rendering | 0.5 / `true` | Default map zoom / remember the zoom when the map is closed |
 | `drawContours` / `contourDensity` / `minContourArea` | rendering | `true` / 12 / 40 | Contours on/off, density and minimum fragment area |
 | `drawHillshade` / `drawWaterDepth` | rendering | `true` / `true` | Hillshade / water-depth shading |
-| `adaptiveColorRamp` / `landMaxRamp` | rendering | `true` / `false` | Adaptive ramp / stretch the land ramp to the map's highest point |
-| `waterBlur` / `waterBlurRadius` / `waterBlurPasses` | rendering | `true` / 8 / 3 | Ocean blur |
+| `adaptiveColorRamp` / `landMaxRamp` | rendering | `true` / `true` | Adaptive ramp / stretch the land ramp to the map's highest point |
+| `waterBlur` / `waterBlurRadius` / `waterBlurPasses` | rendering | `true` / 8 / 2 | Ocean blur |
 | `denoise` / `fillHoles` | rendering | `false` / `true` | Denoise / hole filling |
 | `showBiomes` / `biomeLabelMinArea` / `biomeLabelBackground` | rendering | `false` / 600 / `true` | Biome overlay, label minimum area, label background |
-| `arrowStyle` / `showRenderDistance` | rendering | `clean` / `true` | Arrow style / render-distance box |
+| `arrowStyle` / `showRenderDistance` | rendering | `clean` / `false` | Arrow style / render-distance box |
 | `releaseTexturesOnClose` / `skipWorldRender` | rendering | `true` / `true` | Release the big texture on close / skip world rendering while the map is open |
 | `showCoordinates` / `showHint` / `teleportEnabled` / `debugEnabled` | ui | `true` / `true` / `true` / `true` | Coordinates, controls hint, teleport menu, debug panel |
+
+3D view options (Fabric 26.2 only — the NeoForge and 26.1.2 builds have no 3D view yet):
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `gpuTerrainNearDistance` / `gpuTerrainMidDistance` | 512 / 2048 | Distances (blocks, from the camera eye) that use the highest / medium mesh precision |
+| `gpuTerrainNearStep` / `gpuTerrainMidStep` / `gpuTerrainFarStep` | 1 / 4 / 32 | Map pixels per vertex for near / mid / far tiles (must divide 256) |
+| `gpuTerrainSkirtDepth` | 16 | Vertical skirt depth at tile borders, hides precision seams |
+| `gpuTerrainHysteresisPct` | 15 | Hysteresis band for precision changes (avoids rebuild churn) |
+| `gpu3dBuildThreads` / `gpu3dBatchBuild` | 0 / 10 | Background mesh threads (0 = automatic, up to 6) / tile builds submitted per frame |
+| `keep3dTilesIn2d` | `true` | Keep the built GPU terrain when returning to 2D for instant re-entry |
+| `gpuTextureBudgetMb` | 256 | VRAM budget that also bounds the 3D atlas (4 tiles per MB → 1024 tiles by default) |
+| `fov3d` / `verticalScale3d` / `minDistance3d` / `maxDistance3d` | 55 / 1.0 / 64 / 8192 | 3D camera |
+| `autoHideContours3d` / `biomeLabel3dRange` | `false` / 3000 | Hide 2D contours in 3D / horizontal biome-label range (blocks) |
 
 > The config only sets the defaults for **new worlds**. Each world's palette, overlay toggles, map scale and zoom are stored separately in `voxymap-cache/<hash>/state.properties` and restored when that world is opened.
 
@@ -212,10 +231,11 @@ Make sure `skipWorldRender = true` (the default); turning off the biome overlay 
 
 - Only the overworld is supported (nothing is drawn in the Nether or the End)
 - Biomes are resolved by registry path, so mods with identically named biomes may show the wrong one (unlikely)
+- The GPU 3D view is available in the Fabric 26.2 build only; the 26.1.2 and NeoForge builds do not have it yet
 
 ## Building from source
 
-The Fabric builds (26.2 / 26.1.2) use a single Stonecutter project and need **JDK 25**:
+The Fabric project (Stonecutter, shared source for 26.2 / 26.1.2) needs **JDK 25**:
 
 ```bash
 cd stonecutter
@@ -225,9 +245,11 @@ cd stonecutter
 On Windows use `.\gradlew.bat build`. Output:
 
 ```
-stonecutter/versions/26.2-fabric/build/libs/voxy-map-0.1.0+26.2+fabric.jar
-stonecutter/versions/26.1-fabric/build/libs/voxy-map-0.1.0+26.1.2+fabric.jar
+stonecutter/versions/26.2-fabric/build/libs/voxy-map-0.2.0+26.2+fabric.jar
+stonecutter/versions/26.1-fabric/build/libs/voxy-map-0.2.0+26.1.2+fabric.jar
 ```
+
+> The 26.2 GPU 3D code currently uses 26.2-only Blaze3D APIs, so the **26.1.2 node does not compile** yet and a full `build` stops there. Build and test only 26.2 for now with `.\gradlew.bat :26.2-fabric:build`.
 
 The NeoForge build needs **JDK 21**:
 
@@ -335,16 +357,21 @@ Icon and screenshots © Tsutsutsuu; map data comes from Voxy and its SeedGen add
 - 群系边界（75% / 25% 不透明度交替的棋盘格虚线）+ 群系名标签（位置取区域**最大内切圆中心**，按面积过滤，被按钮/菜单/文字框压住时自动隐藏）
 - 界面统一深色半透明风格：按钮 75%、浮层菜单 88%、对话框 90%、信息条 40%，悬停统一为平滑的强调色叠加动画
 
-**3D 视图**
+**3D 视图**（Fabric 26.2）
 
 - 样式选择器左侧的 **3D** 按钮：可轨道旋转的地形高度场视图（是地图的另一种渲染方式，不是单独渲染世界）
-- 三层球形 LOD（近 / 中 / 远不同采样步长）、CPU 多线程光栅化 + 深度缓冲 + FXAA；渲染比例、线程数、视场角、垂直比例可调
-- 3D 群系标签（距离限制 + 地形遮挡）、悬浮在地形上方的玩家箭头、射线拾取的底部坐标与同样的右键菜单
+- GPU per-tile 地形：每个地图瓦片在后台线程生成一份不可变的顶点/索引缓冲，并占用 1024×1024 纹理图集中的一个 256×256 槽位；再由独立的渲染 pass 用 Minecraft 自己的方块管线绘制（在世界之上、GUI 之下）
+- 三级网格精度：近景步长 1（≤512 格）、中景步长 4（≤2048 格）、远景步长 32（更远），距离按真实相机位置计算；先用远景铺满整张地图，再逐步细化，切换带 15% 滞回避免反复重建；瓦片边缘有默认 16 格向下的裙边遮住接缝
+- 独立 `D32_FLOAT` 深度缓冲 + 反向 Z 深度测试，视锥剔除与背面剔除
+- 图集显存由瓦片纹理预算限制（默认 256 MB ≈ 1024 个瓦片），优先淘汰最远的瓦片；调试面板（`Q`）把 `mesh` / `atlas` / `depth` 三项显存分开显示
+- **故意全亮**：3D 地形复用 2D 地图的未打光配色，不随昼夜变暗
+- 3D 群系标签（距离限制 + 地形遮挡）、悬浮在地形上方的玩家箭头、射线拾取的底部坐标与同样的右键菜单（拾取被裁剪到地图范围内，点天空或地图外不再出现假坐标）
 - 2D↔3D 无缝切换（位置与比例对应）、退出时短暂旋转动画、可按世界记住 3D 相机
+- `keep3dTilesIn2d` 在切回 2D 后保留已建好的 GPU 地形，下次进 3D 瞬间恢复（代价是显存）
 
 **配置界面**
 
-- 游戏内自绘配置界面：五个分组标签页（刷新 / 数据 / 渲染 / 3D / 界面）、每项带说明文字、分割线
+- 游戏内自绘配置界面：六个标签页（常规 / 地图绘制 / 地图数据 / 3D 视图 / 性能 / 调试）、每项带说明文字、分割线
 - 开关、下拉、滑块（可拖动或点击输入数值）三种控件
 - **草稿模式**：取消 = 丢弃、应用 = 保存不关闭、完成 = 保存并关闭、重置 = 恢复默认
 - 打开/关闭淡入淡出、标签页切换时选项**依次淡入**、悬停动画
@@ -434,7 +461,7 @@ Icon and screenshots © Tsutsutsuu; map data comes from Voxy and its SeedGen add
 - Fabric：`config/voxymap-client.json`
 - NeoForge：`config/voxymap-client.toml`
 
-配置分四组：`refresh` / `data` / `rendering` / `ui`。常用项：
+游戏内配置界面分六个标签页（常规 / 地图绘制 / 地图数据 / 3D 视图 / 性能 / 调试）。NeoForge 的 TOML 把配置分成 `refresh` / `data` / `rendering` / `ui` 四组；Fabric 的 JSON 是平铺的键列表。常用项：
 
 | 配置项 | 分组 | 默认 | 说明 |
 | --- | --- | --- | --- |
@@ -448,13 +475,27 @@ Icon and screenshots © Tsutsutsuu; map data comes from Voxy and its SeedGen add
 | `defaultZoom` / `rememberZoom` | rendering | 0.5 / `true` | 默认地图缩放 / 是否在关闭时记住当前缩放 |
 | `drawContours` / `contourDensity` / `minContourArea` | rendering | `true` / 12 / 40 | 等高线开关、密度与最小碎片面积 |
 | `drawHillshade` / `drawWaterDepth` | rendering | `true` / `true` | 山体阴影 / 水深着色 |
-| `adaptiveColorRamp` / `landMaxRamp` | rendering | `true` / `false` | 色带自适应 / 陆地色带按地图最高点拉伸 |
-| `waterBlur` / `waterBlurRadius` / `waterBlurPasses` | rendering | `true` / 8 / 3 | 海洋模糊 |
+| `adaptiveColorRamp` / `landMaxRamp` | rendering | `true` / `true` | 色带自适应 / 陆地色带按地图最高点拉伸 |
+| `waterBlur` / `waterBlurRadius` / `waterBlurPasses` | rendering | `true` / 8 / 2 | 海洋模糊 |
 | `denoise` / `fillHoles` | rendering | `false` / `true` | 去噪 / 补洞 |
 | `showBiomes` / `biomeLabelMinArea` / `biomeLabelBackground` | rendering | `false` / 600 / `true` | 群系叠加、标签最小面积、标签背景 |
-| `arrowStyle` / `showRenderDistance` | rendering | `clean` / `true` | 箭头样式 / 视距框 |
+| `arrowStyle` / `showRenderDistance` | rendering | `clean` / `false` | 箭头样式 / 视距框 |
 | `releaseTexturesOnClose` / `skipWorldRender` | rendering | `true` / `true` | 关闭释放大图纹理 / 打开地图时跳过世界渲染 |
 | `showCoordinates` / `showHint` / `teleportEnabled` / `debugEnabled` | ui | `true` / `true` / `true` / `true` | 坐标、操作提示、传送菜单、调试面板 |
+
+3D 视图配置（仅 Fabric 26.2；NeoForge 与 26.1.2 构建暂无 3D 视图）：
+
+| 配置项 | 默认 | 说明 |
+| --- | --- | --- |
+| `gpuTerrainNearDistance` / `gpuTerrainMidDistance` | 512 / 2048 | 使用最高 / 中等网格精度的距离（格，按相机位置计算） |
+| `gpuTerrainNearStep` / `gpuTerrainMidStep` / `gpuTerrainFarStep` | 1 / 4 / 32 | 近 / 中 / 远景每个顶点覆盖的地图像素（必须整除 256） |
+| `gpuTerrainSkirtDepth` | 16 | 瓦片边缘向下的裙边深度，用来遮住精度接缝 |
+| `gpuTerrainHysteresisPct` | 15 | 精度切换的滞回百分比（避免反复重建） |
+| `gpu3dBuildThreads` / `gpu3dBatchBuild` | 0 / 10 | 后台网格构建线程数（0 = 自动，最多 6）/ 每帧提交的瓦片构建数 |
+| `keep3dTilesIn2d` | `true` | 切回 2D 后保留已建好的 GPU 地形，下次进 3D 更快（代价是显存） |
+| `gpuTextureBudgetMb` | 256 | 瓦片纹理显存预算，同时限制 3D 图集（每 MB 4 个瓦片，默认 1024 个） |
+| `fov3d` / `verticalScale3d` / `minDistance3d` / `maxDistance3d` | 55 / 1.0 / 64 / 8192 | 3D 相机 |
+| `autoHideContours3d` / `biomeLabel3dRange` | `false` / 3000 | 3D 下隐藏 2D 等高线 / 群系标签水平范围（格） |
 
 > 配置里的默认值只对**新世界**生效；每个世界的样式、叠加层开关、地图比例与缩放另外保存在 `voxymap-cache/<hash>/state.properties`，进存档时自动恢复。
 
@@ -485,10 +526,11 @@ Icon and screenshots © Tsutsutsuu; map data comes from Voxy and its SeedGen add
 
 - 目前只支持主世界（下界/末地不绘制）
 - 群系按注册名 path 反查，多个模组存在同名群系时可能显示错误（概率低）
+- GPU 3D 视图只在 Fabric 26.2 版提供；26.1.2 与 NeoForge 版暂未包含
 
 ## 从源码构建
 
-Fabric 版本（26.2 / 26.1.2）用 Stonecutter 单工程多版本，需要 **JDK 25**：
+Fabric 版本用 Stonecutter 单工程（26.2 / 26.1.2 共用源码），需要 **JDK 25**：
 
 ```bash
 cd stonecutter
@@ -498,9 +540,11 @@ cd stonecutter
 Windows 用 `.\gradlew.bat build`。产物：
 
 ```
-stonecutter/versions/26.2-fabric/build/libs/voxy-map-0.1.0+26.2+fabric.jar
-stonecutter/versions/26.1-fabric/build/libs/voxy-map-0.1.0+26.1.2+fabric.jar
+stonecutter/versions/26.2-fabric/build/libs/voxy-map-0.2.0+26.2+fabric.jar
+stonecutter/versions/26.1-fabric/build/libs/voxy-map-0.2.0+26.1.2+fabric.jar
 ```
+
+> 26.2 的 GPU 3D 代码目前用了 26.2 独有的 Blaze3D API，**26.1.2 节点还编译不过**，全量 `build` 会在这里中断。现在只构建/测试 26.2：`.\gradlew.bat :26.2-fabric:build`。
 
 NeoForge 版本需要 **JDK 21**：
 
