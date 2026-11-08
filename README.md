@@ -183,7 +183,7 @@ The in-game screen groups options into six tabs (General / Map / Map data / 3D V
 | `drawHillshade` / `drawWaterDepth` | rendering | `true` / `true` | Hillshade / water-depth shading |
 | `adaptiveColorRamp` / `landMaxRamp` | rendering | `true` / `true` | Adaptive ramp / stretch the land ramp to the map's highest point |
 | `waterBlur` / `waterBlurRadius` / `waterBlurPasses` | rendering | `true` / 8 / 2 | Ocean blur |
-| `denoise` / `fillHoles` | rendering | `false` / `true` | Denoise / hole filling |
+| `denoise` / `fillHoles` | rendering | `false` / `false` | Denoise / hole filling |
 | `showBiomes` / `biomeLabelMinArea` / `biomeLabelBackground` | rendering | `false` / 600 / `true` | Biome overlay, label minimum area, label background |
 | `arrowStyle` / `showRenderDistance` | rendering | `clean` / `false` | Arrow style / render-distance box |
 | `releaseTexturesOnClose` / `skipWorldRender` | rendering | `true` / `true` | Release the big texture on close / skip world rendering while the map is open |
@@ -479,7 +479,7 @@ Icon and screenshots © Tsutsutsuu; map data comes from Voxy and its SeedGen add
 | `drawHillshade` / `drawWaterDepth` | rendering | `true` / `true` | 山体阴影 / 水深着色 |
 | `adaptiveColorRamp` / `landMaxRamp` | rendering | `true` / `true` | 色带自适应 / 陆地色带按地图最高点拉伸 |
 | `waterBlur` / `waterBlurRadius` / `waterBlurPasses` | rendering | `true` / 8 / 2 | 海洋模糊 |
-| `denoise` / `fillHoles` | rendering | `false` / `true` | 去噪 / 补洞 |
+| `denoise` / `fillHoles` | rendering | `false` / `false` | 去噪 / 补洞 |
 | `showBiomes` / `biomeLabelMinArea` / `biomeLabelBackground` | rendering | `false` / 600 / `true` | 群系叠加、标签最小面积、标签背景 |
 | `arrowStyle` / `showRenderDistance` | rendering | `clean` / `false` | 箭头样式 / 视距框 |
 | `releaseTexturesOnClose` / `skipWorldRender` | rendering | `true` / `true` | 关闭释放大图纹理 / 打开地图时跳过世界渲染 |
