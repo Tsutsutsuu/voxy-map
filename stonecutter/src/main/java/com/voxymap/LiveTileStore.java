@@ -82,6 +82,8 @@ public final class LiveTileStore {
         /** highest non-water top in this tile; lets the global max shrink again after refinement */
         volatile int tileMaxLand = Integer.MIN_VALUE;
         volatile boolean tileMaxLandKnown;
+        long borderHash;
+        boolean borderHashKnown;
 
         LiveTile(int tx, int tz, long minWX, long minWZ) {
             this(tx, tz, minWX, minWZ, new long[TILE_PIXELS * TILE_PIXELS]);
@@ -494,6 +496,16 @@ public final class LiveTileStore {
      * contour/edge frame along the tile boundary.
      */
     private void invalidateNeighborColors(int tx, int tz) {
+        LiveTile changed = tiles.get(key(tx, tz));
+        if (changed != null) {
+            // A live/source update that only touches interior pixels cannot affect a neighbour's
+            // 8px halo. Repeated interior updates at the viewport edge used to recolour the same
+            // border tiles forever; hash the actual four edges and skip unchanged halos.
+            long hash = borderHash(changed.pixels);
+            if (changed.borderHashKnown && changed.borderHash == hash) return;
+            changed.borderHash = hash;
+            changed.borderHashKnown = true;
+        }
         for (int dz = -1; dz <= 1; dz++) {
             for (int dx = -1; dx <= 1; dx++) {
                 if (dx == 0 && dz == 0) continue;
@@ -512,6 +524,20 @@ public final class LiveTileStore {
                 t.textureDirty = true;
             }
         }
+    }
+
+    private static long borderHash(long[] pixels) {
+        long h = 1125899906842597L;
+        int last = (TILE_PIXELS - 1) * TILE_PIXELS;
+        for (int i = 0; i < TILE_PIXELS; i++) {
+            h = h * 31 + pixels[i];
+            h = h * 31 + pixels[last + i];
+        }
+        for (int y = 0; y < TILE_PIXELS; y++) {
+            h = h * 31 + pixels[y * TILE_PIXELS];
+            h = h * 31 + pixels[y * TILE_PIXELS + TILE_PIXELS - 1];
+        }
+        return h;
     }
 
     public long sectionCount() {
@@ -731,6 +757,7 @@ public final class LiveTileStore {
             } else {
                 previous.sourceFilled = true;
                 fillMissing(previous, pixels);
+                invalidateNeighborColors(tx, tz);
                 scheduleSave(previous);
             }
         });
@@ -816,6 +843,7 @@ public final class LiveTileStore {
             tile.textureDirty = true;
             tile.colorPending = false;
             tile.tileMaxLandKnown = false;
+            tile.borderHashKnown = false;
             observeTile(tile);
             contentVersion.incrementAndGet();
             invalidateNeighborColors(tile.tx, tile.tz);
@@ -1295,6 +1323,7 @@ public final class LiveTileStore {
             t.colorDirtySinceMs = System.currentTimeMillis();
             t.textureDirty = true;
             t.tileMaxLandKnown = false;
+            t.borderHashKnown = false;
             observeTile(t);
             contentVersion.incrementAndGet();
             invalidateNeighborColors(t.tx, t.tz);
