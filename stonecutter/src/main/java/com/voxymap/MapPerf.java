@@ -38,6 +38,7 @@ public final class MapPerf {
     public final LongAdder colorDone = new LongAdder();
     public final LongAdder colorStale = new LongAdder();
     public final LongAdder textureBuilds = new LongAdder();
+    public final LongAdder gpuTextureReleases = new LongAdder();
     public final LongAdder textureUploadNanos = new LongAdder();
 
     // live events
@@ -133,6 +134,11 @@ public final class MapPerf {
                     rasterFrames.sum(), msPer(rasterNanos, rasterFrames), fxaaFrames.sum()));
         }
         if (data != null) out.add("pmem " + data.perfMemoryLine());
+        if (data != null) {
+            out.add(String.format(Locale.ROOT, "pgpu tex=%d %d/%dMB rel=%d",
+                    data.tileTextureCount(), data.tileTextureBytes() >> 20,
+                    VoxyMapConfig.GPU_TEXTURE_BUDGET_MB.get(), gpuTextureReleases.sum()));
+        }
         MemoryUsage heap = ManagementFactory.getMemoryMXBean().getHeapMemoryUsage();
         out.add(String.format(Locale.ROOT, "pheap %d/%dMB",
                 heap.getUsed() >> 20, heap.getMax() >> 20));

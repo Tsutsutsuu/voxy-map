@@ -953,6 +953,16 @@ public final class MapData {
                 + " 3dColor=" + (colorPx / 1_000_000) + "Mpx";
     }
 
+    public int tileTextureCount() {
+        LiveTileStore live = liveTiles;
+        return live == null ? 0 : live.textureCount();
+    }
+
+    public long tileTextureBytes() {
+        LiveTileStore live = liveTiles;
+        return live == null ? 0 : live.textureBytes();
+    }
+
     /** Diagnostic lines for the in-game debug panel (Q when debugEnabled). */
     public List<String> debugLines() {
         List<String> out = new ArrayList<>();

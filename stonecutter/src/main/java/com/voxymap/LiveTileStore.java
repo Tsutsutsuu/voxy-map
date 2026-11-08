@@ -35,6 +35,7 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public final class LiveTileStore {
     public static final int TILE_PIXELS = 256;
+    public static final long TEXTURE_BYTES = (long) TILE_PIXELS * TILE_PIXELS * 4L;
     private static final int CACHE_MAGIC = 0x56585431;
     private static final int CACHE_VERSION = 8;
     private static final ExecutorService CACHE_IO = Executors.newFixedThreadPool(2, r -> {
@@ -73,6 +74,7 @@ public final class LiveTileStore {
         volatile int textureSeedEpoch = -1;
         volatile int[] rgb;
         volatile boolean textureDirty = true;
+        volatile long lastTextureFrame;
         Identifier texture;
         DynamicTexture dynamic;
         int textureEpoch = -1;
@@ -93,7 +95,8 @@ public final class LiveTileStore {
             this.pixels = pixels;
         }
 
-        void dispose() {
+        /** Releases only the GPU texture; pixels/rgb stay available for a cheap re-upload. */
+        void releaseGpu() {
             try {
                 if (dynamic != null) dynamic.close();
                 if (texture != null) Minecraft.getInstance().getTextureManager().release(texture);
@@ -102,6 +105,11 @@ public final class LiveTileStore {
             texture = null;
             dynamic = null;
             textureEpoch = -1;
+            textureDirty = true;
+        }
+
+        void dispose() {
+            releaseGpu();
         }
     }
 
@@ -118,6 +126,8 @@ public final class LiveTileStore {
     private volatile int seedPixelBlocks = 1;
     private volatile int seedEpoch;
     private final Map<Long, LiveTile> tiles = new ConcurrentHashMap<>();
+    private final java.util.Set<LiveTile> visibleTextures = new java.util.HashSet<>();
+    private long textureFrame;
     private final AtomicLong sectionCount = new AtomicLong();
     private final AtomicInteger createdThisFrame = new AtomicInteger();
     private final AtomicInteger colorRequestsThisFrame = new AtomicInteger();
@@ -685,6 +695,38 @@ public final class LiveTileStore {
         seedRefreshesThisFrame.set(0);
         seedRequestsThisFrame.set(0);
         sourceFillRequestsThisFrame.set(0);
+        textureFrame++;
+        visibleTextures.clear();
+    }
+
+    /**
+     * Releases off-screen tile textures until the configured VRAM estimate fits. Tile pixels and
+     * rgb stay resident, so a later frame re-uploads the texture in well under a millisecond.
+     */
+    public void endTextureFrame() {
+        long budget = Math.max(8L, VoxyMapConfig.GPU_TEXTURE_BUDGET_MB.get()) * 1024L * 1024L;
+        long used = 0L;
+        int count = 0;
+        java.util.List<LiveTile> candidates = new java.util.ArrayList<>();
+        for (LiveTile tile : tiles.values()) {
+            if (tile.texture == null) continue;
+            used += TEXTURE_BYTES;
+            count++;
+            if (!visibleTextures.contains(tile)) candidates.add(tile);
+        }
+        if (used <= budget || candidates.isEmpty()) return;
+        candidates.sort(java.util.Comparator.comparingLong(t -> t.lastTextureFrame));
+        for (LiveTile tile : candidates) {
+            if (used <= budget) break;
+            tile.releaseGpu();
+            used -= TEXTURE_BYTES;
+            count--;
+            MapPerf.INSTANCE.gpuTextureReleases.increment();
+        }
+    }
+
+    public long textureBytes() {
+        return (long) textureCount() * TEXTURE_BYTES;
     }
 
     public LiveTile get(int tx, int tz) {
@@ -1100,6 +1142,8 @@ public final class LiveTileStore {
      */
     public Identifier textureFor(LiveTile tile, String style, int sea, int colorEpoch) {
         if (tile == null) return null;
+        visibleTextures.add(tile);
+        tile.lastTextureFrame = textureFrame;
         int styleHash = ((style == null ? 0 : style.hashCode()) * 31 + sea) * 31 + colorEpoch;
         if (tile.seedEpoch >= 0) {
             // Tiles covered by the base snapshot keep the proven base colour pipeline. Live

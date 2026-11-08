@@ -70,6 +70,8 @@ public final class VoxyMapConfig {
     public static final Value<Boolean> LIVE_TILES = new Value<>("liveTiles", true);
     /** Soft resident tile cap; eviction only happens above this, down to ~70%. */
     public static final Value<Integer> TILE_RESIDENT_CAP = new Value<>("tileResidentCap", 1024);
+    /** Estimated VRAM budget for tile textures (256×256 RGBA ≈ 256 KiB each). */
+    public static final Value<Integer> GPU_TEXTURE_BUDGET_MB = new Value<>("gpuTextureBudgetMb", 256);
     public static final Value<Boolean> SKIP_WORLD_RENDER = new Value<>("skipWorldRender", true);
     public static final Value<Integer> CACHE_KEEP_COUNT = new Value<>("cacheKeepCount", 5);
     public static final Value<Integer> MIN_CONTOUR_AREA = new Value<>("minContourArea", 40);
