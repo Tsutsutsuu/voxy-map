@@ -75,6 +75,7 @@ public final class LiveTileStore {
         volatile int[] rgb;
         volatile boolean textureDirty = true;
         volatile long lastTextureFrame;
+        volatile long lastAccessFrame;
         Identifier texture;
         DynamicTexture dynamic;
         int textureEpoch = -1;
@@ -126,6 +127,7 @@ public final class LiveTileStore {
     private volatile int seedPixelBlocks = 1;
     private volatile int seedEpoch;
     private final Map<Long, LiveTile> tiles = new ConcurrentHashMap<>();
+    private final java.util.Set<LiveTile> visibleTiles = new java.util.HashSet<>();
     private final java.util.Set<LiveTile> visibleTextures = new java.util.HashSet<>();
     private long textureFrame;
     private final AtomicLong sectionCount = new AtomicLong();
@@ -696,6 +698,7 @@ public final class LiveTileStore {
         seedRequestsThisFrame.set(0);
         sourceFillRequestsThisFrame.set(0);
         textureFrame++;
+        visibleTiles.clear();
         visibleTextures.clear();
     }
 
@@ -769,12 +772,14 @@ public final class LiveTileStore {
             }
         }
         int cap = Math.max(256, VoxyMapConfig.TILE_RESIDENT_CAP.get());
-        evictFar(ccx, ccz, radius + 4, cap, Math.max(256, cap * 7 / 10));
+        trimResident(cap, Math.max(256, cap * 7 / 10));
     }
 
     private void pump3DTile(int tx, int tz, int styleHash) {
         LiveTile tile = getOrCreateSeed(tx, tz);
         if (tile == null) return;
+        visibleTiles.add(tile);
+        tile.lastAccessFrame = textureFrame;
         if (tile.version != tile.coloredVersion || tile.colorStyleHash != styleHash) {
             if (!tile.colorPending && colorRequestsThisFrame.get() < 12) {
                 requestColor(tile, styleHash);
@@ -789,6 +794,7 @@ public final class LiveTileStore {
     public LiveTile getOrCreateSeed(int tx, int tz) {
         LiveTile existing = tiles.get(key(tx, tz));
         if (existing != null) {
+            existing.lastAccessFrame = textureFrame;
             if (!existing.sourceFilled) requestSourceFill(tx, tz, existing);
             if (existing.seedEpoch < 0 && seedPixels != null && seedRgb != null
                     && seedCreatesThisFrame.get() < 32) {
@@ -1142,6 +1148,8 @@ public final class LiveTileStore {
      */
     public Identifier textureFor(LiveTile tile, String style, int sea, int colorEpoch) {
         if (tile == null) return null;
+        visibleTiles.add(tile);
+        tile.lastAccessFrame = textureFrame;
         visibleTextures.add(tile);
         tile.lastTextureFrame = textureFrame;
         int styleHash = ((style == null ? 0 : style.hashCode()) * 31 + sea) * 31 + colorEpoch;
@@ -1328,42 +1336,28 @@ public final class LiveTileStore {
     }
 
     /**
-     * Bounds the resident seeded tiles. Seeded tiles are reconstructible from the base snapshot,
-     * so far ones can be dropped safely; live-only tiles are kept (they have no other source).
+     * Access-ordered resident trim. Visible tiles (the set gathered while drawing the current
+     * viewport) are pinned; after that the least-recently-accessed tiles are written to .vxt and
+     * removed. No viewport distance is used here.
      */
-    public void evictFar(int centerTx, int centerTz, int keepRadius, int maxTiles) {
-        evictFar(centerTx, centerTz, keepRadius, maxTiles, Math.max(256, maxTiles * 7 / 10));
-    }
-
-    /** Evicts only above the high-water mark, down to the low-water mark. */
-    public void evictFar(int centerTx, int centerTz, int keepRadius, int highWater, int lowWater) {
+    public void trimResident(int highWater, int lowWater) {
         if (tiles.size() <= highWater) return;
         int target = Math.max(128, lowWater);
         java.util.List<LiveTile> candidates = new java.util.ArrayList<>();
         for (LiveTile tile : tiles.values()) {
-            int dx = tile.tx - centerTx;
-            int dz = tile.tz - centerTz;
-            if (Math.max(Math.abs(dx), Math.abs(dz)) > keepRadius) {
-                long k = key(tile.tx, tile.tz);
-                // A pending source/cache decode is still being paid for; evicting it now just
-                // makes the callback recreate it and re-request the same tile later.
-                if (sourcePending.contains(k) || seedPending.contains(k)) continue;
-                candidates.add(tile);
-            }
+            if (visibleTiles.contains(tile)) continue;
+            long k = key(tile.tx, tile.tz);
+            // A pending decode/colour job is still being paid for; evicting now makes its
+            // callback write into an orphaned tile and re-request the same tile later.
+            if (sourcePending.contains(k) || seedPending.contains(k)
+                    || tile.colorPending) continue;
+            candidates.add(tile);
         }
-        candidates.sort((a, b) -> {
-            int da = Math.max(Math.abs(a.tx - centerTx), Math.abs(a.tz - centerTz));
-            int db = Math.max(Math.abs(b.tx - centerTx), Math.abs(b.tz - centerTz));
-            return Integer.compare(db, da);
-        });
+        candidates.sort(java.util.Comparator.comparingLong(t -> t.lastAccessFrame));
         int excess = tiles.size() - target;
         for (LiveTile tile : candidates) {
             if (excess-- <= 0) break;
-            // live-only tiles are persisted before eviction, so a later visit can restore them
-            // from cache (or rebuild from Voxy storage) instead of keeping them forever
-            if (tile.seedEpoch < 0) {
-                scheduleSave(tile);
-            }
+            if (tile.seedEpoch < 0) scheduleSave(tile);
             if (tiles.remove(key(tile.tx, tile.tz), tile)) {
                 tile.dispose();
                 MapPerf.INSTANCE.evictions.increment();
@@ -1377,6 +1371,10 @@ public final class LiveTileStore {
             }
         }
         refreshGlobalLandMax();
+    }
+
+    public int visibleTileCount() {
+        return visibleTiles.size();
     }
 
     public void dispose() {
