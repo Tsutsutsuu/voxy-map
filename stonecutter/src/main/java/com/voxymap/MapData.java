@@ -4081,9 +4081,16 @@ public final class MapData {
      * Depends only on the terrain + contour settings, never on the colour theme.
      */
     /** reusable buffers for computeContour (full and incremental analysis both run on the loader) */
-    private boolean[] contourRawBuf;
-    private boolean[] contourSeenBuf;
-    private int[] contourStackBuf;
+
+    private static final class ContourScratch {
+        boolean[] raw;
+        boolean[] seen;
+        int[] stack;
+    }
+
+    /** Per-thread contour scratch; the previous shared buffers raced between colour workers. */
+    private static final ThreadLocal<ContourScratch> CONTOUR_SCRATCH =
+            ThreadLocal.withInitial(ContourScratch::new);
 
     private boolean[] computeContour(int[] topArr, boolean[] isWaterPix, int[] smoothTop,
                                      int lo, int hi, int w, int h, boolean enabled, int[] stackBuf) {
@@ -4092,8 +4099,9 @@ public final class MapData {
         int contourInterval = Math.max(10, (hi - lo) / Math.max(1, VoxyMapConfig.CONTOUR_DENSITY.get()));
         int minContourArea = VoxyMapConfig.MIN_CONTOUR_AREA.get();
         int cells = w * h;
-        boolean[] contourRaw = contourRawBuf;
-        if (contourRaw == null || contourRaw.length != cells) contourRaw = contourRawBuf = new boolean[cells];
+        ContourScratch scratch = CONTOUR_SCRATCH.get();
+        boolean[] contourRaw = scratch.raw;
+        if (contourRaw == null || contourRaw.length != cells) contourRaw = scratch.raw = new boolean[cells];
         else Arrays.fill(contourRaw, false);
         final int[] fTopA = topArr;
         final int[] fSmoothT = smoothTop;
@@ -4120,11 +4128,11 @@ public final class MapData {
                 }
             }
         });
-        boolean[] seen = contourSeenBuf;
-        if (seen == null || seen.length != cells) seen = contourSeenBuf = new boolean[cells];
+        boolean[] seen = scratch.seen;
+        if (seen == null || seen.length != cells) seen = scratch.seen = new boolean[cells];
         else Arrays.fill(seen, false);
-        int[] stack = (stackBuf != null && stackBuf.length >= cells) ? stackBuf
-                : (contourStackBuf != null && contourStackBuf.length >= cells ? contourStackBuf : new int[cells]);
+        int[] stack = (scratch.stack != null && scratch.stack.length >= cells) ? scratch.stack
+                : (scratch.stack = new int[cells]);
         for (int start = 0; start < w * h; start++) {
             if (!contourRaw[start] || seen[start]) continue;
             int qh = 0, qt = 0;
