@@ -44,7 +44,7 @@ public final class LiveTileStore {
         t.setPriority(Thread.MIN_PRIORITY);
         return t;
     });
-    private static final ExecutorService SEED_IO = Executors.newFixedThreadPool(4, r -> {
+    private static final ExecutorService SEED_IO = Executors.newFixedThreadPool(8, r -> {
         Thread t = new Thread(r, "voxymap-tile-seed");
         t.setDaemon(true);
         t.setPriority(Thread.MIN_PRIORITY);
@@ -898,7 +898,13 @@ public final class LiveTileStore {
             final long cacheStartNs = System.nanoTime();
             if (TileTrace.enabled()) TileTrace.stage(tx, tz, "cache_submit", "file=" + cacheFile(tx, tz).getFileName());
             SEED_IO.submit(() -> {
+                final long ioStartNs = System.nanoTime();
+                if (TileTrace.enabled()) TileTrace.timed(tx, tz, "cache_queue", cacheStartNs, "seed-worker");
                 LiveTile cached = loadCached(tx, tz);
+                if (TileTrace.enabled()) {
+                    TileTrace.timed(tx, tz, "cache_io", ioStartNs,
+                            cached == null ? "miss" : "hit");
+                }
                 Minecraft.getInstance().execute(() -> {
                     if (generation != resetGeneration.get()) return;
                     seedPending.remove(key);
