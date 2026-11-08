@@ -169,9 +169,6 @@ public final class VoxyTileSource {
         if (signature < 0) signature = storageSignature();
         if (loadIndexCache(signature)) {
             indexed = true;
-            if (TileTrace.enabled()) {
-                TileTrace.timed(-1, -1, "index_cache_hit", indexStartNs, "tiles=" + byTile.size());
-            }
             return;
         }
         Object it = RocksBridge.newIterator(db, sectionsHandle);
@@ -235,7 +232,12 @@ public final class VoxyTileSource {
         if (indexCache == null || !Files.isRegularFile(indexCache)) return false;
         try (DataInputStream in = new DataInputStream(new BufferedInputStream(Files.newInputStream(indexCache)))) {
             if (in.readInt() != INDEX_MAGIC || in.readInt() != INDEX_VERSION) return false;
-            if (in.readLong() != signature || in.readLong() != minWX || in.readLong() != minWZ
+            long cachedSignature = in.readLong();
+            // RocksDB's latestSequence changes for background writes/compaction even when the
+            // section key set is unchanged. The cached key set is still useful: use it
+            // immediately, and let the normal 4s/14s/34s resync replace it if the world changed.
+            boolean stale = cachedSignature != signature;
+            if (in.readLong() != minWX || in.readLong() != minWZ
                     || in.readInt() != pixelBlocks || in.readInt() != maxLod) return false;
             int count = in.readInt();
             if (count < 0 || count > 2_000_000) return false;
@@ -248,6 +250,10 @@ public final class VoxyTileSource {
                 for (int k = 0; k < n; k++) list.keys[k] = in.readLong();
                 list.size = n;
                 byTile.put(key, list);
+            }
+            if (TileTrace.enabled()) {
+                TileTrace.stage(-1, -1, stale ? "index_cache_stale" : "index_cache_hit",
+                        "tiles=" + byTile.size());
             }
             return true;
         } catch (Throwable t) {
