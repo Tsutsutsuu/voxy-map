@@ -28,7 +28,7 @@ import java.util.function.Consumer;
  */
 public final class VoxyTileSource {
     private static final int INDEX_MAGIC = 0x56585349;
-    private static final int INDEX_VERSION = 1;
+    private static final int INDEX_VERSION = 2;
     private final Path storage;
     private final Path indexCache;
     private final long minWX, minWZ;
@@ -165,7 +165,8 @@ public final class VoxyTileSource {
         if (waterIds.get().isEmpty()) {
             ownWaterIds = MapData.loadWaterIdsFromDb(db, handles.get(2));
         }
-        long signature = storageSignature();
+        long signature = RocksBridge.latestSequence(db);
+        if (signature < 0) signature = storageSignature();
         if (loadIndexCache(signature)) {
             indexed = true;
             if (TileTrace.enabled()) {
