@@ -1109,6 +1109,9 @@ public final class LiveTileStore {
         if (tile.texture != null && tile.textureEpoch == styleHash && !tile.textureDirty) {
             return tile.texture;
         }
+        // Live-created tiles can be partial until their source fill arrives. Colouring them now
+        // guarantees the fill will bump their version and cancel the in-flight colour job.
+        if (!tile.sourceFilled || !neighbourHaloReady(tile)) return tile.texture;
         if (tile.version != tile.coloredVersion || tile.colorStyleHash != styleHash) {
             long now = System.currentTimeMillis();
             // Coalesce the burst of neighbour/invalidation updates that happens while tiles first
@@ -1168,8 +1171,22 @@ public final class LiveTileStore {
      * Builds the 8px neighbour halo on the loader thread. Doing this on the render thread cost
      * ~74k ConcurrentHashMap lookups per tile and produced frame hitches while colour jobs queued.
      */
-    private long[] buildColorHalo(LiveTile tile, int halo) {
-        int hw = TILE_PIXELS + halo * 2;
+    /**
+     * Wait for already-created neighbours to finish their source fill before colouring: a fill
+     * bumps the neighbour version and would immediately cancel this tile's colour job.
+     */
+    private boolean neighbourHaloReady(LiveTile tile) {
+        for (int dz = -1; dz <= 1; dz++) {
+            for (int dx = -1; dx <= 1; dx++) {
+                if (dx == 0 && dz == 0) continue;
+                LiveTile n = tiles.get(key(tile.tx + dx, tile.tz + dz));
+                if (n != null && !n.sourceFilled) return false;
+            }
+        }
+        return true;
+    }
+
+    private long[] buildColorHalo(LiveTile tile, int halo) {        int hw = TILE_PIXELS + halo * 2;
         long[] withHalo = new long[hw * hw];
         int baseX = tile.tx * TILE_PIXELS - halo;
         int baseZ = tile.tz * TILE_PIXELS - halo;

@@ -3302,7 +3302,7 @@ public final class MapData {
             try {
                 if (!stillValid.getAsBoolean()) {
                     if (TileTrace.enabled()) TileTrace.timed(traceTx, traceTz, "color_cancelled", submittedNs, "stale-before-work");
-                    Minecraft.getInstance().execute(() -> done.accept(null));
+                    done.accept(null); // cancellation only clears colorPending; no main-thread UI work
                     return;
                 }
                 final long haloStartNs = System.nanoTime();
@@ -3313,7 +3313,7 @@ public final class MapData {
                 }
                 if (!stillValid.getAsBoolean()) {
                     if (TileTrace.enabled()) TileTrace.timed(traceTx, traceTz, "color_cancelled", submittedNs, "stale-after-halo");
-                    Minecraft.getInstance().execute(() -> done.accept(null));
+                    done.accept(null);
                     return;
                 }
                 int[] rgb = renderTileColor(pixels, width, height, minWX, minWZ, pixelBlocks);
