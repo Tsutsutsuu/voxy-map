@@ -68,6 +68,37 @@ public class MapScreen extends Screen {
     private int labels3dTotal;
     /** middle-drag started in 2D: switch to 3D on the first move and keep orbiting */
     private boolean pending3dOrbit;
+    /** middle press while in 3D: a short click goes back to 2D, a long press / drag orbits. */
+    private boolean middlePress3d;
+    private boolean middleDragged3d;
+    private double middlePressX;
+    private double middlePressY;
+    private long middlePressAtMs;
+    /** middle press while in 2D: a short click enters 3D, a drag enters and orbits. */
+    private boolean middlePress2d;
+    private double middlePress2dX;
+    private double middlePress2dY;
+    private double middlePress2dAtMs;
+    /** A middle click (switch) must be short and must not move; anything longer is an orbit. */
+    private static final long MIDDLE_CLICK_MAX_MS = 300L;
+    private static final double MIDDLE_CLICK_SLOP_PX = 4.0;
+    /**
+     * Space centring is animated linearly in both views. {@code < 0} means idle; otherwise the
+     * view centre (2D pan) or the 3D camera target/rotation travels from "from" to "to".
+     */
+    private float centerAnimT = -1f;
+    private static final float CENTER_ANIM_SECONDS = 0.35f;
+    private boolean centerAnim3d;
+    private double centerAnimFromX;
+    private double centerAnimFromZ;
+    private double centerAnimToX;
+    private double centerAnimToZ;
+    private double centerAnimFromY;
+    private double centerAnimToY;
+    private float centerAnimFromYaw;
+    private float centerAnimYawDelta;
+    private float centerAnimFromPitch;
+    private float centerAnimToPitch;
     private boolean styleMenuOpen;
     private float configPressT;
     private float openT = 1f;
@@ -262,6 +293,12 @@ public class MapScreen extends Screen {
         openT = 0f;
         closing = false;
         closeT = 0f;
+        // never carry a half-finished gesture or a centring animation across screens
+        cancelCenterAnim();
+        pending3dOrbit = false;
+        middlePress2d = false;
+        middlePress3d = false;
+        middleDragged3d = false;
         // load this world's per-world UI state before deciding whether to reopen in 3D. It used to be
         // loaded from the async map build only, so a new/slow world could inherit the previous
         // world's 3D mode and camera (and then write those values into the previous world's state
@@ -400,6 +437,9 @@ public class MapScreen extends Screen {
         styleMenuT = approach(styleMenuT, styleMenuOpen ? 1f : 0f);
         configPressT = Math.max(0f, configPressT - frameDt * 4f);
         contextMenuT = approach(contextMenuT, menuOpen ? 1f : 0f);
+
+        // Space centring: animate before the camera/map are read for this frame
+        advanceCenterAnim();
 
         // 3D -> 2D exit animation: linearly rotate to straight down, then really switch
         if (exit3dT >= 0f && cam3d != null) {
@@ -680,6 +720,12 @@ public class MapScreen extends Screen {
 
     private void toggle3D(boolean restoreCamera) {
         MapData data = MapData.INSTANCE;
+        // a second switch request while the exit animation runs must not restart / fight it
+        if (exit3dT >= 0f) return;
+        cancelCenterAnim();
+        // switching views closes any open menu, whose anchor is screen-space and no longer matches
+        menuOpen = false;
+        styleMenuOpen = false;
         if (view3d) {
             // begin the linear rotation-then-switch animation instead of cutting straight to 2D
             if (cam3d != null) {
@@ -1123,6 +1169,61 @@ public class MapScreen extends Screen {
     /** Terrain/water height in mesh space (world height multiplied by verticalScale3d). */
     private double groundMeshY(double wx, double wz) {
         return groundYAt(wx, wz) * meshScale();
+    }
+
+    // ---- Space: linear animation that centres the view on the player ----
+
+    /**
+     * Starts the linear centring animation. In 2D it moves the map centre; in 3D it moves the orbit
+     * target onto the player and rotates back to "straight down", exactly like the old instant
+     * behaviour but readable. Any manual pan/orbit/zoom cancels it, so input always wins.
+     */
+    private void startCenterAnim(double targetX, double targetZ) {
+        centerAnim3d = view3d && cam3d != null;
+        if (centerAnim3d) {
+            centerAnimFromX = cam3d.targetX;
+            centerAnimFromZ = cam3d.targetZ;
+            centerAnimFromY = cam3d.targetY;
+            centerAnimToY = groundMeshY(targetX, targetZ);
+            centerAnimFromYaw = cam3d.yaw;
+            // shortest way around, so the orbit does not spin the long way to face north
+            float delta = 0f - cam3d.yaw;
+            while (delta > Math.PI) delta -= 2f * (float) Math.PI;
+            while (delta < -Math.PI) delta += 2f * (float) Math.PI;
+            centerAnimYawDelta = delta;
+            centerAnimFromPitch = cam3d.pitch;
+            centerAnimToPitch = PITCH_STRAIGHT_DOWN;
+        } else {
+            centerAnimFromX = centerX;
+            centerAnimFromZ = centerZ;
+        }
+        centerAnimToX = targetX;
+        centerAnimToZ = targetZ;
+        centerAnimT = 0f;
+    }
+
+    /** Advances the centring animation; called once per frame before the map/camera are used. */
+    private void advanceCenterAnim() {
+        if (centerAnimT < 0f) return;
+        centerAnimT = Math.min(1f, centerAnimT + frameDt / CENTER_ANIM_SECONDS);
+        float t = centerAnimT; // linear on purpose: constant speed, no easing surprises
+        double x = centerAnimFromX + (centerAnimToX - centerAnimFromX) * t;
+        double z = centerAnimFromZ + (centerAnimToZ - centerAnimFromZ) * t;
+        if (centerAnim3d && cam3d != null) {
+            cam3d.targetX = x;
+            cam3d.targetY = centerAnimFromY + (centerAnimToY - centerAnimFromY) * t;
+            cam3d.targetZ = z;
+            cam3d.yaw = centerAnimFromYaw + centerAnimYawDelta * t;
+            cam3d.pitch = centerAnimFromPitch + (centerAnimToPitch - centerAnimFromPitch) * t;
+        } else {
+            centerX = x;
+            centerZ = z;
+        }
+        if (centerAnimT >= 1f) centerAnimT = -1f;
+    }
+
+    private void cancelCenterAnim() {
+        centerAnimT = -1f;
     }
 
     /** Layer 4: cursor coordinates and the key hint, above the labels but below the buttons. */
@@ -1958,16 +2059,9 @@ public class MapScreen extends Screen {
         if (VoxyMapMod.centerKey != null && VoxyMapMod.centerKey.matches(e)) {
             var p = Minecraft.getInstance().player;
             if (p != null) {
-                MapData data = MapData.INSTANCE;
-                if (view3d && cam3d != null) {
-                    cam3d.setTarget(p.getX(), groundMeshY(p.getX(), p.getZ()), p.getZ());
-                    // straight down on the player arrow with the rotation reset
-                    cam3d.yaw = 0f;
-                    cam3d.pitch = PITCH_STRAIGHT_DOWN;
-                } else {
-                    centerX = p.getX();
-                    centerZ = p.getZ();
-                }
+                // Linear animation in both views (2D pan / 3D camera target + rotation reset), so
+                // the switch from "looking somewhere else" to "on the player" is readable.
+                startCenterAnim(p.getX(), p.getZ());
             }
             return true;
         }
@@ -2132,8 +2226,17 @@ public class MapScreen extends Screen {
             return true;
         }
         if (view3d) {
-            // left = pan, middle = orbit (handled by mouseDragged); right = the same context menu,
-            // positioned at the ray-picked terrain point
+            // left = pan, middle = orbit (handled by mouseDragged) unless it is a short click,
+            // which switches back to the 2D view; right = the same context menu, positioned at
+            // the ray-picked terrain point
+            if (button == 2) {
+                middlePress3d = true;
+                middleDragged3d = false;
+                middlePressX = mx;
+                middlePressY = my;
+                middlePressAtMs = System.currentTimeMillis();
+                return true;
+            }
             if (button == 1) {
                 double[] hit = pickWorld3d(mx, my);
                 if (hit != null) {
@@ -2148,11 +2251,17 @@ public class MapScreen extends Screen {
             return true;
         }
         if (button == 2) {
-            // middle-drag in 2D: switch to the 3D view on the first movement and keep orbiting
+            // middle: a short click switches views, a drag enters 3D on the first movement and
+            // keeps orbiting. The click/drag decision is made in mouseReleased / mouseDragged.
             pending3dOrbit = true;
+            middlePress2d = true;
+            middlePress2dX = mx;
+            middlePress2dY = my;
+            middlePress2dAtMs = System.currentTimeMillis();
             return true;
         }
         if (button == 0) {
+            cancelCenterAnim();
             dragging = true;
             return true;
         }
@@ -2189,15 +2298,20 @@ public class MapScreen extends Screen {
         double my = e.y();
         if (pending3dOrbit && !view3d) {
             // continue the same drag as a 3D orbit (seamless: scale matched, looking straight down)
+            cancelCenterAnim();
             toggle3D();
             pending3dOrbit = false;
+            middlePress2d = false; // the drag already switched; the release must not switch again
         }
         if (sliderDragging) {
             sliderValue = scaleSliderValueAt(mx);
             return true;
         }
         if (view3d && cam3d != null) {
+            // the exit animation owns the camera until it finishes; ignore input during it
+            if (exit3dT >= 0f) return true;
             if (e.button() == 0) {
+                cancelCenterAnim();
                 // left drag: pan along the camera's screen axes (motion matches the cursor)
                 double scale = cam3d.distance * 0.0015 * VoxyMapConfig.PAN_SENS_3D.get();
                 double yaw = cam3d.yaw;
@@ -2208,6 +2322,14 @@ public class MapScreen extends Screen {
                 cam3d.targetX -= rightX * dx * scale - fwdX * dy * scale;
                 cam3d.targetZ -= rightZ * dx * scale - fwdZ * dy * scale;
             } else if (e.button() == 2) {
+                // Middle: a press that moves is an orbit; a short press without movement is a
+                // click that switches back to 2D (decided in mouseReleased).
+                if (middlePress3d
+                        && (Math.abs(mx - middlePressX) > MIDDLE_CLICK_SLOP_PX
+                        || Math.abs(my - middlePressY) > MIDDLE_CLICK_SLOP_PX)) {
+                    middleDragged3d = true;
+                }
+                cancelCenterAnim();
                 // middle drag: orbit around the target
                 double sens = 0.006 * VoxyMapConfig.ROTATE_SENS_3D.get();
                 cam3d.yaw -= (float) (dx * sens);
@@ -2221,6 +2343,7 @@ public class MapScreen extends Screen {
             return true;
         }
         if (dragging) {
+            cancelCenterAnim();
             centerX -= dx * MapData.INSTANCE.getPixelBlocks() / zoom;
             centerZ -= dy * MapData.INSTANCE.getPixelBlocks() / zoom;
             return true;
@@ -2235,6 +2358,38 @@ public class MapScreen extends Screen {
         if (e.button() == 2) pending3dOrbit = false;
         double mx = e.x();
         double my = e.y();
+        if (e.button() == 2 && middlePress3d) {
+            // A short middle press that did not move is a click -> switch back to 2D. A long press
+            // or any movement is an orbit gesture and must NOT switch (input must never feel like
+            // it "stole" a drag).
+            boolean click = !middleDragged3d
+                    && Math.abs(mx - middlePressX) <= MIDDLE_CLICK_SLOP_PX
+                    && Math.abs(my - middlePressY) <= MIDDLE_CLICK_SLOP_PX
+                    && System.currentTimeMillis() - middlePressAtMs <= MIDDLE_CLICK_MAX_MS;
+            middlePress3d = false;
+            middleDragged3d = false;
+            if (click && view3d && exit3dT < 0f) {
+                cancelCenterAnim();
+                toggle3D();
+                return true;
+            }
+        }
+        if (e.button() == 2 && middlePress2d) {
+            // symmetric: a short middle click in 2D enters the 3D view
+            boolean click = !view3d
+                    && Math.abs(mx - middlePress2dX) <= MIDDLE_CLICK_SLOP_PX
+                    && Math.abs(my - middlePress2dY) <= MIDDLE_CLICK_SLOP_PX
+                    && System.currentTimeMillis() - middlePress2dAtMs <= MIDDLE_CLICK_MAX_MS;
+            middlePress2d = false;
+            if (click && !view3d && exit3dT < 0f) {
+                // same guard as the 3D button: do not switch while data is (re)loading
+                MapData data = MapData.INSTANCE;
+                if (!data.isLoading() && !data.isStyleChanging()) {
+                    toggle3D();
+                }
+                return true;
+            }
+        }
         if (sliderDragging) {
             // release: commit the new map scale, store it per world and rebuild at that scale
             sliderDragging = false;
@@ -2255,9 +2410,12 @@ public class MapScreen extends Screen {
     public boolean mouseScrolled(double mx, double my, double scrollX, double scrollY) {
         if (!MapData.INSTANCE.isOverworld()) return true;
         if (view3d && cam3d != null) {
+            // the exit animation owns the camera until it finishes
+            if (exit3dT >= 0f) return true;
             double zoomStep = 1.0 + 0.15 * VoxyMapConfig.ZOOM_SENS_3D.get();
             // a horizontal-only scroll (scrollY == 0) must not zoom the 3D view
             if (scrollY == 0) return false;
+            cancelCenterAnim();
             double next = cam3d.distance * (scrollY > 0 ? 1.0 / zoomStep : zoomStep);
             // The enter distance can exceed MAX_DISTANCE_3D (2D zoomed further out than the 3D
             // limit); do not snap it back on the first scroll. Clamp to the configured range once
@@ -2267,6 +2425,7 @@ public class MapScreen extends Screen {
             return true;
         }
         if (scrollY == 0) return false;
+        cancelCenterAnim();
         double worldX = screenToWorldX(mx);
         double worldZ = screenToWorldZ(my);
         double factor = scrollY > 0 ? 1.15 : 1.0 / 1.15;

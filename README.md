@@ -72,6 +72,8 @@ Close-up: contour lines, hillshade, water-depth shading, biome boundaries and la
 - Full-bright by design: the terrain reuses the unlit 2D map colours, so the 3D view does not dim with time of day
 - 3D biome labels (distance limit + terrain occlusion), a player arrow that floats above the terrain, ray-picked cursor coordinates and the same right-click menu (picks are clipped to the mapped area, so the sky or the area outside the map no longer yields fake coordinates)
 - Seamless 2D↔3D switch (position and scale match), a short rotation animation on exit, and a per-world remembered camera
+- **Middle mouse button**: a short click toggles between 2D and 3D, holding and dragging orbits the 3D camera (the two gestures are told apart by press duration and movement, so a drag never switches the view)
+- **Space** smoothly animates the view onto the player in both 2D and 3D (a 0.35 s linear pan; any manual pan, orbit or zoom cancels it)
 - `keep3dTilesIn2d` keeps the built GPU terrain when returning to 2D, so re-entering 3D is instant (at the cost of VRAM)
 
 **Config screen**
@@ -367,6 +369,8 @@ Icon and screenshots © Tsutsutsuu; map data comes from Voxy and its SeedGen add
 - **故意全亮**：3D 地形复用 2D 地图的未打光配色，不随昼夜变暗
 - 3D 群系标签（距离限制 + 地形遮挡）、悬浮在地形上方的玩家箭头、射线拾取的底部坐标与同样的右键菜单（拾取被裁剪到地图范围内，点天空或地图外不再出现假坐标）
 - 2D↔3D 无缝切换（位置与比例对应）、退出时短暂旋转动画、可按世界记住 3D 相机
+- **鼠标中键**：短按在 2D / 3D 之间切换，按住拖动则旋转 3D 相机（按按压时长与位移区分两种手势，拖动绝不会误切换视图）
+- **空格**：在 2D 与 3D 中都会平滑地把视角移到玩家身上（0.35 秒线性平移；任何手动平移/旋转/缩放都会立即取消）
 - `keep3dTilesIn2d` 在切回 2D 后保留已建好的 GPU 地形，下次进 3D 瞬间恢复（代价是显存）
 
 **配置界面**
