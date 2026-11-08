@@ -126,6 +126,7 @@ public final class MapData {
     private volatile long tileResyncAtMs;
     private int tileResyncStage;
     private long lastTileCacheSaveMs;
+    private volatile long lastLiveSectionMs;
     /** highest-point colour ramp changes trigger a full tile recolour */
     private int appliedTileRampVersion = -1;
     private long lastTileRampRecolorMs;
@@ -2421,6 +2422,14 @@ public final class MapData {
             LiveTileStore store = ensure2DStore();
             long now = System.currentTimeMillis();
             if (tileResyncAtMs > 0 && now >= tileResyncAtMs) {
+                // Voxy SeedGen flushes a large ring of LOD sections over ~20s. Rescanning the
+                // source index while that stream is still active produces partial tile ranges and
+                // makes the map churn between empty/coarse/fine tiles. Wait until live sections
+                // have been quiet for a moment, then do the calibration rescan once.
+                if (now - lastLiveSectionMs < 1_500L) {
+                    tileResyncAtMs = now + 750L;
+                    return;
+                }
                 // Voxy may still be flushing fine LOD sections when the map first opens. The
                 // first source index then only contains coarse sections (e.g. y=64 encoded as a
                 // 16-block voxel top at 79). Re-scan and replace coarse pixels once/twice.
@@ -3604,6 +3613,7 @@ public final class MapData {
     /** Consumer for the Voxy live-section bridge (called on its worker thread). */
     public void onLiveSection(long key, long[] raw) {
         if (!VoxyMapConfig.LIVE_TILES.get()) return;
+        lastLiveSectionMs = System.currentTimeMillis();
         MapPerf.INSTANCE.liveSections.increment();
         LiveTileStore store = liveTiles;
         if (isTile2DMode()) {
