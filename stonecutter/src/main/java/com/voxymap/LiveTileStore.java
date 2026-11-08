@@ -37,7 +37,7 @@ public final class LiveTileStore {
     public static final int TILE_PIXELS = 256;
     public static final long TEXTURE_BYTES = (long) TILE_PIXELS * TILE_PIXELS * 4L;
     private static final int CACHE_MAGIC = 0x56585431;
-    private static final int CACHE_VERSION = 8;
+    private static final int CACHE_VERSION = 9;
     private static final ExecutorService CACHE_IO = Executors.newFixedThreadPool(2, r -> {
         Thread t = new Thread(r, "voxymap-tile-cache");
         t.setDaemon(true);
@@ -81,6 +81,7 @@ public final class LiveTileStore {
         int textureEpoch = -1;
         /** highest non-water top in this tile; lets the global max shrink again after refinement */
         volatile int tileMaxLand = Integer.MIN_VALUE;
+        volatile boolean tileMaxLandKnown;
 
         LiveTile(int tx, int tz, long minWX, long minWZ) {
             this(tx, tz, minWX, minWZ, new long[TILE_PIXELS * TILE_PIXELS]);
@@ -151,6 +152,9 @@ public final class LiveTileStore {
     private final AtomicInteger maxTileZ = new AtomicInteger(Integer.MIN_VALUE);
     /** highest known non-water terrain top, used by the land max-point colour ramp */
     private final AtomicInteger maxLandY = new AtomicInteger(Integer.MIN_VALUE);
+    /** persisted highest land seen for this cache; avoids a full re-colour storm on every reopen */
+    private volatile int persistedMaxLand = Integer.MIN_VALUE;
+    private volatile long lastMaxPersistMs;
     private final AtomicInteger rampVersion = new AtomicInteger();
     private final AtomicInteger contentVersion = new AtomicInteger();
     private final AtomicInteger colorVersion = new AtomicInteger();
@@ -161,6 +165,7 @@ public final class LiveTileStore {
         this.minWZ = minWZ;
         this.pixelBlocks = pixelBlocks;
         this.cacheDir = cacheDir;
+        readPersistedMaxLand();
         if (cacheDir != null) CACHE_IO.submit(this::cleanupCache);
     }
 
@@ -308,7 +313,7 @@ public final class LiveTileStore {
         sourceEmpty.clear();
         seedPending.clear();
         sourcePending.clear();
-        maxLandY.set(Integer.MIN_VALUE);
+        maxLandY.set(persistedMaxLand);
         rampVersion.incrementAndGet();
         contentVersion.incrementAndGet();
         lastRampChangeMs = System.currentTimeMillis();
@@ -492,13 +497,29 @@ public final class LiveTileStore {
 
     private void observeTile(LiveTile tile) {
         if (tile == null) return;
+        if (tile.tileMaxLandKnown) {
+            if (tile.tileMaxLand > maxLandY.get()) {
+                maxLandY.set(tile.tileMaxLand);
+                if (tile.tileMaxLand > persistedMaxLand) {
+                    persistedMaxLand = tile.tileMaxLand;
+                    persistMaxLand();
+                }
+                rampVersion.incrementAndGet();
+                lastRampChangeMs = System.currentTimeMillis();
+            }
+            return;
+        }
         int max = Integer.MIN_VALUE;
         for (long packed : tile.pixels) {
             int top = landTopOfPacked(packed);
             if (top > max) max = top;
         }
-        if (max == tile.tileMaxLand) return;
+        if (max == tile.tileMaxLand) {
+            tile.tileMaxLandKnown = true;
+            return;
+        }
         tile.tileMaxLand = max;
+        tile.tileMaxLandKnown = true;
         refreshGlobalLandMax();
     }
 
@@ -509,10 +530,60 @@ public final class LiveTileStore {
             int v = tile.tileMaxLand;
             if (v > max) max = v;
         }
+        // The persisted maximum is a floor: while a large world is being reloaded tile-by-tile,
+        // the ramp must not shrink (and later expand), which would recolour every tile repeatedly.
+        if (persistedMaxLand > max) max = persistedMaxLand;
         if (max == maxLandY.get()) return;
         maxLandY.set(max);
+        if (max > persistedMaxLand) {
+            persistedMaxLand = max;
+            long now = System.currentTimeMillis();
+            if (now - lastMaxPersistMs > 2_000L) {
+                lastMaxPersistMs = now;
+                persistMaxLand();
+            }
+        }
         rampVersion.incrementAndGet();
         lastRampChangeMs = System.currentTimeMillis();
+    }
+
+    private Path maxLandFile() {
+        return cacheDir == null ? null : cacheDir.resolve("max-land.txt");
+    }
+
+    private void readPersistedMaxLand() {
+        Path file = maxLandFile();
+        if (file == null || !Files.isRegularFile(file)) return;
+        try {
+            int v = Integer.parseInt(Files.readString(file).trim());
+            if (v > -3000 && v < 4096) {
+                persistedMaxLand = v;
+                maxLandY.set(v);
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private void persistMaxLand() {
+        Path file = maxLandFile();
+        if (file == null) return;
+        final int value = persistedMaxLand;
+        lastMaxPersistMs = System.currentTimeMillis();
+        CACHE_IO.submit(() -> {
+            try {
+                Files.createDirectories(cacheDir);
+                Path tmp = file.resolveSibling(file.getFileName() + ".tmp");
+                Files.writeString(tmp, Integer.toString(value));
+                Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING,
+                        StandardCopyOption.ATOMIC_MOVE);
+            } catch (Throwable ignored) {
+            }
+        });
+    }
+
+    /** Flush the small metadata sidecar on map close. */
+    public void persistMetadata() {
+        persistMaxLand();
     }
 
     /** Rebuilds the lazy source's section index after a manual refresh. */
@@ -677,6 +748,7 @@ public final class LiveTileStore {
             tile.cacheDirty = true;
             tile.textureDirty = true;
             tile.colorPending = false;
+            tile.tileMaxLandKnown = false;
             observeTile(tile);
             contentVersion.incrementAndGet();
             invalidateNeighborColors(tile.tx, tile.tz);
@@ -941,6 +1013,7 @@ public final class LiveTileStore {
             long fminX = in.readLong(), fminZ = in.readLong();
             int fpb = in.readInt();
             int rawLen = in.readInt();
+            int fmaxLand = in.readInt();
             if (ftx != tx || ftz != tz || fpb != pixelBlocks
                     || fminX != tileMinWX(tx) || fminZ != tileMinWZ(tz)) {
                 if (TileTrace.enabled()) TileTrace.stage(tx, tz, "cache_geom_mismatch",
@@ -957,6 +1030,8 @@ public final class LiveTileStore {
             ByteBuffer bb = ByteBuffer.wrap(raw).order(ByteOrder.LITTLE_ENDIAN);
             LiveTile tile = new LiveTile(tx, tz, tileMinWX(tx), tileMinWZ(tz));
             for (int i = 0; i < tile.pixels.length; i++) tile.pixels[i] = bb.getLong();
+            tile.tileMaxLand = fmaxLand;
+            tile.tileMaxLandKnown = true;
             tile.liveDirty = true; // cached pixels have no colour; let the live pipeline colour them
             // The cache already contains a complete pixel field. Marking sourceFilled avoids a
             // pointless RocksDB refill every time a cached tile moves back into view.
@@ -993,6 +1068,7 @@ public final class LiveTileStore {
                 out.writeLong(tile.minWZ);
                 out.writeInt(pixelBlocks);
                 out.writeInt(raw.capacity());
+                out.writeInt(tile.tileMaxLand);
                 out.write(comp);
             }
             Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
@@ -1136,6 +1212,7 @@ public final class LiveTileStore {
             t.colorEpoch++;
             t.colorDirtySinceMs = System.currentTimeMillis();
             t.textureDirty = true;
+            t.tileMaxLandKnown = false;
             observeTile(t);
             contentVersion.incrementAndGet();
             invalidateNeighborColors(t.tx, t.tz);
