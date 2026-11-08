@@ -533,7 +533,10 @@ public final class LiveTileStore {
         for (LiveTile tile : tiles.values()) {
             // Cached tiles are already complete; re-reading Voxy storage for them defeats the
             // purpose of the .vxt cache. Manual refresh still forces a full source rebuild.
-            if (!tile.fromCache) tile.sourceFilled = false;
+            // Tiles that already have a colour/texture also keep it while the new index is
+            // scanned: invalidating them here made every resync cancel the in-flight colour queue
+            // and temporarily showed black tile rectangles during loading.
+            if (!tile.fromCache && tile.rgb == null) tile.sourceFilled = false;
         }
     }
 
