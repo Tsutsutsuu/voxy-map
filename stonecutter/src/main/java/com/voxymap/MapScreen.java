@@ -53,6 +53,7 @@ public class MapScreen extends Screen {
     private Map3D.Camera cam3d;
     private Map3D.Mesh mesh3d;
     private boolean mesh3dDirty;
+    private boolean soft3dFrameReady;
     private long meshBuildGeneration;
     private final java.util.Map<Long, Map3D.Mesh> tileMesh3d = new java.util.HashMap<>();
     private final java.util.Map<Long, Long> tileMeshStamp3d = new java.util.HashMap<>();
@@ -455,7 +456,7 @@ public class MapScreen extends Screen {
             pump3DTiles(data);
             ensureMesh3d();
             updateSoft3d();
-            boolean frame3dReady = tex3dId != null && fb3d != null && mesh3d != null;
+            boolean frame3dReady = soft3dFrameReady && tex3dId != null && fb3d != null && mesh3d != null;
             if (!frame3dReady) {
                 // First 3D frame: keep showing the already-rendered 2D map instead of blitting a
                 // missing/stale 3D texture for one frame.
@@ -1161,6 +1162,7 @@ public class MapScreen extends Screen {
         img3d = new NativeImage(w, wh, false);
         tex3dDyn = new DynamicTexture(() -> "voxymap_3d_soft", img3d);
         tex3dId = Identifier.fromNamespaceAndPath("voxymap", "3d_soft");
+        soft3dFrameReady = false;
         mc.getTextureManager().register(tex3dId, tex3dDyn);
         cam3dDirty = true;
     }
@@ -1235,6 +1237,7 @@ public class MapScreen extends Screen {
                         MapPerf.INSTANCE.rasterFrame(nanos, mesh.indices.length / 3);
                         uploadAbgr(abgr, fb.width, fb.height);
                         dbg3dFrames++;
+                        soft3dFrameReady = true;
                     } finally {
                         soft3dPending = false;
                     }
@@ -1320,6 +1323,7 @@ public class MapScreen extends Screen {
     private void releaseSoft3d() {
         // bump the generation first so any in-flight frame is discarded before resources go away
         soft3dGen++;
+        soft3dFrameReady = false;
         if (tex3dId != null) {
             // TextureManager.release closes the DynamicTexture, which also closes its NativeImage
             Minecraft.getInstance().getTextureManager().release(tex3dId);
