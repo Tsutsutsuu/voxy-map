@@ -119,6 +119,20 @@ public class MapScreen extends Screen {
     private float centerAnimYawDelta;
     private float centerAnimFromPitch;
     private float centerAnimToPitch;
+    /**
+     * Scroll zoom is interpolated instead of stepping: the wheel only moves the target, the visible
+     * zoom eases towards it. In 2D the world point under the cursor is pinned while it eases; in 3D
+     * the orbit distance is eased between the configured limits.
+     */
+    private boolean zoomSmoothing;
+    private double targetZoom = -1.0;
+    private double zoomAnchorWorldX;
+    private double zoomAnchorWorldZ;
+    private double zoomAnchorScreenX;
+    private double zoomAnchorScreenY;
+    private float targetDistance3d = -1f;
+    /** ~0.15 s to reach 90% of a wheel step, frame-rate independent. */
+    private static final float ZOOM_EASE_PER_SECOND = 16f;
     private boolean styleMenuOpen;
     private float configPressT;
     private float openT = 1f;
@@ -336,6 +350,10 @@ public class MapScreen extends Screen {
         // restore the last zoom for this world (or the configured default)
         zoom = VoxyMapConfig.REMEMBER_ZOOM.get() ? MapData.INSTANCE.getZoom() : VoxyMapConfig.DEFAULT_ZOOM.get();
         if (zoom <= 0) zoom = VoxyMapConfig.DEFAULT_ZOOM.get();
+        // a fresh screen starts from a settled zoom, never from a previous screen's easing
+        zoomSmoothing = false;
+        targetZoom = zoom;
+        targetDistance3d = -1f;
         var p0 = Minecraft.getInstance().player;
         MapData data = MapData.INSTANCE;
         sliderValue = data.getMapScale();
@@ -434,7 +452,8 @@ public class MapScreen extends Screen {
             drawStatusLine(g, Component.translatable("voxymap.ui.overworldOnly"), 24, COL_WARN);
             return;
         }
-        // open/close animation (time based): scale + fade-in of the whole map screen
+        // open/close animation (time based): keep the original quadratic ease-out here, it was
+        // tuned for the map appearing/disappearing - the shared cubic curve is only for view moves.
         if (!closing) {
             openT = Math.min(1f, openT + frameDt / OPEN_ANIM_SECONDS);
         } else {
@@ -445,8 +464,8 @@ public class MapScreen extends Screen {
             }
         }
         float animScale = closing
-                ? 1f - 0.05f * (1f - easeOutCubic(closeT))
-                : 0.95f + 0.05f * easeOutCubic(openT);
+                ? 1f - 0.05f * (1f - (1f - closeT) * (1f - closeT))
+                : 0.95f + 0.05f * (1f - (1f - openT) * (1f - openT));
         g.pose().pushMatrix();
         g.pose().translate(width / 2f, height / 2f);
         g.pose().scale(animScale, animScale);
@@ -460,6 +479,8 @@ public class MapScreen extends Screen {
 
         // Space centring: animate before the camera/map are read for this frame
         advanceCenterAnim();
+        // scroll zoom: ease the visible zoom / camera distance towards the wheel target
+        advanceZoomSmoothing();
 
         // 3D -> 2D exit animation: ease the rotation back to straight down, then really switch
         if (exit3dT >= 0f && cam3d != null) {
@@ -743,6 +764,8 @@ public class MapScreen extends Screen {
         // a second switch request while the exit animation runs must not restart / fight it
         if (exit3dT >= 0f) return;
         cancelCenterAnim();
+        // settle any wheel easing at the value the player currently sees before switching views
+        cancelZoomSmoothing();
         // switching views closes any open menu, whose anchor is screen-space and no longer matches
         menuOpen = false;
         styleMenuOpen = false;
@@ -796,6 +819,8 @@ public class MapScreen extends Screen {
             cam3d.yaw = 0f;
             cam3d.pitch = PITCH_STRAIGHT_DOWN;
         }
+        // start the 3D distance easing settled on the seamless enter distance
+        targetDistance3d = cam3d != null ? cam3d.distance : -1f;
         apply3dOverrides();
     }
 
@@ -824,6 +849,10 @@ public class MapScreen extends Screen {
         zoomAt3dEnter = -1.0;
         distanceAt3dEnter = -1f;
         restore3dOverrides();
+        // the 2D zoom derived from the 3D distance is settled, do not ease towards a stale target
+        zoomSmoothing = false;
+        targetZoom = zoom;
+        targetDistance3d = -1f;
         // Keep the GPU tiles across 2D/3D toggles: re-entering 3D should not rebuild every tile.
         // They are released when the screen is really closed (finishClose) or by MapData when the
         // world changes.
@@ -1199,6 +1228,7 @@ public class MapScreen extends Screen {
      * behaviour but readable. Any manual pan/orbit/zoom cancels it, so input always wins.
      */
     private void startCenterAnim(double targetX, double targetZ) {
+        cancelZoomSmoothing(); // the pan owns the centre while it runs
         centerAnim3d = view3d && cam3d != null;
         if (centerAnim3d) {
             centerAnimFromX = cam3d.targetX;
@@ -1245,6 +1275,58 @@ public class MapScreen extends Screen {
 
     private void cancelCenterAnim() {
         centerAnimT = -1f;
+    }
+
+    // ---- scroll zoom: interpolated instead of stepping one wheel notch at a time ----
+
+    /**
+     * Eases the visible zoom (2D) or camera distance (3D) towards its target. Frame-rate
+     * independent exponential approach (same family as the menu fades), so a wheel burst keeps
+     * feeding the target and the motion stays continuous.
+     */
+    private void advanceZoomSmoothing() {
+        if (view3d) {
+            if (cam3d == null) return;
+            if (targetDistance3d < 0f) {
+                targetDistance3d = cam3d.distance;
+                return;
+            }
+            float min = (float) minDistance3d();
+            float max = (float) Math.max(maxDistance3d(), targetDistance3d);
+            // config limits can change while the view is open: keep the target inside them
+            targetDistance3d = Math.max(min, Math.min(max, targetDistance3d));
+            float alpha = 1f - (float) Math.exp(-frameDt * ZOOM_EASE_PER_SECOND);
+            float next = cam3d.distance + (targetDistance3d - cam3d.distance) * alpha;
+            next = Math.max(min, Math.min(max, next));
+            if (Math.abs(targetDistance3d - next) <= Math.max(0.5f, targetDistance3d * 0.0005f)) {
+                next = targetDistance3d;
+            }
+            cam3d.distance = next;
+            return;
+        }
+        if (targetZoom <= 0.0) {
+            targetZoom = zoom;
+            return;
+        }
+        if (!zoomSmoothing) return;
+        double alpha = 1.0 - Math.exp(-frameDt * ZOOM_EASE_PER_SECOND);
+        zoom += (targetZoom - zoom) * alpha;
+        if (Math.abs(targetZoom - zoom) <= Math.abs(targetZoom) * 1.0e-4) {
+            zoom = targetZoom;
+            zoomSmoothing = false;
+        }
+        // Pin the world point that was under the cursor when the wheel moved: the map zooms around
+        // the cursor instead of drifting away from it.
+        double pb = MapData.INSTANCE.getPixelBlocks();
+        centerX = zoomAnchorWorldX - (zoomAnchorScreenX - width / 2.0) * pb / zoom;
+        centerZ = zoomAnchorWorldZ - (zoomAnchorScreenY - height / 2.0) * pb / zoom;
+    }
+
+    /** Stops the zoom easing at its current value (manual pan/centre/view switch wins). */
+    private void cancelZoomSmoothing() {
+        zoomSmoothing = false;
+        targetZoom = zoom;
+        if (view3d && cam3d != null) targetDistance3d = cam3d.distance;
     }
 
     /** Layer 4: cursor coordinates and the key hint, above the labels but below the buttons. */
@@ -2283,6 +2365,7 @@ public class MapScreen extends Screen {
         }
         if (button == 0) {
             cancelCenterAnim();
+            cancelZoomSmoothing(); // a drag must not keep the old cursor anchor
             dragging = true;
             return true;
         }
@@ -2430,30 +2513,36 @@ public class MapScreen extends Screen {
     @Override
     public boolean mouseScrolled(double mx, double my, double scrollX, double scrollY) {
         if (!MapData.INSTANCE.isOverworld()) return true;
+        if (scrollY == 0) return false;
         if (view3d && cam3d != null) {
             // the exit animation owns the camera until it finishes
             if (exit3dT >= 0f) return true;
-            double zoomStep = 1.0 + 0.15 * VoxyMapConfig.ZOOM_SENS_3D.get();
-            // a horizontal-only scroll (scrollY == 0) must not zoom the 3D view
-            if (scrollY == 0) return false;
             cancelCenterAnim();
-            double next = cam3d.distance * (scrollY > 0 ? 1.0 / zoomStep : zoomStep);
+            double zoomStep = 1.0 + 0.15 * VoxyMapConfig.ZOOM_SENS_3D.get();
+            // Feed the target, not the visible distance: advanceZoomSmoothing() eases towards it,
+            // so a burst of wheel notches becomes one continuous zoom instead of hard steps.
+            float base = targetDistance3d > 0f ? targetDistance3d : cam3d.distance;
+            float next = (float) (base * (scrollY > 0 ? 1.0 / zoomStep : zoomStep));
             // The enter distance can exceed MAX_DISTANCE_3D (2D zoomed further out than the 3D
             // limit); do not snap it back on the first scroll. Clamp to the configured range once
             // the current distance is inside it, and never allow zooming out past the current one.
-            double upper = Math.max(maxDistance3d(), cam3d.distance);
-            cam3d.distance = (float) Math.max(minDistance3d(), Math.min(upper, next));
+            float upper = (float) Math.max(maxDistance3d(), base);
+            targetDistance3d = Math.max((float) minDistance3d(), Math.min(upper, next));
             return true;
         }
-        if (scrollY == 0) return false;
         cancelCenterAnim();
+        MapData data = MapData.INSTANCE;
+        // Anchor the world point under the cursor: the ease below keeps it pinned while zooming.
         double worldX = screenToWorldX(mx);
         double worldZ = screenToWorldZ(my);
         double factor = scrollY > 0 ? 1.15 : 1.0 / 1.15;
-        zoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, zoom * factor));
-        double pb = MapData.INSTANCE.getPixelBlocks();
-        centerX = worldX - (mx - width / 2.0) * pb / zoom;
-        centerZ = worldZ - (my - height / 2.0) * pb / zoom;
+        double base = zoomSmoothing ? targetZoom : zoom;
+        targetZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, base * factor));
+        zoomAnchorWorldX = worldX;
+        zoomAnchorWorldZ = worldZ;
+        zoomAnchorScreenX = mx;
+        zoomAnchorScreenY = my;
+        zoomSmoothing = true;
         return true;
     }
 }

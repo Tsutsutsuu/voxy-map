@@ -48,7 +48,7 @@ Close-up: contour lines, hillshade, water-depth shading, biome boundaries and la
 
 **Map and interaction**
 
-- **N** opens/closes the fullscreen map, **Space** re-centres on the player, scroll to zoom, drag to pan
+- **N** opens/closes the fullscreen map, **Space** re-centres on the player, scroll to zoom (interpolated, anchored on the cursor), drag to pan
 - Top-right: a **map scale slider** (1:1 – 1:8, rebuilds on release) and the "Map style" dropdown
 - Render-distance box, cursor coordinates and biome name, right-click menu (copy coordinates / teleport / export PNG)
 - "Config" (top-left), "Render distance" / "Biomes" toggles (bottom-left), "Refresh" (bottom-right)
@@ -345,7 +345,7 @@ Icon and screenshots © Tsutsutsuu; map data comes from Voxy and its SeedGen add
 
 **地图与交互**
 
-- 按 **N** 打开/关闭全屏地图，**空格**对准玩家，滚轮缩放，拖拽平移
+- 按 **N** 打开/关闭全屏地图，**空格**对准玩家，滚轮缩放（插值平滑，以鼠标位置为锚点），拖拽平移
 - 右上角：**地图比例滑块**（1:1 – 1:8，松开鼠标才重建）与「地图样式」下拉
 - 视距框、鼠标坐标与群系显示，右键菜单（复制坐标 / 传送 / 导出 PNG）
 - 左上「配置」，左下「视距」「群系」开关，右下「刷新」
