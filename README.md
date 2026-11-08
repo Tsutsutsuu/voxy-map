@@ -88,7 +88,7 @@ Close-up: contour lines, hillshade, water-depth shading, biome boundaries and la
 
 - Decodes Voxy's LOD storage and merges every level — **no chunk loading**
 - **Pauses world rendering** while the map is open (`skipWorldRender`), so the frame budget goes to the map
-- Automatic refresh when the player moves far; one cache directory per world `voxymap-cache/<hash>/` (`map.vxm` grid + `color.vxc` rendered colours + `state.properties` UI state)
+- Tiles update live from Voxy's section stream; one cache directory per world `voxymap-cache/<hash>/` (`tiles/*.vxt` + `source-index.bin` + `state.properties`; the old `map.vxm`/`color.vxc` files are only used by the retired global path)
 - After a restart the first open reuses `color.vxc` and **skips re-rendering**, usually 1–2 s
 - Shows the 1/4-resolution copy first while the big texture is built in the background; closing releases only the big texture and keeps the small one, so reopening is instant
 - The biome mask and labels are also built in the background — enabling the overlay no longer stutters
@@ -172,11 +172,10 @@ The in-game screen groups options into six tabs (General / Map / Map data / 3D V
 
 | Option | Group | Default | Description |
 | --- | --- | --- | --- |
-| `autoRefresh` / `refreshDistanceChunks` | refresh | `true` / 128 | Refresh once the player moved this many chunks |
-| `initialRefreshDelayMinutes` | refresh | 3 | Refresh this many minutes after joining (gives SeedGen time) |
+| `liveTiles` | data | `true` | Stream Voxy section updates into the 2D tiles live (there is no global auto refresh any more) |
 | `mapScale` | data | 2 | Map scale 1–8 (1:1 sharpest and slowest, 1:8 coarsest and fastest) |
 | `maxLodLevel` | data | 4 | Highest Voxy LOD level to merge (0–4) |
-| `cacheKeepCount` | data | 5 | How many world caches to keep (1–100) |
+| `cacheKeepCount` / `diskCacheMaxMb` | data | 5 / 8192 | How many world caches to keep (1–100) / disk cache limit per world (MB) |
 | `autoSeaLevel` / `seaLevelOverride` | data | `true` / 63 | Read the sea level from the world / manual sea level |
 | `defaultStyle` | rendering | `current` | Default palette for new worlds |
 | `defaultZoom` / `rememberZoom` | rendering | 0.5 / `true` | Default map zoom / remember the zoom when the map is closed |
@@ -385,7 +384,7 @@ Icon and screenshots © Tsutsutsuu; map data comes from Voxy and its SeedGen add
 
 - 直接解码 Voxy 的 LOD 存储并合并所有层级，**不加载区块**
 - 打开地图时**暂停世界渲染**（`skipWorldRender`），把帧率留给地图
-- 玩家移动较远时自动刷新；每个存档独立缓存目录 `voxymap-cache/<hash>/`（`map.vxm` 网格 + `color.vxc` 渲染结果 + `state.properties` 界面状态）
+- 瓦片随 Voxy 的区块事件实时更新；每个存档独立缓存目录 `voxymap-cache/<hash>/`（`tiles/*.vxt` + `source-index.bin` + `state.properties`；旧的 `map.vxm` / `color.vxc` 只属于已停用的全局路径）
 - 重启后首次打开会读取 `color.vxc` **跳过重新渲染**，通常 1–2 秒出图
 - 打开时先显示 1/4 分辨率小图，大图在后台构建；关闭只释放大图、保留小图，重开瞬间可见
 - 群系掩码与标签也在后台生成，打开叠加层不再卡顿
@@ -469,11 +468,10 @@ Icon and screenshots © Tsutsutsuu; map data comes from Voxy and its SeedGen add
 
 | 配置项 | 分组 | 默认 | 说明 |
 | --- | --- | --- | --- |
-| `autoRefresh` / `refreshDistanceChunks` | refresh | `true` / 128 | 玩家移动超过 N 区块后自动刷新 |
-| `initialRefreshDelayMinutes` | refresh | 3 | 进世界多少分钟后刷新一次（留时间给 SeedGen） |
+| `liveTiles` | data | `true` | 把 Voxy 的区块更新实时流入 2D 瓦片（已经不存在全局自动刷新） |
 | `mapScale` | data | 2 | 地图比例 1–8（1:1 最精细也最慢，1:8 最粗最快） |
 | `maxLodLevel` | data | 4 | 合并的最高 Voxy LOD 层级（0–4） |
-| `cacheKeepCount` | data | 5 | 保留的存档缓存数量（1–100） |
+| `cacheKeepCount` / `diskCacheMaxMb` | data | 5 / 8192 | 保留多少个存档缓存目录（1–100）/ 单个存档的磁盘缓存上限（MB）|
 | `autoSeaLevel` / `seaLevelOverride` | data | `true` / 63 | 从世界读取海平面 / 手动海平面 |
 | `defaultStyle` | rendering | `current` | 新世界的默认配色 |
 | `defaultZoom` / `rememberZoom` | rendering | 0.5 / `true` | 默认地图缩放 / 是否在关闭时记住当前缩放 |

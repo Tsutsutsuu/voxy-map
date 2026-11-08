@@ -2787,7 +2787,7 @@ public final class MapData {
             Path tmp = out.resolveSibling(out.getFileName() + ".tmp");
             Files.write(tmp, bos.toByteArray());
             Files.move(tmp, out, StandardCopyOption.REPLACE_EXISTING);
-            pruneCache();
+            pruneCaches(worldCacheDir(storage));
         } catch (Throwable t) {
             t.printStackTrace();
         }
@@ -2798,8 +2798,11 @@ public final class MapData {
      * files. A cache is never invalidated automatically (Voxy rewrites its storage constantly), so
      * without this the directory would grow with every world that was ever opened, including
      * worlds that have long been deleted.
+     *
+     * @param currentWorldDir the world cache directory in use right now: never deleted, even when
+     *                        it is older than the kept ones
      */
-    private static void pruneCache() {
+    private static void pruneCaches(Path currentWorldDir) {
         int keep = Math.max(1, VoxyMapConfig.CACHE_KEEP_COUNT.get());
         try {
             Path dir = cacheDir();
@@ -2826,20 +2829,46 @@ public final class MapData {
             }
             if (worlds.size() <= keep) return;
             worlds.sort((a, b) -> Long.compare(lastCacheWrite(b), lastCacheWrite(a)));
-            for (int i = keep; i < worlds.size(); i++) {
-                deleteTree(worlds.get(i));
+            Path current = currentWorldDir == null ? null : currentWorldDir.toAbsolutePath();
+            int kept = 0;
+            for (Path world : worlds) {
+                if (current != null && world.toAbsolutePath().equals(current)) continue;
+                if (kept < keep) {
+                    kept++;
+                    continue;
+                }
+                deleteTree(world);
             }
         } catch (Throwable ignored) {
         }
     }
 
+    /** Newest known write time of a world cache: legacy .vxm, the UI state file, or its tile dir. */
     private static long lastCacheWrite(Path worldDir) {
-        try {
-            Path f = worldDir.resolve("map.vxm");
-            return Files.isRegularFile(f) ? Files.getLastModifiedTime(f).toMillis() : 0L;
-        } catch (Exception e) {
-            return 0L;
+        long newest = 0L;
+        for (String name : new String[]{"map.vxm", "color.vxc", "state.properties"}) {
+            try {
+                Path f = worldDir.resolve(name);
+                if (Files.isRegularFile(f)) {
+                    newest = Math.max(newest, Files.getLastModifiedTime(f).toMillis());
+                }
+            } catch (Exception ignored) {
+            }
         }
+        try {
+            Path tiles = worldDir.resolve("tiles");
+            if (Files.isDirectory(tiles)) {
+                newest = Math.max(newest, Files.getLastModifiedTime(tiles).toMillis());
+            }
+        } catch (Exception ignored) {
+        }
+        if (newest == 0L) {
+            try {
+                newest = Files.getLastModifiedTime(worldDir).toMillis();
+            } catch (Exception ignored) {
+            }
+        }
+        return newest;
     }
 
     private static void deleteTree(Path dir) {
@@ -3604,6 +3633,7 @@ public final class MapData {
         biomeContentVersion = next.contentVersion();
         lastBiomeRefreshMs = System.currentTimeMillis();
         tile2dStorage = storage;
+        if (storage != null) pruneCaches(worldCacheDir(storage));
         invalidateTileBiomeCache();
         if (tileResyncStage == 0) {
             tileResyncStage = 1;

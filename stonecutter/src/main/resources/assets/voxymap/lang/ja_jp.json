@@ -189,6 +189,7 @@
   "voxymap.config.section.refreshPolicy": "更新ポリシー",
   "voxymap.config.section.frontierRefresh": "フロンティア更新",
   "voxymap.config.section.incrementalLive": "差分更新とライブ",
+  "voxymap.config.section.liveData": "ライブデータ",
   "voxymap.config.section.mapScaleMemory": "マップ縮尺とメモリ",
   "voxymap.config.section.cache": "キャッシュ",
   "voxymap.config.section.camera": "カメラ",

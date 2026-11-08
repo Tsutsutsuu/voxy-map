@@ -118,6 +118,7 @@
   "voxymap.config.section.refreshPolicy": "刷新策略",
   "voxymap.config.section.frontierRefresh": "前沿刷新",
   "voxymap.config.section.incrementalLive": "增量与实时",
+  "voxymap.config.section.liveData": "实时数据",
   "voxymap.config.section.mapScaleMemory": "地图规模",
   "voxymap.config.section.cache": "缓存",
   "voxymap.config.section.camera": "相机",

@@ -189,6 +189,7 @@
   "voxymap.config.section.refreshPolicy": "Политика обновления",
   "voxymap.config.section.frontierRefresh": "Обновление фронтира",
   "voxymap.config.section.incrementalLive": "Инкрементальное и живое",
+  "voxymap.config.section.liveData": "Данные в реальном времени",
   "voxymap.config.section.mapScaleMemory": "Масштаб карты и память",
   "voxymap.config.section.cache": "Кэш",
   "voxymap.config.section.camera": "Камера",

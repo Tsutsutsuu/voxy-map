@@ -19,25 +19,46 @@ public final class VoxyMapConfig {
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final String FILE_NAME = "voxymap-client.json";
 
+    // ---- legacy global-refresh options (no effect on the 2D tile path) --------------------------
+    // The unified tile renderer streams Voxy sections directly and never runs the old global
+    // snapshot refresh lane, so these knobs are dead. They are kept (deprecated) only because the
+    // legacy code paths still reference them; @Deprecated also makes load()/save() ignore them, so
+    // they stop appearing in the config file. Remove together with the legacy refresh pipeline.
+    /** @deprecated no effect: the 2D tile path has no global auto refresh. */
+    @Deprecated
     public static final Value<Boolean> AUTO_REFRESH = new Value<>("autoRefresh", true);
-    /** gentle = closed-map background refresh only; fast = refresh only while the map is open; off = no auto refresh. */
+    /** @deprecated no effect: see {@link #AUTO_REFRESH}. */
+    @Deprecated
     public static final Value<String> AUTO_REFRESH_MODE = new Value<>("autoRefreshMode", "gentle");
-    /** CPU budget for the gentle background lane (milliseconds per 10 seconds). */
+    /** @deprecated no effect: see {@link #AUTO_REFRESH}. */
+    @Deprecated
     public static final Value<Integer> GENTLE_BUDGET_MS_PER_10S = new Value<>("gentleBudgetMsPer10s", 100);
-    /** Seconds the player must stand still before the gentle lane may run. */
+    /** @deprecated no effect: see {@link #AUTO_REFRESH}. */
+    @Deprecated
     public static final Value<Integer> GENTLE_IDLE_SECONDS = new Value<>("gentleIdleSeconds", 2);
-    /** How close unexplored map cells must be for a frontier refresh. */
+    /** @deprecated no effect: see {@link #AUTO_REFRESH}. */
+    @Deprecated
     public static final Value<Integer> FRONTIER_DISTANCE_CHUNKS = new Value<>("frontierDistanceChunks", 16);
-    /** Open-map time fallback when the DB changed but the frontier is far. */
+    /** @deprecated no effect: see {@link #AUTO_REFRESH}. */
+    @Deprecated
     public static final Value<Integer> OPEN_TIME_FALLBACK_MINUTES = new Value<>("openTimeFallbackMinutes", 5);
-    /** Background time fallback (only while standing still). */
+    /** @deprecated no effect: see {@link #AUTO_REFRESH}. */
+    @Deprecated
     public static final Value<Integer> IDLE_TIME_FALLBACK_MINUTES = new Value<>("idleTimeFallbackMinutes", 30);
+    /** @deprecated no effect: see {@link #AUTO_REFRESH}. */
+    @Deprecated
     public static final Value<Integer> FRONTIER_COOLDOWN_SECONDS = new Value<>("frontierCooldownSeconds", 15);
+    /** @deprecated no effect: see {@link #AUTO_REFRESH}. */
+    @Deprecated
     public static final Value<Integer> FRONTIER_BACKOFF_SECONDS = new Value<>("frontierBackoffSeconds", 60);
-    /** Above this many changed sections the incremental merge gives up and a full rebuild is used. */
+    /** @deprecated no effect: see {@link #AUTO_REFRESH}. */
+    @Deprecated
     public static final Value<Integer> INCREMENTAL_MAX_CHANGED_PERCENT = new Value<>("incrementalMaxChangedPercent", 60);
-    /** Automatic refreshes only read/decode changed Voxy sections and patch the map. */
+    /** @deprecated no effect: see {@link #AUTO_REFRESH}. */
+    @Deprecated
     public static final Value<Boolean> INCREMENTAL_REFRESH = new Value<>("incrementalRefresh", true);
+    /** @deprecated no effect: the "wait for SeedGen" dialog is disabled in tile mode. */
+    @Deprecated
     public static final Value<Integer> INITIAL_REFRESH_DELAY_MINUTES = new Value<>("initialRefreshDelayMinutes", 3);
     public static final Value<String> DEFAULT_STYLE = new Value<>("defaultStyle", "current");
     public static final Value<Integer> MAP_SCALE = new Value<>("mapScale", 2);
@@ -112,6 +133,8 @@ public final class VoxyMapConfig {
     public static final Value<Double> PLAYER_MARKER_HEIGHT_3D = new Value<>("playerMarkerHeight3d", 50.0);
     public static final Value<Double> PLAYER_MARKER_SCALE_3D = new Value<>("playerMarkerScale3d", 2.6);
     /** pixel count above which the map asks before loading (memory guard) */
+    /** @deprecated no effect: the legacy snapshot memory guard is unreachable in tile mode. */
+    @Deprecated
     public static final Value<Integer> MAX_MAP_PIXELS = new Value<>("maxMapPixels", 120_000_000);
     /** horizontal range (blocks) within which 3D biome labels are drawn */
     public static final Value<Integer> BIOME_LABEL_3D_RANGE = new Value<>("biomeLabel3dRange", 3000);

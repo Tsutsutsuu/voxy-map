@@ -189,6 +189,7 @@
   "voxymap.config.section.refreshPolicy": "Política de atualização",
   "voxymap.config.section.frontierRefresh": "Atualização de fronteira",
   "voxymap.config.section.incrementalLive": "Incremental e ao vivo",
+  "voxymap.config.section.liveData": "Dados ao vivo",
   "voxymap.config.section.mapScaleMemory": "Escala do mapa e memória",
   "voxymap.config.section.cache": "Cache",
   "voxymap.config.section.camera": "Câmera",

@@ -110,26 +110,13 @@ public class MapConfigScreen extends Screen {
         add(Group.MAP, "biomeLabelMinArea", VoxyMapConfig.BIOME_LABEL_MIN_AREA, 1, 5000, null);
         add(Group.MAP, "biomeLabelBackground", VoxyMapConfig.BIOME_LABEL_BACKGROUND, 0, 0, null);
 
-        section(Group.DATA, "voxymap.config.section.refreshPolicy");
-        add(Group.DATA, "autoRefresh", VoxyMapConfig.AUTO_REFRESH, 0, 0, null);
-        add(Group.DATA, "autoRefreshMode", VoxyMapConfig.AUTO_REFRESH_MODE, 0, 0,
-                new String[]{"gentle", "fast", "off"});
-        add(Group.DATA, "initialRefreshDelayMinutes", VoxyMapConfig.INITIAL_REFRESH_DELAY_MINUTES, 0, 60, null);
-        add(Group.DATA, "openTimeFallbackMinutes", VoxyMapConfig.OPEN_TIME_FALLBACK_MINUTES, 1, 120, null);
-        add(Group.DATA, "idleTimeFallbackMinutes", VoxyMapConfig.IDLE_TIME_FALLBACK_MINUTES, 1, 240, null);
-        section(Group.DATA, "voxymap.config.section.frontierRefresh");
-        add(Group.DATA, "gentleBudgetMsPer10s", VoxyMapConfig.GENTLE_BUDGET_MS_PER_10S, 10, 2000, null);
-        add(Group.DATA, "gentleIdleSeconds", VoxyMapConfig.GENTLE_IDLE_SECONDS, 1, 60, null);
-        add(Group.DATA, "frontierDistanceChunks", VoxyMapConfig.FRONTIER_DISTANCE_CHUNKS, 1, 256, null);
-        add(Group.DATA, "frontierCooldownSeconds", VoxyMapConfig.FRONTIER_COOLDOWN_SECONDS, 1, 300, null);
-        add(Group.DATA, "frontierBackoffSeconds", VoxyMapConfig.FRONTIER_BACKOFF_SECONDS, 1, 600, null);
-        section(Group.DATA, "voxymap.config.section.incrementalLive");
-        add(Group.DATA, "incrementalRefresh", VoxyMapConfig.INCREMENTAL_REFRESH, 0, 0, null);
-        add(Group.DATA, "incrementalMaxChangedPercent", VoxyMapConfig.INCREMENTAL_MAX_CHANGED_PERCENT, 10, 90, null);
+        // The old "refresh policy / frontier / incremental" block was removed: the unified 2D tile
+        // renderer streams Voxy sections live and has no global refresh lane, so those options did
+        // nothing. Only the options that still affect the tile path are shown here.
+        section(Group.DATA, "voxymap.config.section.liveData");
         add(Group.DATA, "liveTiles", VoxyMapConfig.LIVE_TILES, 0, 0, null);
         section(Group.DATA, "voxymap.config.section.mapScaleMemory");
         add(Group.DATA, "mapScale", VoxyMapConfig.MAP_SCALE, 1, 8, null);
-        add(Group.DATA, "maxMapPixels", VoxyMapConfig.MAX_MAP_PIXELS, 10_000_000, 500_000_000, null);
         section(Group.DATA, "voxymap.config.section.cache");
         add(Group.DATA, "cacheKeepCount", VoxyMapConfig.CACHE_KEEP_COUNT, 1, 100, null);
         add(Group.DATA, "diskCacheMaxMb", VoxyMapConfig.DISK_CACHE_MAX_MB, 256, 65536, null);
