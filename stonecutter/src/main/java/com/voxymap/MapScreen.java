@@ -52,6 +52,7 @@ public class MapScreen extends Screen {
     private boolean view3d;
     private Map3D.Camera cam3d;
     private Map3D.Mesh mesh3d;
+    private boolean mesh3dDirty;
     private long meshBuildGeneration;
     private final java.util.Map<Long, Map3D.Mesh> tileMesh3d = new java.util.HashMap<>();
     private final java.util.Map<Long, Long> tileMeshStamp3d = new java.util.HashMap<>();
@@ -970,7 +971,7 @@ public class MapScreen extends Screen {
         // Never display a partially rebuilt tile set: while loading/camera LOD changes, keep the
         // previous complete mesh until every dirty tile has been rebuilt. This removes the
         // two-frame flashing between old and mixed meshes.
-        if (pending && mesh3d != null) return true;
+        if (pending) return mesh3d != null;
         if (changed || mesh3d == null) {
             int vCount = 0, iCount = 0;
             for (Map3D.Mesh m : tileMesh3d.values()) {
@@ -987,6 +988,7 @@ public class MapScreen extends Screen {
                 vertexBase += m.vertices.length / 7;
             }
             mesh3d = new Map3D.Mesh(nearStep, verts, idx);
+            mesh3dDirty = true;
             MapPerf.INSTANCE.tileMeshCount = tileMesh3d.size();
             MapPerf.INSTANCE.tileMeshVerts = vCount / 7;
             MapPerf.INSTANCE.tileMeshTris = iCount / 3;
@@ -1110,6 +1112,7 @@ public class MapScreen extends Screen {
                         MapPerf.INSTANCE.meshBuilt(buildNanos,
                                 built.vertices.length / 7, built.indices.length / 3);
                         mesh3d = built;
+                        mesh3dDirty = true;
                         builtStepA = fStepA;
                         builtStepB = fStepB;
                         builtStepC = fStepC;
@@ -1176,14 +1179,17 @@ public class MapScreen extends Screen {
         }
         ensureSoft3d();
         if (soft3dPending) return;
-        boolean dirty = cam3dDirty;
+        boolean meshChanged = mesh3dDirty;
+        boolean dirty = cam3dDirty || meshChanged;
         long now = System.nanoTime();
         boolean settled = now - lastCamChangeNs > 300_000_000L;
         if (dirty) {
-            // camera moved: render immediately without antialiasing (keeps dragging responsive)
+            // camera moved or newly loaded tiles produced a new mesh: render immediately without
+            // antialiasing (keeps dragging/loading responsive)
             cam3dDirty = false;
+            mesh3dDirty = false;
             lastCamChangeNs = now;
-            pendingFxaa = VoxyMapConfig.ANTIALIAS_3D.get();
+            pendingFxaa = !meshChanged && VoxyMapConfig.ANTIALIAS_3D.get();
             soft3dPending = true;
             final int gen = soft3dGen;
             final Map3D.Camera cam = new Map3D.Camera();
