@@ -59,6 +59,7 @@ public final class LiveTileStore {
         volatile int coloredVersion = -1;
         volatile int colorEpoch;
         volatile long colorDirtySinceMs;
+        volatile long colorRetryAtMs;
         volatile int colorStyleHash;
         volatile boolean colorPending;
         volatile boolean liveDirty;
@@ -519,6 +520,7 @@ public final class LiveTileStore {
                 t.coloredVersion = -1;
                 t.colorEpoch++;
                 t.colorDirtySinceMs = System.currentTimeMillis();
+                if (t.colorRetryAtMs == 0L) t.colorRetryAtMs = t.colorDirtySinceMs + 500L;
                 // Do not clear colorPending: a job is already in flight. Clearing it queued another
                 // full colour job for the same tile on every neighbour arrival (the 26s backlog).
                 t.textureDirty = true;
@@ -839,6 +841,7 @@ public final class LiveTileStore {
             tile.version++;
             tile.fromCache = false;
             tile.colorDirtySinceMs = System.currentTimeMillis();
+            if (tile.colorRetryAtMs == 0L) tile.colorRetryAtMs = tile.colorDirtySinceMs + 200L;
             tile.cacheDirty = true;
             tile.textureDirty = true;
             tile.colorPending = false;
@@ -1321,6 +1324,7 @@ public final class LiveTileStore {
             t.cacheDirty = true;
             t.colorEpoch++;
             t.colorDirtySinceMs = System.currentTimeMillis();
+            if (t.colorRetryAtMs == 0L) t.colorRetryAtMs = t.colorDirtySinceMs + 300L;
             t.textureDirty = true;
             t.tileMaxLandKnown = false;
             t.borderHashKnown = false;
@@ -1372,9 +1376,10 @@ public final class LiveTileStore {
         if (!tile.sourceFilled || !neighbourHaloReady(tile)) return tile.texture;
         if (tile.version != tile.coloredVersion || tile.colorStyleHash != styleHash) {
             long now = System.currentTimeMillis();
-            // Coalesce the burst of neighbour/invalidation updates that happens while tiles first
-            // load. Without this debounce every arriving neighbour queued another full colour job.
-            if (!tile.colorPending && now - tile.colorDirtySinceMs >= 400L
+            // One deadline per invalidation burst: continuous neighbour/live updates coalesce into
+            // one recolour per ~500ms instead of cancelling and rebuilding every second.
+            if (!tile.colorPending
+                    && (tile.colorRetryAtMs == 0L || now >= tile.colorRetryAtMs)
                     && colorRequestsThisFrame.get() < 12) {
                 requestColor(tile, styleHash);
             }
@@ -1388,6 +1393,7 @@ public final class LiveTileStore {
 
     private void requestColor(LiveTile tile, int styleHash) {
         tile.colorPending = true;
+        tile.colorRetryAtMs = 0L;
         colorRequestsThisFrame.incrementAndGet();
         MapPerf.INSTANCE.colorRequests.increment();
         final long colorStartNs = System.nanoTime();
@@ -1404,6 +1410,7 @@ public final class LiveTileStore {
                 // The job was cancelled because the tile/neighbour changed again. Back off before
                 // queueing another full halo+colour job; busy live updates otherwise form a loop.
                 tile.colorDirtySinceMs = System.currentTimeMillis();
+                tile.colorRetryAtMs = tile.colorDirtySinceMs + 300L;
                 if (TileTrace.enabled()) TileTrace.timed(tile.tx, tile.tz, "color_empty", colorStartNs, "null");
                 return;
             }
