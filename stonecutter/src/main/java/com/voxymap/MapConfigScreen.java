@@ -163,7 +163,8 @@ public class MapConfigScreen extends Screen {
         section(Group.DEBUG, "voxymap.config.section.diagnostics");
         add(Group.DEBUG, "debugEnabled", VoxyMapConfig.DEBUG_ENABLED, 0, 0, null);
         add(Group.DEBUG, "debugRefreshChat", VoxyMapConfig.DEBUG_REFRESH_CHAT, 0, 0, null);
-        add(Group.DEBUG, "debugRefreshVerbose", VoxyMapConfig.DEBUG_REFRESH_VERBOSE, 0, 0, null);
+        // debugRefreshVerbose was removed: its per-stage timings only existed in the retired
+        // refresh lanes, so the toggle did nothing on the tile path.
         add(Group.DEBUG, "debugVoxyEvents", VoxyMapConfig.DEBUG_VOXY_EVENTS, 0, 0, null);
         add(Group.DEBUG, "debugTileTrace", VoxyMapConfig.DEBUG_TILE_TRACE, 0, 0, null);
     }

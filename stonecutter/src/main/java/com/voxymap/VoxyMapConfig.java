@@ -80,7 +80,11 @@ public final class VoxyMapConfig {
     public static final Value<Boolean> DEBUG_ENABLED = new Value<>("debugEnabled", true);
     /** Test aid: print a compact refresh report to the chat. */
     public static final Value<Boolean> DEBUG_REFRESH_CHAT = new Value<>("debugRefreshChat", false);
-    /** Test aid: also print per-stage timings to the chat. */
+    /**
+     * @deprecated no effect: the verbose lines only existed in the retired refresh lanes; the
+     *     remaining live chat messages are gated by {@link #DEBUG_REFRESH_CHAT}.
+     */
+    @Deprecated
     public static final Value<Boolean> DEBUG_REFRESH_VERBOSE = new Value<>("debugRefreshVerbose", false);
     /** PoC: observe Voxy's live section dirty callbacks instead of polling RocksDB. */
     public static final Value<Boolean> DEBUG_VOXY_EVENTS = new Value<>("debugVoxyEvents", false);
