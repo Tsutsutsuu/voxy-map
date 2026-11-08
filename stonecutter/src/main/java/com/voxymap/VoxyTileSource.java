@@ -262,32 +262,34 @@ public final class VoxyTileSource {
 
     private void saveIndexCacheAsync(long signature) {
         if (indexCache == null) return;
-        io.submit(() -> {
-            try {
-                Files.createDirectories(indexCache.getParent());
-                Path tmp = indexCache.resolveSibling(indexCache.getFileName() + ".tmp");
-                try (DataOutputStream out = new DataOutputStream(
-                        new BufferedOutputStream(Files.newOutputStream(tmp)))) {
-                    out.writeInt(INDEX_MAGIC);
-                    out.writeInt(INDEX_VERSION);
-                    out.writeLong(signature);
-                    out.writeLong(minWX);
-                    out.writeLong(minWZ);
-                    out.writeInt(pixelBlocks);
-                    out.writeInt(maxLod);
-                    out.writeInt(byTile.size());
-                    for (java.util.Map.Entry<Long, KeyList> e : byTile.entrySet()) {
-                        KeyList list = e.getValue();
-                        out.writeLong(e.getKey());
-                        out.writeInt(list.size);
-                        for (int k = 0; k < list.size; k++) out.writeLong(list.keys[k]);
-                    }
+        // Write on the index worker directly: queueing this behind source decodes meant the file
+        // was often still absent when the next map open tried to load it.
+        try {
+            Files.createDirectories(indexCache.getParent());
+            Path tmp = indexCache.resolveSibling(indexCache.getFileName() + ".tmp");
+            try (DataOutputStream out = new DataOutputStream(
+                    new BufferedOutputStream(Files.newOutputStream(tmp)))) {
+                out.writeInt(INDEX_MAGIC);
+                out.writeInt(INDEX_VERSION);
+                out.writeLong(signature);
+                out.writeLong(minWX);
+                out.writeLong(minWZ);
+                out.writeInt(pixelBlocks);
+                out.writeInt(maxLod);
+                out.writeInt(byTile.size());
+                for (java.util.Map.Entry<Long, KeyList> e : byTile.entrySet()) {
+                    KeyList list = e.getValue();
+                    out.writeLong(e.getKey());
+                    out.writeInt(list.size);
+                    for (int k = 0; k < list.size; k++) out.writeLong(list.keys[k]);
                 }
-                Files.move(tmp, indexCache, StandardCopyOption.REPLACE_EXISTING,
-                        StandardCopyOption.ATOMIC_MOVE);
-            } catch (Throwable ignored) {
             }
-        });
+            Files.move(tmp, indexCache, StandardCopyOption.REPLACE_EXISTING,
+                    StandardCopyOption.ATOMIC_MOVE);
+            if (TileTrace.enabled()) TileTrace.stage(-1, -1, "index_cache_save", "tiles=" + byTile.size());
+        } catch (Throwable t) {
+            if (TileTrace.enabled()) TileTrace.stage(-1, -1, "index_cache_save_error", t.getClass().getSimpleName());
+        }
     }
 
     private static long tileKey(int tx, int tz) {
