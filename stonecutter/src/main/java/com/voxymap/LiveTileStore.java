@@ -765,6 +765,16 @@ public final class LiveTileStore {
         final boolean hasSeed = seedPixels != null && seedRgb != null;
         final int generation = resetGeneration.get();
         if (!hasSeed) {
+            VoxyTileSource src0 = source;
+            // The source index can prove that a tile has no sections. Avoid an async cache read
+            // and a cache-miss counter for that empty margin; cached live-only tiles are still
+            // honoured by checking the .vxt file first.
+            if (src0 != null && !src0.hasTileData(tx, tz) && !hasCacheFile(tx, tz)) {
+                seedPending.remove(key);
+                sourceEmpty.add(key);
+                if (TileTrace.enabled()) TileTrace.stage(tx, tz, "cache_skip_empty", "source-index-empty");
+                return null;
+            }
             final long cacheStartNs = System.nanoTime();
             if (TileTrace.enabled()) TileTrace.stage(tx, tz, "cache_submit", "file=" + cacheFile(tx, tz).getFileName());
             SEED_IO.submit(() -> {
@@ -857,6 +867,10 @@ public final class LiveTileStore {
 
     private Path cacheFile(int tx, int tz) {
         return cacheDir.resolve(tx + "_" + tz + ".vxt");
+    }
+
+    private boolean hasCacheFile(int tx, int tz) {
+        return cacheDir != null && Files.isRegularFile(cacheFile(tx, tz));
     }
 
     private LiveTile loadCached(int tx, int tz) {
