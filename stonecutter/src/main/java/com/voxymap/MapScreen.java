@@ -38,6 +38,27 @@ public class MapScreen extends Screen {
     private static final int SCALE_SLIDER_W = 56;
     private static final int SCALE_KNOB_W = 6;
 
+    // ---- view animation timing: one reference duration and one curve for everything ----
+    /**
+     * Reference duration of the view animations. The pre-existing 3D exit rotation used 0.22 s,
+     * so the Space centring animation uses the same value instead of inventing its own speed.
+     */
+    private static final float VIEW_ANIM_SECONDS = 0.22f;
+    /** The map open/close zoom used these durations before; they stay, only the curve is shared. */
+    private static final float OPEN_ANIM_SECONDS = 0.18f;
+    private static final float CLOSE_ANIM_SECONDS = 0.15f;
+
+    /**
+     * Cubic ease-out shared by every view animation (open, close, 3D exit, Space centring):
+     * fast start, gentle landing. Replaces the old mixed linear / quadratic curves.
+     */
+    private static float easeOutCubic(float t) {
+        if (t <= 0f) return 0f;
+        if (t >= 1f) return 1f;
+        float inv = 1f - t;
+        return 1f - inv * inv * inv;
+    }
+
     private double centerX;
     private double centerZ;
     private double zoom = 0.5;
@@ -83,11 +104,10 @@ public class MapScreen extends Screen {
     private static final long MIDDLE_CLICK_MAX_MS = 300L;
     private static final double MIDDLE_CLICK_SLOP_PX = 4.0;
     /**
-     * Space centring is animated linearly in both views. {@code < 0} means idle; otherwise the
-     * view centre (2D pan) or the 3D camera target/rotation travels from "from" to "to".
+     * Space centring is animated in both views. {@code < 0} means idle; otherwise the view centre
+     * (2D pan) or the 3D camera target/rotation travels from "from" to "to".
      */
     private float centerAnimT = -1f;
-    private static final float CENTER_ANIM_SECONDS = 0.35f;
     private boolean centerAnim3d;
     private double centerAnimFromX;
     private double centerAnimFromZ;
@@ -416,17 +436,17 @@ public class MapScreen extends Screen {
         }
         // open/close animation (time based): scale + fade-in of the whole map screen
         if (!closing) {
-            openT = Math.min(1f, openT + frameDt / 0.18f);
+            openT = Math.min(1f, openT + frameDt / OPEN_ANIM_SECONDS);
         } else {
-            closeT = Math.min(1f, closeT + frameDt / 0.15f);
+            closeT = Math.min(1f, closeT + frameDt / CLOSE_ANIM_SECONDS);
             if (closeT >= 1f) {
                 finishClose();
                 return;
             }
         }
         float animScale = closing
-                ? 1f - 0.05f * (1f - (1f - closeT) * (1f - closeT))
-                : 0.95f + 0.05f * (1f - (1f - openT) * (1f - openT));
+                ? 1f - 0.05f * (1f - easeOutCubic(closeT))
+                : 0.95f + 0.05f * easeOutCubic(openT);
         g.pose().pushMatrix();
         g.pose().translate(width / 2f, height / 2f);
         g.pose().scale(animScale, animScale);
@@ -441,10 +461,10 @@ public class MapScreen extends Screen {
         // Space centring: animate before the camera/map are read for this frame
         advanceCenterAnim();
 
-        // 3D -> 2D exit animation: linearly rotate to straight down, then really switch
+        // 3D -> 2D exit animation: ease the rotation back to straight down, then really switch
         if (exit3dT >= 0f && cam3d != null) {
-            exit3dT = Math.min(1f, exit3dT + frameDt / 0.22f);
-            float et = exit3dT;
+            exit3dT = Math.min(1f, exit3dT + frameDt / VIEW_ANIM_SECONDS);
+            float et = easeOutCubic(exit3dT);
             cam3d.yaw = exitFromYaw * (1f - et);
             float targetPitch = (float) Math.toRadians(-89.0);
             cam3d.pitch = exitFromPitch + (targetPitch - exitFromPitch) * et;
@@ -1205,8 +1225,9 @@ public class MapScreen extends Screen {
     /** Advances the centring animation; called once per frame before the map/camera are used. */
     private void advanceCenterAnim() {
         if (centerAnimT < 0f) return;
-        centerAnimT = Math.min(1f, centerAnimT + frameDt / CENTER_ANIM_SECONDS);
-        float t = centerAnimT; // linear on purpose: constant speed, no easing surprises
+        centerAnimT = Math.min(1f, centerAnimT + frameDt / VIEW_ANIM_SECONDS);
+        // same duration and easing as the 3D exit: this is a view animation, not a new feel
+        float t = easeOutCubic(centerAnimT);
         double x = centerAnimFromX + (centerAnimToX - centerAnimFromX) * t;
         double z = centerAnimFromZ + (centerAnimToZ - centerAnimFromZ) * t;
         if (centerAnim3d && cam3d != null) {
