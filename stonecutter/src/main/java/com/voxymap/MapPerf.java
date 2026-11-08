@@ -48,9 +48,13 @@ public final class MapPerf {
 
     // 3D
     public final LongAdder meshBuilds = new LongAdder();
+    public final LongAdder tileMeshBuilds = new LongAdder();
     public final LongAdder meshNanos = new LongAdder();
     public volatile int meshVerts;
     public volatile int meshTris;
+    public volatile int tileMeshCount;
+    public volatile int tileMeshVerts;
+    public volatile int tileMeshTris;
     public final LongAdder colorFrameBuilds = new LongAdder();
     public final LongAdder colorFrameNanos = new LongAdder();
     public volatile int colorFramePixels;
@@ -126,12 +130,14 @@ public final class MapPerf {
         }
         if (meshBuilds.sum() > 0 || colorFrameBuilds.sum() > 0 || rasterFrames.sum() > 0) {
             out.add(String.format(Locale.ROOT,
-                    "p3d mesh%d %.0fms %dk/%dk | cf%d %.1fms %dMpx | ras%d %.1fms fx%d",
+                    "p3d mesh%d %.0fms %dk/%dk | cf%d %.1fms %dMpx | ras%d %.1fms fx%d | tm%d b%d %dk/%dk",
                     meshBuilds.sum(), msPer(meshNanos, meshBuilds),
                     meshVerts / 1024, meshTris / 1024,
                     colorFrameBuilds.sum(), msPer(colorFrameNanos, colorFrameBuilds),
                     colorFramePixels / 1_000_000,
-                    rasterFrames.sum(), msPer(rasterNanos, rasterFrames), fxaaFrames.sum()));
+                    rasterFrames.sum(), msPer(rasterNanos, rasterFrames), fxaaFrames.sum(),
+                    tileMeshCount, tileMeshBuilds.sum(),
+                    tileMeshVerts / 1024, tileMeshTris / 1024));
         }
         if (data != null) out.add("pmem " + data.perfMemoryLine());
         if (data != null) {

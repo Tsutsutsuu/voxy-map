@@ -175,7 +175,7 @@ public final class Map3D {
      */
     public static Mesh buildTileMesh(MapData data, long tileMinWX, long tileMinWZ,
                                      double eyeX, double eyeY, double eyeZ,
-                                     double verticalScale, int stepPx, boolean debugColors) {
+                                     double verticalScale, int stepPx, int debugRgb) {
         int mapW = data.getRenderWidthPx();
         int mapH = data.getRenderHeightPx();
         if (mapW <= 0 || mapH <= 0) return null;
@@ -201,10 +201,10 @@ public final class Map3D {
                 boolean e = data.isEmptyAt((int) wx, (int) wz);
                 int rgb = data.getRgbAtWorld((int) wx, (int) wz);
                 int r = (rgb >> 16) & 0xFF, g = (rgb >> 8) & 0xFF, b = rgb & 0xFF;
-                if (debugColors) {
-                    r = 0xE0;
-                    g = 0x20;
-                    b = 0x20;
+                if (debugRgb != 0) {
+                    r = (debugRgb >> 16) & 0xFF;
+                    g = (debugRgb >> 8) & 0xFF;
+                    b = debugRgb & 0xFF;
                 }
                 float y;
                 if (e) y = 0f;

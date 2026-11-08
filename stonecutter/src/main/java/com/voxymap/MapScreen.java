@@ -454,15 +454,21 @@ public class MapScreen extends Screen {
             pump3DTiles(data);
             ensureMesh3d();
             updateSoft3d();
-            if (tex3dId != null && fb3d != null) {
+            boolean frame3dReady = tex3dId != null && fb3d != null && mesh3d != null;
+            if (!frame3dReady) {
+                // First 3D frame: keep showing the already-rendered 2D map instead of blitting a
+                // missing/stale 3D texture for one frame.
+                drawMap(g, data, uiScale);
+                drawMapOverlays(g, data);
+            } else {
                 g.blit(RenderPipelines.GUI_TEXTURED, tex3dId, 0, 0, 0f, 0f, width, height,
                         fb3d.width, fb3d.height, fb3d.width, fb3d.height);
+                drawPlayerMarker3d(g);
+                // the label blockers (buttons, plates) are the same controls in 3D; without this the
+                // 3D labels could be drawn on top of them because the 2D branch never ran
+                collectLabelBlockers(mouseX, mouseY);
+                drawBiomeLabels3d(g);
             }
-            drawPlayerMarker3d(g);
-            // the label blockers (buttons, plates) are the same controls in 3D; without this the
-            // 3D labels could be drawn on top of them because the 2D branch never ran
-            collectLabelBlockers(mouseX, mouseY);
-            drawBiomeLabels3d(g);
         } else {
             drawMap(g, data, uiScale);
             drawMapOverlays(g, data);
@@ -924,11 +930,16 @@ public class MapScreen extends Screen {
             double dist = Math.sqrt((tx - ex) * (tx - ex) + (tz - ez) * (tz - ez));
             if (dist > farRadius + 512.0) continue;
             int step = dist < nearRadius ? nearStep : dist < midRadius ? midStep : farStep;
+            boolean debugLod = VoxyMapConfig.LOD_DEBUG_COLORS_3D.get();
+            int debugTint = !debugLod ? 0
+                    : step <= nearStep ? 0xE02020
+                    : step <= midStep ? 0x20E020 : 0x2020E0;
             long key = ((long) tile.tx << 32) ^ (tile.tz & 0xFFFFFFFFL);
             alive.add(key);
             long stamp = ((long) tile.version << 32) ^ (tile.coloredVersion & 0xFFFFFFFFL);
             stamp = stamp * 31L + step;
             stamp = stamp * 31L + tile.colorStyleHash;
+            stamp = stamp * 31L + (debugLod ? 1 : 0);
             Long old = tileMeshStamp3d.get(key);
             if (old != null && old == stamp && tileMesh3d.containsKey(key)) continue;
             if (builds >= buildBudget) {
@@ -937,14 +948,14 @@ public class MapScreen extends Screen {
             }
             builds++;
             Map3D.Mesh mesh = Map3D.buildTileMesh(data, tile.minWX, tile.minWZ,
-                    ex, ey, ez, VoxyMapConfig.VERTICAL_SCALE_3D.get(), step,
-                    VoxyMapConfig.LOD_DEBUG_COLORS_3D.get());
+                    ex, ey, ez, VoxyMapConfig.VERTICAL_SCALE_3D.get(), step, debugTint);
             if (mesh == null) {
                 tileMesh3d.remove(key);
                 tileMeshStamp3d.remove(key);
             } else {
                 tileMesh3d.put(key, mesh);
                 tileMeshStamp3d.put(key, stamp);
+                MapPerf.INSTANCE.tileMeshBuilds.increment();
             }
             changed = true;
         }
@@ -972,6 +983,9 @@ public class MapScreen extends Screen {
                 vertexBase += m.vertices.length / 7;
             }
             mesh3d = new Map3D.Mesh(nearStep, verts, idx);
+            MapPerf.INSTANCE.tileMeshCount = tileMesh3d.size();
+            MapPerf.INSTANCE.tileMeshVerts = vCount / 7;
+            MapPerf.INSTANCE.tileMeshTris = iCount / 3;
             builtPixelBlocks = data.getPixelBlocks();
             builtColorEpoch = data.getMeshEpoch();
         }
