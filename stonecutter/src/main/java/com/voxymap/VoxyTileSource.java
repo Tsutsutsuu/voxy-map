@@ -100,16 +100,29 @@ public final class VoxyTileSource {
     public void request(int tx, int tz, Consumer<long[]> callback) {
         if (closed.get()) return;
         final int generation = requestGeneration.get();
+        final long submittedNs = System.nanoTime();
+        if (TileTrace.enabled()) TileTrace.stage(tx, tz, "src_submit", "gen=" + generation);
         io.submit(() -> {
             if (closed.get() || generation != requestGeneration.get()) return;
+            final long workNs = System.nanoTime();
+            if (TileTrace.enabled()) {
+                TileTrace.timed(tx, tz, "src_queue", submittedNs, "worker-start");
+            }
             try {
                 ensureIndex();
                 if (generation != requestGeneration.get()) return;
                 long[] pixels = buildTile(tx, tz);
+                if (TileTrace.enabled()) {
+                    TileTrace.timed(tx, tz, "src_decode", workNs,
+                            "pixels=" + (pixels == null ? "null" : String.valueOf(pixels.length)));
+                }
                 if (closed.get() || generation != requestGeneration.get()) return;
                 Minecraft.getInstance().execute(() -> callback.accept(pixels));
             } catch (Throwable t) {
                 if (generation == requestGeneration.get()) {
+                    if (TileTrace.enabled()) {
+                        TileTrace.stage(tx, tz, "src_error", t.getClass().getSimpleName());
+                    }
                     Minecraft.getInstance().execute(() -> callback.accept(null));
                 }
             }
@@ -118,6 +131,8 @@ public final class VoxyTileSource {
 
     private synchronized void ensureIndex() throws Exception {
         if (indexed) return;
+        final long indexStartNs = System.nanoTime();
+        if (TileTrace.enabled()) TileTrace.stage(-1, -1, "index_scan_start", "pb=" + pixelBlocks);
         if (!RocksBridge.available() || storage == null) {
             indexed = true;
             return;
@@ -169,6 +184,9 @@ public final class VoxyTileSource {
             RocksBridge.close(it);
         }
         indexed = true;
+        if (TileTrace.enabled()) {
+            TileTrace.timed(-1, -1, "index_scan_done", indexStartNs, "tiles=" + byTile.size());
+        }
     }
 
     private static long tileKey(int tx, int tz) {
@@ -255,6 +273,7 @@ public final class VoxyTileSource {
     /** Rebuilds the section index on the next request (manual refresh after new exploration). */
     public void invalidateIndex() {
         if (closed.get()) return;
+        if (TileTrace.enabled()) TileTrace.stage(-1, -1, "index_invalidate", "");
         // Do not close the RocksDB connection here: decode tasks may still be reading it. Reusing
         // the connection is safe and avoids a close/reopen race now that requests use a pool.
         io.submit(() -> {

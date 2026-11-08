@@ -64,6 +64,8 @@ public final class VoxyMapConfig {
     public static final Value<Boolean> DEBUG_REFRESH_VERBOSE = new Value<>("debugRefreshVerbose", false);
     /** PoC: observe Voxy's live section dirty callbacks instead of polling RocksDB. */
     public static final Value<Boolean> DEBUG_VOXY_EVENTS = new Value<>("debugVoxyEvents", false);
+    /** Writes a per-tile lifecycle trace to logs/voxymap-tile-*.log. */
+    public static final Value<Boolean> DEBUG_TILE_TRACE = new Value<>("debugTileTrace", false);
     /** Event-driven 2D tile updates for newly explored chunks. */
     public static final Value<Boolean> LIVE_TILES = new Value<>("liveTiles", true);
     /** Soft resident tile cap; eviction only happens above this, down to ~70%. */

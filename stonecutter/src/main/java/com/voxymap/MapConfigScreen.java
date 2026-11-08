@@ -154,6 +154,7 @@ public class MapConfigScreen extends Screen {
         add(Group.UI, "debugRefreshChat", VoxyMapConfig.DEBUG_REFRESH_CHAT, 0, 0, null);
         add(Group.UI, "debugRefreshVerbose", VoxyMapConfig.DEBUG_REFRESH_VERBOSE, 0, 0, null);
         add(Group.UI, "debugVoxyEvents", VoxyMapConfig.DEBUG_VOXY_EVENTS, 0, 0, null);
+        add(Group.UI, "debugTileTrace", VoxyMapConfig.DEBUG_TILE_TRACE, 0, 0, null);
         add(Group.UI, "liveTiles", VoxyMapConfig.LIVE_TILES, 0, 0, null);
     }
 

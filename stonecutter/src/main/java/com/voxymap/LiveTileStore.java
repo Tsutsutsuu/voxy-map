@@ -328,6 +328,7 @@ public final class LiveTileStore {
                 || !tile.sourceFilled || tile.cacheSaving) return;
         final int generation = cacheGeneration.get();
         tile.cacheSaving = true;
+        if (TileTrace.enabled()) TileTrace.stage(tile.tx, tile.tz, "cache_save_queue", "gen=" + generation);
         CACHE_IO.submit(() -> {
             try {
                 if (generation == cacheGeneration.get()) saveCached(tile);
@@ -531,10 +532,13 @@ public final class LiveTileStore {
         VoxyTileSource src = source;
         if (src == null || sourcePending.contains(key) || sourceEmpty.contains(key)) return;
         if (!src.hasTileData(tx, tz)) {
+            if (TileTrace.enabled()) TileTrace.stage(tx, tz, "src_known_empty", "index-no-section");
             sourceEmpty.add(key);
             return;
         }
         sourcePending.add(key);
+        final long srcStartNs = System.nanoTime();
+        if (TileTrace.enabled()) TileTrace.stage(tx, tz, "src_request", "reason=cache-miss");
         final int generation = resetGeneration.get();
         final int epochAtRequest = sourceEpoch.get();
         MapPerf.INSTANCE.sourceRequests.increment();
@@ -543,10 +547,12 @@ public final class LiveTileStore {
             if (epochAtRequest != sourceEpoch.get()) return;
             sourcePending.remove(key);
             if (pixels == null) {
+                if (TileTrace.enabled()) TileTrace.timed(tx, tz, "src_empty", srcStartNs, "null");
                 MapPerf.INSTANCE.sourceEmpty.increment();
                 sourceEmpty.add(key);
                 return;
             }
+            if (TileTrace.enabled()) TileTrace.timed(tx, tz, "src_hit", srcStartNs, "pixels=" + pixels.length);
             MapPerf.INSTANCE.sourceHits.increment();
             LiveTile tile = new LiveTile(tx, tz, tileMinWX(tx), tileMinWZ(tz), pixels);
             tile.liveDirty = true;
@@ -584,6 +590,8 @@ public final class LiveTileStore {
         if (sourceFillRequestsThisFrame.get() >= 48) return;
         sourceFillRequestsThisFrame.incrementAndGet();
         sourcePending.add(key);
+        final long fillStartNs = System.nanoTime();
+        if (TileTrace.enabled()) TileTrace.stage(tx, tz, "src_fill_request", "reason=partial");
         final int generation = resetGeneration.get();
         final int epochAtRequest = sourceEpoch.get();
         MapPerf.INSTANCE.sourceRequests.increment();
@@ -591,8 +599,13 @@ public final class LiveTileStore {
             if (generation != resetGeneration.get()) return;
             if (epochAtRequest != sourceEpoch.get()) return;
             sourcePending.remove(key);
-            if (pixels == null) MapPerf.INSTANCE.sourceEmpty.increment();
-            else MapPerf.INSTANCE.sourceHits.increment();
+            if (pixels == null) {
+                if (TileTrace.enabled()) TileTrace.timed(tx, tz, "src_fill_empty", fillStartNs, "null");
+                MapPerf.INSTANCE.sourceEmpty.increment();
+            } else {
+                if (TileTrace.enabled()) TileTrace.timed(tx, tz, "src_fill_hit", fillStartNs, "pixels=" + pixels.length);
+                MapPerf.INSTANCE.sourceHits.increment();
+            }
             LiveTile current = tiles.get(key);
             if (current == null) {
                 if (pixels == null) {
@@ -738,16 +751,22 @@ public final class LiveTileStore {
         final boolean hasSeed = seedPixels != null && seedRgb != null;
         final int generation = resetGeneration.get();
         if (!hasSeed) {
+            final long cacheStartNs = System.nanoTime();
+            if (TileTrace.enabled()) TileTrace.stage(tx, tz, "cache_submit", "file=" + cacheFile(tx, tz).getFileName());
             SEED_IO.submit(() -> {
                 LiveTile cached = loadCached(tx, tz);
                 Minecraft.getInstance().execute(() -> {
                     if (generation != resetGeneration.get()) return;
                     seedPending.remove(key);
                     if (cached == null) {
+                        if (TileTrace.enabled()) {
+                            TileTrace.timed(tx, tz, "cache_miss", cacheStartNs, "file-missing-or-invalid");
+                        }
                         MapPerf.INSTANCE.cacheMisses.increment();
                         requestSourceTile(tx, tz, key);
                         return;
                     }
+                    if (TileTrace.enabled()) TileTrace.timed(tx, tz, "cache_hit", cacheStartNs, "fromCache");
                     MapPerf.INSTANCE.cacheHits.increment();
                     LiveTile previous = tiles.putIfAbsent(key, cached);
                     if (previous == null) {
@@ -829,19 +848,36 @@ public final class LiveTileStore {
     private LiveTile loadCached(int tx, int tz) {
         if (cacheDir == null) return null;
         Path file = cacheFile(tx, tz);
-        if (!Files.isRegularFile(file)) return null;
+        if (!Files.isRegularFile(file)) {
+            if (TileTrace.enabled()) TileTrace.stage(tx, tz, "cache_no_file", file.getFileName().toString());
+            return null;
+        }
         try (DataInputStream in = new DataInputStream(
                 new java.io.BufferedInputStream(Files.newInputStream(file)))) {
-            if (in.readInt() != CACHE_MAGIC || in.readInt() != CACHE_VERSION) return null;
+            int magic = in.readInt();
+            int version = in.readInt();
+            if (magic != CACHE_MAGIC || version != CACHE_VERSION) {
+                if (TileTrace.enabled()) TileTrace.stage(tx, tz, "cache_bad_header",
+                        "magic=" + Integer.toHexString(magic) + " version=" + version);
+                return null;
+            }
             int ftx = in.readInt(), ftz = in.readInt();
             long fminX = in.readLong(), fminZ = in.readLong();
             int fpb = in.readInt();
             int rawLen = in.readInt();
             if (ftx != tx || ftz != tz || fpb != pixelBlocks
-                    || fminX != tileMinWX(tx) || fminZ != tileMinWZ(tz)) return null;
+                    || fminX != tileMinWX(tx) || fminZ != tileMinWZ(tz)) {
+                if (TileTrace.enabled()) TileTrace.stage(tx, tz, "cache_geom_mismatch",
+                        "tx=" + ftx + " tz=" + ftz + " pb=" + fpb);
+                return null;
+            }
             byte[] comp = in.readAllBytes();
             byte[] raw = Zstd.decompress(comp, TILE_PIXELS * TILE_PIXELS * Long.BYTES);
-            if (raw == null || raw.length != TILE_PIXELS * TILE_PIXELS * Long.BYTES) return null;
+            if (raw == null || raw.length != TILE_PIXELS * TILE_PIXELS * Long.BYTES) {
+                if (TileTrace.enabled()) TileTrace.stage(tx, tz, "cache_bad_payload",
+                        "comp=" + comp.length + " raw=" + (raw == null ? -1 : raw.length));
+                return null;
+            }
             ByteBuffer bb = ByteBuffer.wrap(raw).order(ByteOrder.LITTLE_ENDIAN);
             LiveTile tile = new LiveTile(tx, tz, tileMinWX(tx), tileMinWZ(tz));
             for (int i = 0; i < tile.pixels.length; i++) tile.pixels[i] = bb.getLong();
@@ -854,12 +890,14 @@ public final class LiveTileStore {
             tile.cacheSavedVersion = tile.version;
             return tile;
         } catch (Throwable t) {
+            if (TileTrace.enabled()) TileTrace.stage(tx, tz, "cache_read_error", t.getClass().getSimpleName());
             return null;
         }
     }
 
     private void saveCached(LiveTile tile) {
         if (cacheDir == null || !cacheReady || tile.seedEpoch >= 0 || !tile.sourceFilled) return;
+        final long saveStartNs = System.nanoTime();
         final int savingVersion = tile.version;
         try {
             Files.createDirectories(cacheDir);
@@ -886,7 +924,9 @@ public final class LiveTileStore {
                 tile.cacheDirty = false;
                 tile.cacheSavedVersion = savingVersion;
             }
+            if (TileTrace.enabled()) TileTrace.timed(tile.tx, tile.tz, "cache_save_done", saveStartNs, "bytes=" + comp.length);
         } catch (Throwable ignored) {
+            if (TileTrace.enabled()) TileTrace.timed(tile.tx, tile.tz, "cache_save_error", saveStartNs, "exception");
         }
     }
 
@@ -1074,6 +1114,8 @@ public final class LiveTileStore {
         tile.colorPending = true;
         colorRequestsThisFrame.incrementAndGet();
         MapPerf.INSTANCE.colorRequests.increment();
+        final long colorStartNs = System.nanoTime();
+        if (TileTrace.enabled()) TileTrace.stage(tile.tx, tile.tz, "color_request", "version=" + tile.version);
         final int version = tile.version;
         final int halo = 8;
         final int hw = TILE_PIXELS + halo * 2;
@@ -1105,8 +1147,12 @@ public final class LiveTileStore {
         long minZ = tile.minWZ - (long) halo * pixelBlocks;
         MapData.INSTANCE.submitTileColor(withHalo, hw, hw, minX, minZ, pixelBlocks, full -> {
             tile.colorPending = false;
-            if (full == null || full.length < hw * hw) return;
+            if (full == null || full.length < hw * hw) {
+                if (TileTrace.enabled()) TileTrace.timed(tile.tx, tile.tz, "color_empty", colorStartNs, "null");
+                return;
+            }
             if (tile.version != version) {
+                if (TileTrace.enabled()) TileTrace.timed(tile.tx, tile.tz, "color_stale", colorStartNs, "version-changed");
                 MapPerf.INSTANCE.colorStale.increment();
                 return; // a newer section update won the race; a later frame requests again
             }
@@ -1121,12 +1167,15 @@ public final class LiveTileStore {
             tile.textureDirty = true;
             colorVersion.incrementAndGet();
             MapPerf.INSTANCE.colorDone.increment();
+            if (TileTrace.enabled()) TileTrace.timed(tile.tx, tile.tz, "color_done", colorStartNs, "version=" + version);
         });
     }
 
     private void buildTexture(LiveTile tile, int styleHash) {
         createdThisFrame.incrementAndGet();
         MapPerf.INSTANCE.textureBuilds.increment();
+        final long textureStartNs = System.nanoTime();
+        if (TileTrace.enabled()) TileTrace.stage(tile.tx, tile.tz, "texture_build", "style=" + styleHash);
         NativeImage image = new NativeImage(TILE_PIXELS, TILE_PIXELS, false);
         int[] rgb = tile.rgb;
         for (int i = 0; i < TILE_PIXELS * TILE_PIXELS; i++) {
@@ -1144,6 +1193,7 @@ public final class LiveTileStore {
         tile.dynamic = dynamic;
         tile.textureEpoch = styleHash;
         tile.textureDirty = false;
+        if (TileTrace.enabled()) TileTrace.timed(tile.tx, tile.tz, "texture_done", textureStartNs, "px=" + TILE_PIXELS * TILE_PIXELS);
     }
 
     /** Frees GPU textures but keeps tile pixels/rgb so reopening can re-upload cheaply. */
@@ -1195,6 +1245,7 @@ public final class LiveTileStore {
                 tile.dispose();
                 MapPerf.INSTANCE.evictions.increment();
                 contentVersion.incrementAndGet();
+                if (TileTrace.enabled()) TileTrace.stage(tile.tx, tile.tz, "evict", "size=" + tiles.size());
                 if (tile.seedEpoch < 0) {
                     liveOnlyTileCount.decrementAndGet();
                 } else {
