@@ -52,6 +52,7 @@ public class MapScreen extends Screen {
     private boolean view3d;
     private Map3D.Camera cam3d;
     private Map3D.Mesh mesh3d;
+    private long mesh3dVersion;
     private boolean mesh3dDirty;
     private boolean soft3dFrameReady;
     private boolean frame3dShown;
@@ -993,6 +994,7 @@ public class MapScreen extends Screen {
                 vertexBase += m.vertices.length / 7;
             }
             mesh3d = new Map3D.Mesh(nearStep, verts, idx);
+            mesh3dVersion++;
             mesh3dDirty = true;
             MapPerf.INSTANCE.tileMeshCount = tileMesh3d.size();
             MapPerf.INSTANCE.tileMeshVerts = vCount / 7;
@@ -1117,6 +1119,7 @@ public class MapScreen extends Screen {
                         MapPerf.INSTANCE.meshBuilt(buildNanos,
                                 built.vertices.length / 7, built.indices.length / 3);
                         mesh3d = built;
+                        mesh3dVersion++;
                         mesh3dDirty = true;
                         builtStepA = fStepA;
                         builtStepB = fStepB;
@@ -1206,6 +1209,7 @@ public class MapScreen extends Screen {
             cam.pitch = cam3d.pitch;
             cam.distance = cam3d.distance;
             final Map3D.Mesh mesh = mesh3d;
+            final long meshVersion = mesh3dVersion;
             final Map3DSoft.Framebuffer fb = fb3d;
             final float fov = fov3d;
             ASYNC_3D.execute(() -> {
@@ -1237,6 +1241,11 @@ public class MapScreen extends Screen {
                         // discard frames for a framebuffer/texture pair that is gone or for a
                         // screen that already closed: writing them would touch a closed NativeImage
                         if (screenClosed || gen != soft3dGen || img3d == null) return;
+                        if (meshVersion != mesh3dVersion) {
+                            // A newer tile mesh replaced this one while rasterising. Uploading the
+                            // old frame now would alternate the visible geometry old/new.
+                            return;
+                        }
                         dbg3dNanos = nanos;
                         MapPerf.INSTANCE.rasterFrame(nanos, mesh.indices.length / 3);
                         uploadAbgr(abgr, fb.width, fb.height);
