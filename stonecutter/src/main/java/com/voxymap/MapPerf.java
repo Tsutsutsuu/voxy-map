@@ -138,6 +138,9 @@ public final class MapPerf {
             out.add(String.format(Locale.ROOT, "pgpu tex=%d %d/%dMB rel=%d",
                     data.tileTextureCount(), data.tileTextureBytes() >> 20,
                     VoxyMapConfig.GPU_TEXTURE_BUDGET_MB.get(), gpuTextureReleases.sum()));
+            out.add(String.format(Locale.ROOT, "pdisk files=%d %d/%dMB",
+                    data.tileDiskFiles(), data.tileDiskBytes() >> 20,
+                    VoxyMapConfig.DISK_CACHE_MAX_MB.get()));
         }
         MemoryUsage heap = ManagementFactory.getMemoryMXBean().getHeapMemoryUsage();
         out.add(String.format(Locale.ROOT, "pheap %d/%dMB",

@@ -98,6 +98,14 @@ public final class MapData {
         t.setPriority(Thread.MIN_PRIORITY);
         return t;
     });
+    /** Small controlled pool: tile colour work does not touch the manager/refresh thread. */
+    private final ExecutorService colorPool = Executors.newFixedThreadPool(
+            Math.max(2, Math.min(4, Runtime.getRuntime().availableProcessors() / 2)), r -> {
+                Thread t = new Thread(r, "voxymap-color");
+                t.setDaemon(true);
+                t.setPriority(Thread.MIN_PRIORITY);
+                return t;
+            });
     private final AtomicBoolean requested = new AtomicBoolean();
 
     private volatile Snapshot snap;
@@ -217,6 +225,13 @@ public final class MapData {
     private volatile long activeRefreshToken;
     /** token used by renderColor/colorize to stop early when the map closes */
     private volatile long renderToken;
+
+    private static long currentRenderToken() {
+        Long local = tileRenderToken.get();
+        if (local != null) return local;
+        MapData data = INSTANCE;
+        return data == null ? 0L : data.renderToken;
+    }
     /** background lane state */
     private volatile boolean gentleActive;
     /** a full rebuild is required before the map can become fresh again */
@@ -961,6 +976,16 @@ public final class MapData {
     public long tileTextureBytes() {
         LiveTileStore live = liveTiles;
         return live == null ? 0 : live.textureBytes();
+    }
+
+    public int tileDiskFiles() {
+        LiveTileStore live = liveTiles;
+        return live == null ? 0 : live.diskCacheFiles();
+    }
+
+    public long tileDiskBytes() {
+        LiveTileStore live = liveTiles;
+        return live == null ? 0 : live.diskCacheBytes();
     }
 
     /** Diagnostic lines for the in-game debug panel (Q when debugEnabled). */
@@ -3188,53 +3213,54 @@ public final class MapData {
     /**
      * Colours a standalone tile (pixels + optional halo) with the full style pipeline:
      * hillshade, water blur, contours, adaptive ramp, coast darkening and biome-independent colour.
-     * Must run on the loader thread so the shared analysis scratch buffers stay single-threaded.
+     * Runs on a controlled colour worker; terrain analysis/ramp state is thread-local so multiple
+     * tile colour jobs can run concurrently without clobbering the global refresh cache.
      *
      * @param pixels packed columns, width*height, top-left at (minWX,minWZ)
      * @return ARGB colours, same dimensions
      */
     public int[] renderTileColor(long[] pixels, int width, int height, long minWX, long minWZ, int pixelBlocks) {
         if (pixels == null || width <= 0 || height <= 0) return null;
-        Snapshot base = snap;
-        int sea = seaLevel();
-        if (base != null) {
-            ensureGlobalRamp(base, sea);
-            useRampOverride = true;
-            overrideLo = globalLo;
-            overrideHi = globalHi;
-            overrideRampLo = globalRampLo;
-            overrideRampHi = globalRampHi;
-        } else {
-            // Tile-only mode: derive the ramp from the highest dry land already loaded in the
-            // tile store. This restores the "landMaxRamp" option (previously the fixed world
-            // build ceiling made the toggle ineffective).
-            int worldMax = sea + 512;
-            var level = Minecraft.getInstance().level;
-            if (level != null) worldMax = Math.max(worldMax, level.getMaxY());
-            LiveTileStore live = liveTiles;
-            boolean maxRamp = VoxyMapConfig.MIN_MAX_RAMP.get() || VoxyMapConfig.ADAPTIVE_COLOR_RAMP.get();
-            int hi = worldMax;
-            if (maxRamp && live != null) {
-                int knownMax = live.maxLandTop(sea);
-                hi = Math.max(sea + 40, knownMax);
-            }
-            useRampOverride = true;
-            overrideLo = sea;
-            overrideHi = hi;
-            overrideRampLo = sea;
-            overrideRampHi = hi;
-        }
-        Snapshot s = new Snapshot(pixels, width, height, minWX, minWZ, pixelBlocks,
-                java.util.Map.of(), System.nanoTime());
-        long savedToken = renderToken;
-        TerrainCache savedCache = terrainCache; // tile analysis must not clobber incremental refresh
-        renderToken = 0; // a tile colour job is not part of the cancellable fast refresh
+        TileColorState state = new TileColorState();
+        tileColorState.set(state);
         try {
-            return renderColor(s, style, sea, false);
+            Snapshot base = snap;
+            int sea = seaLevel();
+            if (base != null) {
+                ensureGlobalRamp(base, sea);
+                state.lo = globalLo;
+                state.hi = globalHi;
+                state.rampLo = globalRampLo;
+                state.rampHi = globalRampHi;
+            } else {
+                // Tile-only mode: derive the ramp from the highest dry land already loaded in the
+                // tile store. This restores the "landMaxRamp" option (previously the fixed world
+                // build ceiling made the toggle ineffective).
+                int worldMax = sea + 512;
+                var level = Minecraft.getInstance().level;
+                if (level != null) worldMax = Math.max(worldMax, level.getMaxY());
+                LiveTileStore live = liveTiles;
+                boolean maxRamp = VoxyMapConfig.MIN_MAX_RAMP.get() || VoxyMapConfig.ADAPTIVE_COLOR_RAMP.get();
+                int hi = worldMax;
+                if (maxRamp && live != null) {
+                    int knownMax = live.maxLandTop(sea);
+                    hi = Math.max(sea + 40, knownMax);
+                }
+                state.lo = sea;
+                state.hi = hi;
+                state.rampLo = sea;
+                state.rampHi = hi;
+            }
+            Snapshot s = new Snapshot(pixels, width, height, minWX, minWZ, pixelBlocks,
+                    java.util.Map.of(), System.nanoTime());
+            tileRenderToken.set(0L);
+            try {
+                return renderColor(s, style, sea, false);
+            } finally {
+                tileRenderToken.remove();
+            }
         } finally {
-            terrainCache = savedCache;
-            useRampOverride = false;
-            renderToken = savedToken;
+            tileColorState.remove();
         }
     }
 
@@ -3316,7 +3342,7 @@ public final class MapData {
         final int tileWorld = LiveTileStore.TILE_PIXELS * Math.max(1, pixelBlocks);
         final int traceTx = (int) Math.floorDiv(minWX + 8L * pixelBlocks, (long) tileWorld);
         final int traceTz = (int) Math.floorDiv(minWZ + 8L * pixelBlocks, (long) tileWorld);
-        loader.submit(() -> {
+        colorPool.submit(() -> {
             final long workStartNs = System.nanoTime();
             if (TileTrace.enabled()) TileTrace.timed(traceTx, traceTz, "color_wait", submittedNs, "loader-queue");
             try {
@@ -4007,6 +4033,12 @@ public final class MapData {
 
     /** Runs a row band task on up to 8 daemon threads; falls back to inline for tiny heights. */
     private static void parallelRows(int h, BandTask task) {
+        // Colour-pool workers already provide parallelism across tiles. Spawning another 8 threads
+        // for every 272px tile analysis caused a thread storm and made colour jobs slower.
+        if (tileColorState.get() != null) {
+            task.run(0, h);
+            return;
+        }
         int threads = Math.max(1, Math.min(8, Runtime.getRuntime().availableProcessors()));
         if (threads <= 1 || h < 64) {
             task.run(0, h);
@@ -4185,6 +4217,16 @@ public final class MapData {
 
     private volatile TerrainCache terrainCache;
 
+    /** Per-colour-worker terrain/ramp state; the shared field is only for global refreshes. */
+    private static final class TileColorState {
+        TerrainCache cache;
+        int lo, hi, rampLo, rampHi;
+    }
+
+    private static final ThreadLocal<TileColorState> tileColorState = new ThreadLocal<>();
+    /** Tile colour jobs are never part of the cancellable global refresh. */
+    private static final ThreadLocal<Long> tileRenderToken = new ThreadLocal<>();
+
     /** Ramp limits shared by every tile so adaptive/min-max ramps cannot shift per tile. */
     private volatile Snapshot globalRampSnap;    private volatile String globalRampFingerprint;
     private volatile int globalLo = FALLBACK_SEA, globalHi = FALLBACK_SEA + 820;
@@ -4206,14 +4248,15 @@ public final class MapData {
 
     private TerrainCache terrainFor(Snapshot s, int sea) {
         String fp = terrainFingerprint();
-        TerrainCache cached = terrainCache;
+        TileColorState colorState = tileColorState.get();
+        TerrainCache cached = colorState != null ? colorState.cache : terrainCache;
         if (cached != null && cached.snapshot == s && cached.sea == sea && fp.equals(cached.fingerprint)) {
             return cached;
         }
         // Drop the stale cache before allocating the new analysis arrays. It pins the previous
         // snapshot plus ~22 B/px of arrays; on an 87M-pixel refresh that is ~2.6 GB of avoidable
         // peak and was what pushed the colour pass into OutOfMemoryError.
-        terrainCache = null;
+        if (colorState != null) colorState.cache = null; else terrainCache = null;
         long[] pixels = s.pixels;
         int w = s.width;
         int h = s.height;
@@ -4560,7 +4603,12 @@ public final class MapData {
         boolean adaptive = VoxyMapConfig.ADAPTIVE_COLOR_RAMP.get();
         int lo = sea, hi = worldMaxY(sea + 820);
         int rampLo = lo, rampHi = hi;
-        if (useRampOverride) {
+        if (colorState != null) {
+            lo = colorState.lo;
+            hi = colorState.hi;
+            rampLo = colorState.rampLo;
+            rampHi = colorState.rampHi;
+        } else if (useRampOverride) {
             lo = overrideLo;
             hi = overrideHi;
             rampLo = overrideRampLo;
@@ -4643,7 +4691,7 @@ public final class MapData {
                 isWaterPix, contour, depthMap, lo, hi, rampLo, rampHi,
                 adaptive || VoxyMapConfig.MIN_MAX_RAMP.get(), w, h, pixelBlocks);
         built.contourEnabled = drawContours;
-        terrainCache = built;
+        if (colorState != null) colorState.cache = built; else terrainCache = built;
         return built;
     }
 
@@ -4922,7 +4970,8 @@ public final class MapData {
         final TerrainCache fTc = tc;
         parallelRows(fh, (z0, z1) -> {
             for (int z = z0; z < z1; z++) {
-                if ((z & 63) == 0 && renderToken != 0 && renderToken != refreshToken.get()) return;
+                if ((z & 63) == 0 && currentRenderToken() != 0
+                        && currentRenderToken() != refreshToken.get()) return;
                 int row = z * fw;
                 for (int x = 0; x < fw; x++) {
                     out[row + x] = colorAt(fTc, fStyle, row + x, x, z);

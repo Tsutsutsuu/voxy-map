@@ -118,6 +118,10 @@ public final class LiveTileStore {
     private final long minWX, minWZ;
     private final int pixelBlocks;
     private final Path cacheDir;
+    private volatile long diskStatsAt;
+    private volatile long diskStatsBytes;
+    private volatile int diskStatsFiles;
+    private final java.util.concurrent.atomic.AtomicInteger cacheSaves = new java.util.concurrent.atomic.AtomicInteger();
     /** false until the world's liquid-id table is known; dry (water-as-solid) tiles must not be cached. */
     private volatile boolean cacheReady;
     private final AtomicInteger cacheGeneration = new AtomicInteger();
@@ -176,18 +180,76 @@ public final class LiveTileStore {
                     .filter(p -> p.getFileName().toString().endsWith(".vxt"))
                     .toList();
             final int maxFiles = 32768;
-            if (files.size() <= maxFiles) return;
+            final long maxBytes = Math.max(256L, VoxyMapConfig.DISK_CACHE_MAX_MB.get()) * 1024L * 1024L;
+            long totalBytes = 0L;
+            for (Path p : files) {
+                try {
+                    totalBytes += Files.size(p);
+                } catch (Throwable ignored) {
+                }
+            }
+            diskStatsFiles = files.size();
+            diskStatsBytes = totalBytes;
+            diskStatsAt = System.currentTimeMillis();
+            if (files.size() <= maxFiles && totalBytes <= maxBytes) return;
             files.sort((a, b) -> {
                 try {
-                    return Long.compare(Files.getLastModifiedTime(b).toMillis(),
-                            Files.getLastModifiedTime(a).toMillis());
+                    return Long.compare(Files.getLastModifiedTime(a).toMillis(),
+                            Files.getLastModifiedTime(b).toMillis());
                 } catch (Throwable t) {
                     return 0;
                 }
             });
-            for (int i = maxFiles; i < files.size(); i++) Files.deleteIfExists(files.get(i));
+            int count = files.size();
+            for (Path file : files) {
+                if (count <= maxFiles && totalBytes <= maxBytes) break;
+                long key = cacheKeyOf(file.getFileName().toString());
+                LiveTile resident = key == Long.MIN_VALUE ? null : tiles.get(key);
+                if (resident != null) continue; // never evict a tile that is currently resident
+                try {
+                    long size = Files.size(file);
+                    if (Files.deleteIfExists(file)) {
+                        count--;
+                        totalBytes -= size;
+                    }
+                } catch (Throwable ignored) {
+                }
+            }
+            diskStatsFiles = count;
+            diskStatsBytes = totalBytes;
+            diskStatsAt = System.currentTimeMillis();
         } catch (Throwable ignored) {
         }
+    }
+
+    private static long cacheKeyOf(String name) {
+        int dot = name.lastIndexOf('.');
+        if (dot <= 0) return Long.MIN_VALUE;
+        String base = name.substring(0, dot);
+        int us = base.indexOf('_');
+        if (us <= 0) return Long.MIN_VALUE;
+        try {
+            int tx = Integer.parseInt(base.substring(0, us));
+            int tz = Integer.parseInt(base.substring(us + 1));
+            return key(tx, tz);
+        } catch (Throwable t) {
+            return Long.MIN_VALUE;
+        }
+    }
+
+    public long diskCacheBytes() {
+        refreshDiskStats();
+        return diskStatsBytes;
+    }
+
+    public int diskCacheFiles() {
+        refreshDiskStats();
+        return diskStatsFiles;
+    }
+
+    private void refreshDiskStats() {
+        if (cacheDir == null || System.currentTimeMillis() - diskStatsAt < 5_000L) return;
+        CACHE_IO.submit(this::cleanupCache);
     }
 
     public boolean matches(long minWX, long minWZ, int pixelBlocks) {
@@ -1082,6 +1144,7 @@ public final class LiveTileStore {
                 tile.cacheDirty = false;
                 tile.cacheSavedVersion = savingVersion;
             }
+            if ((cacheSaves.incrementAndGet() & 511) == 0) CACHE_IO.submit(this::cleanupCache);
             if (TileTrace.enabled()) TileTrace.timed(tile.tx, tile.tz, "cache_save_done", saveStartNs, "bytes=" + comp.length);
         } catch (Throwable ignored) {
             if (TileTrace.enabled()) TileTrace.timed(tile.tx, tile.tz, "cache_save_error", saveStartNs, "exception");
