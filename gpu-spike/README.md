@@ -30,12 +30,14 @@ Copy `gpu-spike.jar` into the 26.2 Fabric profile `mods/` folder and restart the
 The cube is drawn by a real Blaze3D GPU pass:
 
 ```text
+GpuTexture (offscreen colour target)
 RenderPipeline DEBUG_FILLED_SNIPPET (no depth, no cull)
 StagedVertexBuffer (append -> upload -> execute -> endFrame, every frame)
-one RenderPass per frame to the main render target
+RenderPass to the offscreen texture
+GuiGraphicsExtractor.blit(GpuTextureView, GpuSampler, ...) in the screen
 ```
 
-It runs after the complete GUI pass via a tiny `Minecraft#renderFrame` mixin, so it is in front of the fullscreen screen instead of behind the world/UI. The vertex projection is done in screen space on the CPU because this spike is testing GPU buffer/render-pass lifetime, not a full 3D camera pipeline.
+The GUI blit is ordinary screen composition, so the cube is guaranteed to be in the fullscreen UI instead of behind the world or behind the screen background.
 
 
 ## What a pass means

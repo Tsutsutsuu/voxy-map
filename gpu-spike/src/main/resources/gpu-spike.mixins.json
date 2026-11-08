@@ -4,7 +4,10 @@
   "package": "com.gpuspike.mixin",
   "compatibilityLevel": "JAVA_25",
   "client": [
-    "MinecraftMixin"
+    "GameRendererMixin",
+    "GuiRendererMixin",
+    "HudMixin",
+    "ItemInHandRendererMixin"
   ],
   "injectors": {
     "defaultRequire": 1

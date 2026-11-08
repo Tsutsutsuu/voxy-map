@@ -20,9 +20,18 @@ public final class GpuCubeScreen extends Screen {
     private boolean dragging;
     private double lastMouseX;
     private double lastMouseY;
+    private int oldBlur = -1;
 
     public GpuCubeScreen() {
         super(Component.literal("GPU Spike"));
+    }
+
+    @Override
+    protected void init() {
+        super.init();
+        var options = Minecraft.getInstance().options;
+        oldBlur = options.menuBackgroundBlurriness().get();
+        options.menuBackgroundBlurriness().set(0);
     }
 
     @Override
@@ -31,8 +40,14 @@ public final class GpuCubeScreen extends Screen {
     }
 
     @Override
+    public void extractBackground(GuiGraphicsExtractor g, int mouseX, int mouseY, float partialTick) {
+        // Keep the world visible: no dim/blur/panorama behind the test UI.
+    }
+
+    @Override
     public void extractRenderState(GuiGraphicsExtractor g, int mouseX, int mouseY, float partialTick) {
-        // Deliberately do not call super: no vanilla panorama/background may cover the GPU cube.
+        // Deliberately do not call super: keep the screen completely transparent.
+        updateMovement();
         int x = 12;
         int y = 12;
         g.text(font, Component.literal("GPU SPIKE - Minecraft 26.2 custom RenderPipeline"), x, y, 0xFFFFFFFF);
@@ -48,6 +63,17 @@ public final class GpuCubeScreen extends Screen {
                 yaw, pitch, distance, offsetX, offsetY, offsetZ)), x, y, 0xFF80C0FF);
     }
 
+    private void updateMovement() {
+        long window = Minecraft.getInstance().getWindow().handle();
+        double step = 0.15;
+        if (GLFW.glfwGetKey(window, GLFW.GLFW_KEY_W) == GLFW.GLFW_PRESS) offsetZ -= step;
+        if (GLFW.glfwGetKey(window, GLFW.GLFW_KEY_S) == GLFW.GLFW_PRESS) offsetZ += step;
+        if (GLFW.glfwGetKey(window, GLFW.GLFW_KEY_A) == GLFW.GLFW_PRESS) offsetX -= step;
+        if (GLFW.glfwGetKey(window, GLFW.GLFW_KEY_D) == GLFW.GLFW_PRESS) offsetX += step;
+        if (GLFW.glfwGetKey(window, GLFW.GLFW_KEY_Q) == GLFW.GLFW_PRESS) offsetY -= step;
+        if (GLFW.glfwGetKey(window, GLFW.GLFW_KEY_E) == GLFW.GLFW_PRESS) offsetY += step;
+    }
+
     @Override
     public boolean keyPressed(KeyEvent e) {
         int key = e.key();
@@ -55,15 +81,7 @@ public final class GpuCubeScreen extends Screen {
             onClose();
             return true;
         }
-        double step = 0.5;
-        if (key == GLFW.GLFW_KEY_W) offsetZ -= step;
-        else if (key == GLFW.GLFW_KEY_S) offsetZ += step;
-        else if (key == GLFW.GLFW_KEY_A) offsetX -= step;
-        else if (key == GLFW.GLFW_KEY_D) offsetX += step;
-        else if (key == GLFW.GLFW_KEY_Q) offsetY -= step;
-        else if (key == GLFW.GLFW_KEY_E) offsetY += step;
-        else return super.keyPressed(e);
-        return true;
+        return super.keyPressed(e);
     }
 
     @Override
@@ -80,8 +98,8 @@ public final class GpuCubeScreen extends Screen {
     @Override
     public boolean mouseDragged(MouseButtonEvent e, double dx, double dy) {
         if (!dragging || e.button() != 0) return super.mouseDragged(e, dx, dy);
-        yaw += (float) (dx * 0.01);
-        pitch = (float) Math.max(-1.5, Math.min(1.5, pitch + dy * 0.01));
+        yaw -= (float) (dx * 0.01);
+        pitch = (float) Math.max(-1.5, Math.min(1.5, pitch - dy * 0.01));
         lastMouseX = e.x();
         lastMouseY = e.y();
         return true;
@@ -105,6 +123,7 @@ public final class GpuCubeScreen extends Screen {
 
     @Override
     public void onClose() {
+        if (oldBlur >= 0) Minecraft.getInstance().options.menuBackgroundBlurriness().set(oldBlur);
         Minecraft.getInstance().setScreenAndShow(null);
     }
 }
