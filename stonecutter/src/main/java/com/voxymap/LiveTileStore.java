@@ -527,6 +527,7 @@ public final class LiveTileStore {
         VoxyTileSource src = source;
         if (src != null) src.cancelPending();
         sourcePending.clear();
+        seedPending.clear();
         // Keep the negative (empty) set across automatic LOD recalibration. Clearing it made every
         // empty margin tile retry cache+source after each of the 4s/14s/34s passes. Manual refresh
         // drops the whole store and still re-probes everything.
