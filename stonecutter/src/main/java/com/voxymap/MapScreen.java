@@ -52,6 +52,7 @@ public class MapScreen extends Screen {
     private boolean view3d;
     private Map3D.Camera cam3d;
     private Map3D.Mesh mesh3d;
+    private long meshBuildGeneration;
     private final java.util.Map<Long, Map3D.Mesh> tileMesh3d = new java.util.HashMap<>();
     private final java.util.Map<Long, Long> tileMeshStamp3d = new java.util.HashMap<>();
     /** dedicated 3D background pool: mesh build, CPU raster and FXAA must not share the common pool */
@@ -915,6 +916,7 @@ public class MapScreen extends Screen {
         final int buildBudget = tileMesh3d.isEmpty() ? Integer.MAX_VALUE : 4;
         int builds = 0;
         boolean changed = false;
+        boolean pending = false;
         java.util.Set<Long> alive = new java.util.HashSet<>();
         for (LiveTileStore.LiveTile tile : live.tilesView()) {
             double tx = tile.minWX + LiveTileStore.TILE_PIXELS * (double) data.getPixelBlocks() / 2.0;
@@ -929,7 +931,10 @@ public class MapScreen extends Screen {
             stamp = stamp * 31L + tile.colorStyleHash;
             Long old = tileMeshStamp3d.get(key);
             if (old != null && old == stamp && tileMesh3d.containsKey(key)) continue;
-            if (builds >= buildBudget) continue;
+            if (builds >= buildBudget) {
+                pending = true;
+                continue;
+            }
             builds++;
             Map3D.Mesh mesh = Map3D.buildTileMesh(data, tile.minWX, tile.minWZ,
                     ex, ey, ez, VoxyMapConfig.VERTICAL_SCALE_3D.get(), step,
@@ -947,6 +952,10 @@ public class MapScreen extends Screen {
         tileMesh3d.keySet().removeIf(k -> !alive.contains(k));
         tileMeshStamp3d.keySet().removeIf(k -> !tileMesh3d.containsKey(k));
         if (tileMesh3d.isEmpty()) return false;
+        // Never display a partially rebuilt tile set: while loading/camera LOD changes, keep the
+        // previous complete mesh until every dirty tile has been rebuilt. This removes the
+        // two-frame flashing between old and mixed meshes.
+        if (pending && mesh3d != null) return true;
         if (changed || mesh3d == null) {
             int vCount = 0, iCount = 0;
             for (Map3D.Mesh m : tileMesh3d.values()) {
@@ -997,11 +1006,13 @@ public class MapScreen extends Screen {
         double targetX = cam3d != null ? cam3d.targetX : cx;
         double targetZ = cam3d != null ? cam3d.targetZ : cz;
         if (VoxyMapConfig.TILE_MESH_3D.get()) {
+            // Do not race a global mesh build against the per-tile cache: an old global build
+            // completing later was overwriting mesh3d and made the 3D view flash between two meshes.
+            meshBuildGeneration++;
             double camDist0 = cam3d != null ? cam3d.distance : 1500.0;
             double farRadius = Math.min(32000.0, Math.max(midRadius + 1500.0, camDist0 * 8.0));
-            if (ensureTileMeshes3d(data, stepNear, stepMid, stepFar, nearRadius, midRadius, farRadius)) {
-                return;
-            }
+            ensureTileMeshes3d(data, stepNear, stepMid, stepFar, nearRadius, midRadius, farRadius);
+            return;
         }
         // the LOD mesh is built once and only rebuilt when its settings change or the camera travels
         // far away (rebuilding on every small movement made LOD switching feel sluggish)
@@ -1036,6 +1047,7 @@ public class MapScreen extends Screen {
         }
         if (System.nanoTime() < meshRetryAtNs) return;
         building3d = true;
+        final long buildGeneration = ++meshBuildGeneration;
         // detail is expressed as "every N x N map pixels get one vertex"
         int[] stepsPx = {stepNear, stepMid, stepFar};
         double camDist = cam3d != null ? cam3d.distance : 1500.0;
@@ -1071,6 +1083,10 @@ public class MapScreen extends Screen {
             final Map3D.Mesh built = mesh;
             Minecraft.getInstance().execute(() -> {
                 try {
+                    if (buildGeneration != meshBuildGeneration) {
+                        building3d = false;
+                        return;
+                    }
                     pendingMeshEpoch = -1;
                     if (built != null) {
                         MapPerf.INSTANCE.meshBuilt(buildNanos,
