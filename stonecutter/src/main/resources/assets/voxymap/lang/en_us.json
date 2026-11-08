@@ -235,5 +235,5 @@
   "voxymap.config.desc.renderThreads3d": "CPU rasteriser threads, 1 = single threaded.",
   "voxymap.config.biomeLabel3dRange": "3D biome label range (blocks)",
   "voxymap.config.tileMesh3d": "Per-tile 3D mesh rebuilding",
-  "voxymap.config.desc.biomeLabel3dRange": "Only biome labels within this horizontal distance are shown in 3D."
-,`n  "voxymap.config.desc.tileMesh3d": "Experimental: cache 3D meshes per tile and rebuild only changed tiles."}
+  "voxymap.config.desc.biomeLabel3dRange": "Only biome labels within this horizontal distance are shown in 3D.",
+  "voxymap.config.desc.tileMesh3d": "Experimental: cache 3D meshes per tile and rebuild only changed tiles."}

@@ -845,8 +845,9 @@ public class MapScreen extends Screen {
         // Release the large 3D-only buffers once back in 2D. Re-entering 3D rebuilds them, but
         // keeping a large mesh/color buffer alive during normal 2D play is wasted memory.
         mesh3d = null;
-        tileMesh3d.clear();
-        tileMeshStamp3d.clear();
+        // Keep per-tile meshes across 3D toggles: rebuilding them on the first frames after every
+        // switch made the freshly visible mesh pop/flicker. The screen instance owns them; a new
+        // map/world starts with an empty cache.
         releaseSoft3d();
         data.clearTileColorFrame();
     }
@@ -911,7 +912,7 @@ public class MapScreen extends Screen {
         double ex = cam3d.eyeX();
         double ez = cam3d.eyeZ();
         double ey = cam3d.eyeY();
-        final int buildBudget = 4;
+        final int buildBudget = tileMesh3d.isEmpty() ? Integer.MAX_VALUE : 4;
         int builds = 0;
         boolean changed = false;
         java.util.Set<Long> alive = new java.util.HashSet<>();
