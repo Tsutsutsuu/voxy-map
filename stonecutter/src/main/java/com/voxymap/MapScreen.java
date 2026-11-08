@@ -916,9 +916,13 @@ public class MapScreen extends Screen {
                                        double nearRadius, double midRadius, double farRadius) {
         LiveTileStore live = data.getLiveTiles();
         if (live == null || cam3d == null) return false;
+        // LOD must be stable while orbiting: use the look-at target, not the eye. Using eye distance
+        // made every yaw/pitch change cross tile step thresholds and rebuild all tile meshes.
+        double lx = cam3d.targetX;
+        double lz = cam3d.targetZ;
         double ex = cam3d.eyeX();
-        double ez = cam3d.eyeZ();
         double ey = cam3d.eyeY();
+        double ez = cam3d.eyeZ();
         final int buildBudget = tileMesh3d.isEmpty() ? Integer.MAX_VALUE : 4;
         int builds = 0;
         boolean changed = false;
@@ -927,7 +931,7 @@ public class MapScreen extends Screen {
         for (LiveTileStore.LiveTile tile : live.tilesView()) {
             double tx = tile.minWX + LiveTileStore.TILE_PIXELS * (double) data.getPixelBlocks() / 2.0;
             double tz = tile.minWZ + LiveTileStore.TILE_PIXELS * (double) data.getPixelBlocks() / 2.0;
-            double dist = Math.sqrt((tx - ex) * (tx - ex) + (tz - ez) * (tz - ez));
+            double dist = Math.sqrt((tx - lx) * (tx - lx) + (tz - lz) * (tz - lz));
             if (dist > farRadius + 512.0) continue;
             int step = dist < nearRadius ? nearStep : dist < midRadius ? midStep : farStep;
             boolean debugLod = VoxyMapConfig.LOD_DEBUG_COLORS_3D.get();
