@@ -173,5 +173,7 @@
   "voxymap.config.button.apply": "应用",
   "voxymap.config.button.done": "完成",
   "voxymap.config.rememberZoom": "保留地图缩放",
-  "voxymap.config.desc.rememberZoom": "关闭地图后记住当前缩放，重新打开时恢复"
+  "voxymap.config.desc.rememberZoom": "关闭地图后记住当前缩放，重新打开时恢复",
+  "voxymap.ui.view3d": "3D",
+  "voxymap.ui.view3dPending": "3D 视图正在构建…"
 }

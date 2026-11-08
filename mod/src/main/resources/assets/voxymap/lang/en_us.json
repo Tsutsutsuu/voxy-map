@@ -136,5 +136,7 @@
   "voxymap.config.button.apply": "Apply",
   "voxymap.config.button.done": "Done",
   "voxymap.config.rememberZoom": "Remember map zoom",
-  "voxymap.config.desc.rememberZoom": "Restore the zoom level the map was last closed with"
+  "voxymap.config.desc.rememberZoom": "Restore the zoom level the map was last closed with",
+  "voxymap.ui.view3d": "3D",
+  "voxymap.ui.view3dPending": "3D view is being prepared..."
 }

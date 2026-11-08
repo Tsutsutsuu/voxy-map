@@ -260,6 +260,38 @@ public final class MapData {
         return top;
     }
 
+
+    /** True when the map snapshot has no data at this position (unexplored). */
+    public boolean isEmptyAt(int worldX, int worldZ) {
+        Snapshot s = snap;
+        if (s == null) return true;
+        int gx = (int) Math.floorDiv((long) worldX - s.minWX, s.pixelBlocks);
+        int gz = (int) Math.floorDiv((long) worldZ - s.minWZ, s.pixelBlocks);
+        if (gx < 0 || gx >= s.width || gz < 0 || gz >= s.height) return true;
+        return s.pixels[gz * s.width + gx] == LONG_EMPTY;
+    }
+
+    /** True when the top of the column at this position is water. */
+    public boolean isWaterAt(int worldX, int worldZ) {
+        Snapshot s = snap;
+        if (s == null) return false;
+        int gx = (int) Math.floorDiv((long) worldX - s.minWX, s.pixelBlocks);
+        int gz = (int) Math.floorDiv((long) worldZ - s.minWZ, s.pixelBlocks);
+        if (gx < 0 || gx >= s.width || gz < 0 || gz >= s.height) return false;
+        long p = s.pixels[gz * s.width + gx];
+        return p != LONG_EMPTY && (p & (1L << 52)) != 0;
+    }
+
+    /** Rendered RGB colour at a map pixel (0 when no data yet). */
+    public int getRgbAt(int mapX, int mapZ) {
+        int[] rgb = lastRgb;
+        int w = lastW;
+        int h = lastH;
+        if (rgb == null || w <= 0 || h <= 0) return 0;
+        if (mapX < 0 || mapZ < 0 || mapX >= w || mapZ >= h) return 0;
+        return rgb[mapZ * w + mapX];
+    }
+
     /** Biome id at a world position, or -1 when unknown. */
     public int biomeAt(int worldX, int worldZ) {
         Snapshot s = snap;

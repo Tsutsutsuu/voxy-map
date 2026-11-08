@@ -1,6 +1,16 @@
 package com.voxymap;
 
 import com.mojang.blaze3d.systems.RenderSystem;
+import com.mojang.blaze3d.vertex.BufferBuilder;
+import com.mojang.blaze3d.vertex.DefaultVertexFormat;
+import com.mojang.blaze3d.vertex.MeshData;
+import com.mojang.blaze3d.vertex.Tesselator;
+import com.mojang.blaze3d.vertex.VertexBuffer;
+import com.mojang.blaze3d.vertex.VertexFormat;
+import com.mojang.blaze3d.vertex.VertexSorting;
+import net.minecraft.client.renderer.GameRenderer;
+import net.minecraft.client.renderer.ShaderInstance;
+import org.joml.Matrix4f;
 import com.mojang.math.Axis;
 import net.minecraft.client.Minecraft;
 import com.mojang.blaze3d.systems.RenderSystem;
@@ -38,6 +48,14 @@ public class MapScreen extends Screen {
     private int menuX, menuY, menuWorldX, menuWorldZ, menuWorldY;
     private boolean menuOpen;
     private boolean linearFilter = true;
+    // --- 3D view ---
+    private boolean view3d;
+    private Map3D.Camera cam3d;
+    private Map3D.Mesh mesh3d;
+    private VertexBuffer meshVbo3d;
+    private boolean building3d;
+    private float fov3d = 55f;
+    private double verticalScale3d = 1.0;
     private boolean styleMenuOpen;
     private float configPressT;
     private float openT = 1f;
@@ -314,6 +332,11 @@ public class MapScreen extends Screen {
         float animScale = closing
                 ? 1f - 0.05f * (1f - (1f - closeT) * (1f - closeT))
                 : 0.95f + 0.05f * (1f - (1f - openT) * (1f - openT));
+        if (view3d) {
+            draw3dScene(g, data);
+        } else {
+            g.fill(0, 0, width, height, 0xFF0A0A0A);
+        }
         g.pose().pushPose();
         g.pose().translate(width / 2f, height / 2f, 0f);
         g.pose().scale(animScale, animScale, 1f);
@@ -327,8 +350,10 @@ public class MapScreen extends Screen {
 
         // draw order is the stacking order, bottom to top:
         //   1 map, 2 map overlays, 3 biome labels, 4 readouts/status text, 5 buttons, 6 dialog
-        drawMap(g, data, uiScale);
-        drawMapOverlays(g, data);
+        if (!view3d) {
+            drawMap(g, data, uiScale);
+            drawMapOverlays(g, data);
+        }
         // GuiGraphics batches text independently of fills, and endBatch() draws the batches in
         // RenderType order rather than call order, so text can survive a later fill. While the
         // modal dialog is open, skip every textual/interactive layer above the map: that is the
@@ -339,7 +364,7 @@ public class MapScreen extends Screen {
             drawDebugPanel(g, data, mouseX, mouseY);
         } else if (!lodWarning) {
             // labels only when the map is at or above point-to-point, otherwise they cost more than they show
-            if (data.isBiomeOverlay() && zoom * uiScale >= 1.0) {
+            if (!view3d && data.isBiomeOverlay() && zoom * uiScale >= 1.0) {
                 collectLabelBlockers(mouseX, mouseY);
                 drawBiomeLabels(g);
             }
@@ -685,6 +710,16 @@ public class MapScreen extends Screen {
         if (configPressT > 0.01f) {
             g.fill(8, 8, 8 + cw, 28, withAlpha(COL_ACCENT, configPressT * 0.45f));
         }
+        // 3D view toggle, left of the style selector
+        Component d3 = Component.translatable("voxymap.ui.view3d");
+        int d3w = font.width(d3) + 12;
+        int d3x = selX - 6 - d3w;
+        float d3hov = hoverAmount("view3d", mouseX >= d3x && mouseX <= d3x + d3w
+                && mouseY >= selY && mouseY <= selY + 20);
+        drawButton(g, d3x, selY, d3w, d3, d3hov, true);
+        if (view3d) {
+            g.fill(d3x, selY, d3x + d3w, selY + 1, COL_ACCENT);
+        }
     }
 
     private void drawRenderDistanceBox(GuiGraphics g) {
@@ -994,6 +1029,102 @@ public class MapScreen extends Screen {
         Minecraft.getInstance().setScreen(new MapConfigScreen(this));
     }
 
+    /** Enter/leave the 3D height-field view. */
+    private void toggle3D() {
+        view3d = !view3d;
+        if (view3d) {
+            ensureCamera3d();
+            ensureMesh3d();
+        }
+    }
+
+    private void ensureCamera3d() {
+        if (cam3d != null) return;
+        MapData data = MapData.INSTANCE;
+        cam3d = new Map3D.Camera();
+        var player = Minecraft.getInstance().player;
+        double tx;
+        double tz;
+        if (player != null) {
+            tx = player.getX();
+            tz = player.getZ();
+        } else {
+            tx = data.getMinWX() + data.getMapWidth() * (double) data.getPixelBlocks() / 2.0;
+            tz = data.getMinWZ() + data.getMapHeight() * (double) data.getPixelBlocks() / 2.0;
+        }
+        double ty = data.heightAt((int) Math.floor(tx), (int) Math.floor(tz));
+        cam3d.setTarget(tx, ty, tz);
+        cam3d.distance = 1500f;
+    }
+
+    private void ensureMesh3d() {
+        if (meshVbo3d != null || building3d) return;
+        if (mesh3d != null) {
+            uploadMesh3d(mesh3d);
+            return;
+        }
+        MapData data = MapData.INSTANCE;
+        if (!data.isReady() || data.getMapWidth() <= 0) return;
+        building3d = true;
+        double vscale = verticalScale3d;
+        java.util.concurrent.CompletableFuture.runAsync(() -> {
+            Map3D.Mesh mesh = Map3D.build(data, Map3D.DEFAULT_GRID, vscale);
+            Minecraft.getInstance().execute(() -> {
+                try {
+                    if (mesh != null) uploadMesh3d(mesh);
+                } finally {
+                    building3d = false;
+                }
+            });
+        });
+    }
+
+    private void uploadMesh3d(Map3D.Mesh mesh) {
+        if (meshVbo3d != null) {
+            meshVbo3d.close();
+            meshVbo3d = null;
+        }
+        Tesselator tesselator = Tesselator.getInstance();
+        BufferBuilder bb = tesselator.begin(VertexFormat.Mode.TRIANGLES, DefaultVertexFormat.POSITION_COLOR);
+        float[] v = mesh.vertices;
+        for (int i = 0; i < mesh.indices.length; i++) {
+            int idx = mesh.indices[i];
+            int o = idx * 7;
+            bb.addVertex(v[o], v[o + 1], v[o + 2]).setColor(v[o + 3], v[o + 4], v[o + 5], v[o + 6]);
+        }
+        MeshData md = bb.buildOrThrow();
+        VertexBuffer vbo = new VertexBuffer(VertexBuffer.Usage.STATIC);
+        vbo.upload(md);
+        meshVbo3d = vbo;
+        mesh3d = mesh;
+    }
+
+    private void draw3dScene(GuiGraphics g, MapData data) {
+        if (meshVbo3d == null || cam3d == null) {
+            if (building3d) {
+                drawStatusLine(g, Component.translatable("voxymap.ui.updating", 0), 24, COL_WARN);
+            }
+            return;
+        }
+        float aspect = (float) width / (float) Math.max(1, height);
+        Matrix4f proj = cam3d.projectionMatrix(aspect, fov3d);
+        Matrix4f modelView = cam3d.viewMatrix();
+        RenderSystem.clear(256, Minecraft.ON_OSX);
+        RenderSystem.enableDepthTest();
+        RenderSystem.disableCull();
+        RenderSystem.backupProjectionMatrix();
+        RenderSystem.setProjectionMatrix(proj, VertexSorting.DISTANCE_TO_ORIGIN);
+        ShaderInstance shader = GameRenderer.getPositionColorShader();
+        shader.apply();
+        meshVbo3d.bind();
+        meshVbo3d.drawWithShader(modelView, proj, shader);
+        VertexBuffer.unbind();
+        shader.clear();
+        RenderSystem.restoreProjectionMatrix();
+        RenderSystem.enableCull();
+        RenderSystem.disableDepthTest();
+    }
+
     private boolean inMenu(int mx, int my, int row) {
         boolean teleport = VoxyMapConfig.TELEPORT_ENABLED.get();
         Component copy = Component.translatable("voxymap.ui.copy");
@@ -1019,6 +1150,10 @@ public class MapScreen extends Screen {
     private void finishClose() {
         if (VoxyMapConfig.REMEMBER_ZOOM.get()) {
             MapData.INSTANCE.setZoom(zoom);
+        }
+        if (meshVbo3d != null) {
+            meshVbo3d.close();
+            meshVbo3d = null;
         }
         if (VoxyMapConfig.RELEASE_TEXTURES_ON_CLOSE.get()) {
             try {
@@ -1168,6 +1303,15 @@ public class MapScreen extends Screen {
             openConfig();
             return true;
         }
+        Component d3 = Component.translatable("voxymap.ui.view3d");
+        int d3w = font.width(d3) + 12;
+        Component styleLabelM = Component.translatable("voxymap.ui.styleButton", styleName(data.getStyle()));
+        int selWm = font.width(styleLabelM) + 28;
+        int d3x = width - 8 - selWm - 6 - d3w;
+        if (button == 0 && mx >= d3x && mx <= d3x + d3w && my >= 32 && my <= 52) {
+            toggle3D();
+            return true;
+        }
         if (button == 0) {
             dragging = true;
             return true;
@@ -1201,6 +1345,13 @@ public class MapScreen extends Screen {
 
     @Override
     public boolean mouseDragged(double mx, double my, int button, double dx, double dy) {
+        if (view3d && cam3d != null) {
+            cam3d.yaw += (float) dx * 0.006f;
+            float newPitch = cam3d.pitch - (float) dy * 0.004f;
+            cam3d.pitch = Math.max((float) Math.toRadians(-85),
+                    Math.min((float) Math.toRadians(-5), newPitch));
+            return true;
+        }
         if (sliderDragging) {
             sliderValue = scaleSliderValueAt(mx);
             return true;
@@ -1234,6 +1385,11 @@ public class MapScreen extends Screen {
     @Override
     public boolean mouseScrolled(double mx, double my, double scrollX, double scrollY) {
         if (!MapData.INSTANCE.isOverworld()) return true;
+        if (view3d && cam3d != null) {
+            cam3d.distance = Math.max(64f, Math.min(8192f,
+                    cam3d.distance * (scrollY > 0 ? 1.15f : 1f / 1.15f)));
+            return true;
+        }
         if (scrollY == 0) return false;
         double worldX = screenToWorldX(mx);
         double worldZ = screenToWorldZ(my);
