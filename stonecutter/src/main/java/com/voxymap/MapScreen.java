@@ -594,8 +594,8 @@ public class MapScreen extends Screen {
         pose.scale((float) zoom, (float) zoom);
         g.blit(RenderPipelines.GUI_TEXTURED_PREMULTIPLIED_ALPHA, tex,
                 0, 0, 0f, 0f, LiveTileStore.TILE_PIXELS, LiveTileStore.TILE_PIXELS,
-                LiveTileStore.TILE_PIXELS, LiveTileStore.TILE_PIXELS,
-                LiveTileStore.TILE_PIXELS, LiveTileStore.TILE_PIXELS);
+                tile.textureSize, tile.textureSize,
+                tile.textureSize, tile.textureSize);
         pose.popMatrix();
     }
 

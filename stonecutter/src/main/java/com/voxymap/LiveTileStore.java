@@ -77,6 +77,7 @@ public final class LiveTileStore {
         volatile long lastTextureFrame;
         volatile long lastAccessFrame;
         Identifier texture;
+        int textureSize = TILE_PIXELS;
         DynamicTexture dynamic;
         int textureEpoch = -1;
         /** highest non-water top in this tile; lets the global max shrink again after refinement */
@@ -852,7 +853,7 @@ public final class LiveTileStore {
         java.util.List<LiveTile> candidates = new java.util.ArrayList<>();
         for (LiveTile tile : tiles.values()) {
             if (tile.texture == null) continue;
-            used += TEXTURE_BYTES;
+            used += (long) tile.textureSize * tile.textureSize * 4L;
             count++;
             if (!visibleTextures.contains(tile)) candidates.add(tile);
         }
@@ -865,15 +866,20 @@ public final class LiveTileStore {
         candidates.sort(java.util.Comparator.comparingLong(t -> t.lastTextureFrame));
         for (LiveTile tile : candidates) {
             if (used <= low) break;
+            long bytes = (long) tile.textureSize * tile.textureSize * 4L;
             tile.releaseGpu();
-            used -= TEXTURE_BYTES;
+            used -= bytes;
             count--;
             MapPerf.INSTANCE.gpuTextureReleases.increment();
         }
     }
 
     public long textureBytes() {
-        return (long) textureCount() * TEXTURE_BYTES;
+        long bytes = 0L;
+        for (LiveTile tile : tiles.values()) {
+            if (tile.texture != null) bytes += (long) tile.textureSize * tile.textureSize * 4L;
+        }
+        return bytes;
     }
 
     public LiveTile get(int tx, int tz) {
@@ -1312,6 +1318,7 @@ public final class LiveTileStore {
         visibleTextures.add(tile);
         tile.lastTextureFrame = textureFrame;
         int styleHash = ((style == null ? 0 : style.hashCode()) * 31 + sea) * 31 + colorEpoch;
+        styleHash = styleHash * 31 + (VoxyMapConfig.TILE_TEXTURE_HALF_RES.get() ? 128 : TILE_PIXELS);
         if (tile.seedEpoch >= 0) {
             // Tiles covered by the base snapshot keep the proven base colour pipeline. Live
             // colouring is currently only used for genuinely new tiles outside the snapshot.
@@ -1465,14 +1472,18 @@ public final class LiveTileStore {
         createdThisFrame.incrementAndGet();
         MapPerf.INSTANCE.textureBuilds.increment();
         final long textureStartNs = System.nanoTime();
-        if (TileTrace.enabled()) TileTrace.stage(tile.tx, tile.tz, "texture_build", "style=" + styleHash);
-        NativeImage image = new NativeImage(TILE_PIXELS, TILE_PIXELS, false);
+        final int size = VoxyMapConfig.TILE_TEXTURE_HALF_RES.get() ? 128 : TILE_PIXELS;
+        if (TileTrace.enabled()) TileTrace.stage(tile.tx, tile.tz, "texture_build", "style=" + styleHash + " size=" + size);
+        NativeImage image = new NativeImage(size, size, false);
         int[] rgb = tile.rgb;
-        for (int i = 0; i < TILE_PIXELS * TILE_PIXELS; i++) {
-            int c = rgb[i];
-            int r = (c >> 16) & 0xFF, g = (c >> 8) & 0xFF, b = c & 0xFF;
-            image.setPixelABGR(i % TILE_PIXELS, i / TILE_PIXELS,
-                    ((c >>> 24) << 24) | (b << 16) | (g << 8) | r);
+        for (int y = 0; y < size; y++) {
+            int sy = y * TILE_PIXELS / size;
+            for (int x = 0; x < size; x++) {
+                int sx = x * TILE_PIXELS / size;
+                int c = rgb[sy * TILE_PIXELS + sx];
+                int r = (c >> 16) & 0xFF, g = (c >> 8) & 0xFF, b = c & 0xFF;
+                image.setPixelABGR(x, y, ((c >>> 24) << 24) | (b << 16) | (g << 8) | r);
+            }
         }
         DynamicTexture dynamic = new DynamicTexture(() -> "voxymap_live_tile", image);
         Identifier id = Identifier.fromNamespaceAndPath("voxymap",
@@ -1481,9 +1492,10 @@ public final class LiveTileStore {
         Minecraft.getInstance().getTextureManager().register(id, dynamic);
         tile.texture = id;
         tile.dynamic = dynamic;
+        tile.textureSize = size;
         tile.textureEpoch = styleHash;
         tile.textureDirty = false;
-        if (TileTrace.enabled()) TileTrace.timed(tile.tx, tile.tz, "texture_done", textureStartNs, "px=" + TILE_PIXELS * TILE_PIXELS);
+        if (TileTrace.enabled()) TileTrace.timed(tile.tx, tile.tz, "texture_done", textureStartNs, "px=" + size * size);
     }
 
     /** Frees GPU textures but keeps tile pixels/rgb so reopening can re-upload cheaply. */
