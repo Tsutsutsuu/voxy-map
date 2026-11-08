@@ -168,6 +168,80 @@ public final class Map3D {
         return new Mesh(stepPx[0], vertexData, indices);
     }
 
+    /**
+     * Builds one independent mesh for a single 256-block map tile. Tile meshes can be cached and
+     * only the changed tile has to be rebuilt; the screen combines them into one draw mesh for
+     * the existing rasteriser.
+     */
+    public static Mesh buildTileMesh(MapData data, long tileMinWX, long tileMinWZ,
+                                     double eyeX, double eyeY, double eyeZ,
+                                     double verticalScale, int stepPx, boolean debugColors) {
+        int mapW = data.getRenderWidthPx();
+        int mapH = data.getRenderHeightPx();
+        if (mapW <= 0 || mapH <= 0) return null;
+        int pb = Math.max(1, data.getPixelBlocks());
+        long minWX = data.getRenderMinWX();
+        long minWZ = data.getRenderMinWZ();
+        long tileWorld = (long) LiveTileStore.TILE_PIXELS * pb;
+        int stepBlocks = Math.max(1, stepPx * pb);
+        int gw = (int) (tileWorld / stepBlocks) + 1;
+        int gh = gw;
+        if (gw < 2) return null;
+        float[] verts = new float[gw * gh * 7];
+        int[] idx = new int[(gw - 1) * (gh - 1) * 6];
+        boolean[] empty = new boolean[gw * gh];
+        int vi = 0;
+        int ii = 0;
+        for (int gz = 0; gz < gh; gz++) {
+            long wz = tileMinWZ + Math.min(tileWorld, (long) gz * stepBlocks);
+            for (int gx = 0; gx < gw; gx++) {
+                long wx = tileMinWX + Math.min(tileWorld, (long) gx * stepBlocks);
+                int px = (int) Math.max(0, Math.min(mapW - 1, (wx - minWX) / pb));
+                int pz = (int) Math.max(0, Math.min(mapH - 1, (wz - minWZ) / pb));
+                boolean e = data.isEmptyAt((int) wx, (int) wz);
+                int rgb = data.getRgbAtWorld((int) wx, (int) wz);
+                int r = (rgb >> 16) & 0xFF, g = (rgb >> 8) & 0xFF, b = rgb & 0xFF;
+                if (debugColors) {
+                    r = 0xE0;
+                    g = 0x20;
+                    b = 0x20;
+                }
+                float y;
+                if (e) y = 0f;
+                else if (data.isWaterAt((int) wx, (int) wz)) y = (float) (data.seaLevel() * verticalScale);
+                else y = (float) (data.heightAt((int) wx, (int) wz) * verticalScale);
+                int o = vi * 7;
+                verts[o] = wx;
+                verts[o + 1] = y;
+                verts[o + 2] = wz;
+                verts[o + 3] = r / 255f;
+                verts[o + 4] = g / 255f;
+                verts[o + 5] = b / 255f;
+                verts[o + 6] = e ? 0f : 1f;
+                empty[vi] = e;
+                vi++;
+            }
+        }
+        for (int gz = 0; gz < gh - 1; gz++) {
+            for (int gx = 0; gx < gw - 1; gx++) {
+                int a = gz * gw + gx;
+                int b = a + 1;
+                int c = a + gw;
+                int d = c + 1;
+                if (empty[a] || empty[b] || empty[c] || empty[d]) continue;
+                idx[ii++] = a;
+                idx[ii++] = c;
+                idx[ii++] = b;
+                idx[ii++] = b;
+                idx[ii++] = c;
+                idx[ii++] = d;
+            }
+        }
+        if (ii == 0) return null;
+        if (ii != idx.length) idx = java.util.Arrays.copyOf(idx, ii);
+        return new Mesh(stepPx, verts, idx);
+    }
+
     /** Orbit camera around a target point. Pitch is negative when looking down. */
     public static final class Camera {
         public double targetX;

@@ -146,6 +146,7 @@ public class MapConfigScreen extends Screen {
         add(Group.THREE_D, "autoHideContours3d", VoxyMapConfig.AUTO_HIDE_CONTOURS_3D, 0, 0, null);
         add(Group.THREE_D, "lodDebugColors3d", VoxyMapConfig.LOD_DEBUG_COLORS_3D, 0, 0, null);
         add(Group.THREE_D, "biomeLabel3dRange", VoxyMapConfig.BIOME_LABEL_3D_RANGE, 200, 20000, null);
+        add(Group.THREE_D, "tileMesh3d", VoxyMapConfig.TILE_MESH_3D, 0, 0, null);
         // player marker
         add(Group.THREE_D, "playerMarkerHeight3d", VoxyMapConfig.PLAYER_MARKER_HEIGHT_3D, 0, 200, null, true);
         add(Group.THREE_D, "playerMarkerScale3d", VoxyMapConfig.PLAYER_MARKER_SCALE_3D, 0, 5, null);

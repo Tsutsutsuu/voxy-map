@@ -271,5 +271,6 @@
   "voxymap.config.renderThreads3d": "渲染线程数",
   "voxymap.config.desc.renderThreads3d": "CPU 光栅化线程数，1 表示单线程。",
   "voxymap.config.biomeLabel3dRange": "3D 群系标签范围（方块）",
+  "voxymap.config.tileMesh3d": "3D 按瓦片重建网格",
   "voxymap.config.desc.biomeLabel3dRange": "3D 视图只显示相机水平距离内的群系标签。"
-}
+,`n  "voxymap.config.desc.tileMesh3d": "实验性：3D 视图按瓦片缓存网格，只重建发生变化的瓦片。"}

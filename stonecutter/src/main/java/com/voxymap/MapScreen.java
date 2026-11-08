@@ -52,6 +52,8 @@ public class MapScreen extends Screen {
     private boolean view3d;
     private Map3D.Camera cam3d;
     private Map3D.Mesh mesh3d;
+    private final java.util.Map<Long, Map3D.Mesh> tileMesh3d = new java.util.HashMap<>();
+    private final java.util.Map<Long, Long> tileMeshStamp3d = new java.util.HashMap<>();
     /** dedicated 3D background pool: mesh build, CPU raster and FXAA must not share the common pool */
     private static final java.util.concurrent.ExecutorService ASYNC_3D =
             java.util.concurrent.Executors.newFixedThreadPool(2, r -> {
@@ -843,6 +845,8 @@ public class MapScreen extends Screen {
         // Release the large 3D-only buffers once back in 2D. Re-entering 3D rebuilds them, but
         // keeping a large mesh/color buffer alive during normal 2D play is wasted memory.
         mesh3d = null;
+        tileMesh3d.clear();
+        tileMeshStamp3d.clear();
         releaseSoft3d();
         data.clearTileColorFrame();
     }
@@ -900,6 +904,70 @@ public class MapScreen extends Screen {
                 data.getStyle(), data.seaLevel(), data.getColorEpoch());
     }
 
+    private boolean ensureTileMeshes3d(MapData data, int nearStep, int midStep, int farStep,
+                                       double nearRadius, double midRadius, double farRadius) {
+        LiveTileStore live = data.getLiveTiles();
+        if (live == null || cam3d == null) return false;
+        double ex = cam3d.eyeX();
+        double ez = cam3d.eyeZ();
+        double ey = cam3d.eyeY();
+        final int buildBudget = 4;
+        int builds = 0;
+        boolean changed = false;
+        java.util.Set<Long> alive = new java.util.HashSet<>();
+        for (LiveTileStore.LiveTile tile : live.tilesView()) {
+            double tx = tile.minWX + LiveTileStore.TILE_PIXELS * (double) data.getPixelBlocks() / 2.0;
+            double tz = tile.minWZ + LiveTileStore.TILE_PIXELS * (double) data.getPixelBlocks() / 2.0;
+            double dist = Math.sqrt((tx - ex) * (tx - ex) + (tz - ez) * (tz - ez));
+            if (dist > farRadius + 512.0) continue;
+            int step = dist < nearRadius ? nearStep : dist < midRadius ? midStep : farStep;
+            long key = ((long) tile.tx << 32) ^ (tile.tz & 0xFFFFFFFFL);
+            alive.add(key);
+            long stamp = ((long) tile.version << 32) ^ (tile.coloredVersion & 0xFFFFFFFFL);
+            stamp = stamp * 31L + step;
+            stamp = stamp * 31L + tile.colorStyleHash;
+            Long old = tileMeshStamp3d.get(key);
+            if (old != null && old == stamp && tileMesh3d.containsKey(key)) continue;
+            if (builds >= buildBudget) continue;
+            builds++;
+            Map3D.Mesh mesh = Map3D.buildTileMesh(data, tile.minWX, tile.minWZ,
+                    ex, ey, ez, VoxyMapConfig.VERTICAL_SCALE_3D.get(), step,
+                    VoxyMapConfig.LOD_DEBUG_COLORS_3D.get());
+            if (mesh == null) {
+                tileMesh3d.remove(key);
+                tileMeshStamp3d.remove(key);
+            } else {
+                tileMesh3d.put(key, mesh);
+                tileMeshStamp3d.put(key, stamp);
+            }
+            changed = true;
+        }
+        // Drop meshes for evicted/out-of-range tiles.
+        tileMesh3d.keySet().removeIf(k -> !alive.contains(k));
+        tileMeshStamp3d.keySet().removeIf(k -> !tileMesh3d.containsKey(k));
+        if (tileMesh3d.isEmpty()) return false;
+        if (changed || mesh3d == null) {
+            int vCount = 0, iCount = 0;
+            for (Map3D.Mesh m : tileMesh3d.values()) {
+                vCount += m.vertices.length;
+                iCount += m.indices.length;
+            }
+            float[] verts = new float[vCount];
+            int[] idx = new int[iCount];
+            int vo = 0, io = 0, vertexBase = 0;
+            for (Map3D.Mesh m : tileMesh3d.values()) {
+                System.arraycopy(m.vertices, 0, verts, vo, m.vertices.length);
+                vo += m.vertices.length;
+                for (int value : m.indices) idx[io++] = value + vertexBase;
+                vertexBase += m.vertices.length / 7;
+            }
+            mesh3d = new Map3D.Mesh(nearStep, verts, idx);
+            builtPixelBlocks = data.getPixelBlocks();
+            builtColorEpoch = data.getMeshEpoch();
+        }
+        return mesh3d != null;
+    }
+
     private void ensureMesh3d() {
         MapData data = MapData.INSTANCE;
         if (!data.isReady()) return;
@@ -927,6 +995,13 @@ public class MapScreen extends Screen {
         }
         double targetX = cam3d != null ? cam3d.targetX : cx;
         double targetZ = cam3d != null ? cam3d.targetZ : cz;
+        if (VoxyMapConfig.TILE_MESH_3D.get()) {
+            double camDist0 = cam3d != null ? cam3d.distance : 1500.0;
+            double farRadius = Math.min(32000.0, Math.max(midRadius + 1500.0, camDist0 * 8.0));
+            if (ensureTileMeshes3d(data, stepNear, stepMid, stepFar, nearRadius, midRadius, farRadius)) {
+                return;
+            }
+        }
         // the LOD mesh is built once and only rebuilt when its settings change or the camera travels
         // far away (rebuilding on every small movement made LOD switching feel sluggish)
         double camDist0 = cam3d != null ? cam3d.distance : 1500.0;
