@@ -9,12 +9,15 @@ import net.minecraft.resources.ResourceLocation;
  * {@code RenderPipelines.DEBUG_QUADS}.
  *
  * <ul>
- *   <li>{@link #TERRAIN}: opaque, depth-tested, depth-writing, <b>culling disabled</b>. 1.21.1's
- *       triangle winding for the tile grids is front-facing-CCW (verified offscreen on the target
- *       driver through the real BufferBuilder/ShaderInstance/VAO path: with {@code glCullFace}
- *       = BACK the tile is fully drawn, with FRONT it disappears), so flipping {@code cull} to true
- *       is safe and saves fill rate - it stays false only until the first in-game confirmation.
- *       TODO(device): enable culling after the 3D view is verified in game.</li>
+ *   <li>{@link #TERRAIN}: opaque, depth-tested, depth-writing, <b>culling disabled on purpose</b>.
+ *       The winding is front-facing-CCW (verified offscreen on the target driver through the real
+ *       BufferBuilder/ShaderInstance/VAO path: with {@code glCullFace} = BACK the tile is fully
+ *       drawn, with FRONT it disappears), so culling could be enabled. It is kept off because:
+ *       (a) a height field viewed from above has every triangle front-facing, so back-face
+ *       culling would remove almost nothing - the fill-rate saving is negligible; (b) the 3D
+ *       orbit camera may look along a ridge and see a mountain's far side, and culling there
+ *       turns it into a see-through hole (26.2, with SOLID_BLOCK's cull=true, shows that hole).
+ *       For strict 26.2 parity flip this one flag to {@code true}.</li>
  *   <li>{@link #OVERLAY}: translucent yellow render-distance ribbon, depth-tested but not
  *       depth-writing (same as 26.2's debug-quads pipeline).</li>
  * </ul>
@@ -30,7 +33,7 @@ public final class RenderPipelines {
             false, // no blending: the atlas is fully opaque
             true,  // depth test
             true,  // depth write
-            false  // cull: see the class comment (TODO device test)
+            false  // cull: deliberately double-sided, see the class comment (flip for 26.2 parity)
     );
 
     public static final RenderPipeline OVERLAY = new RenderPipeline(

@@ -57,8 +57,10 @@ import java.util.concurrent.TimeUnit;
  *       26.2 created a private reverse-Z D32 attachment; that is unnecessary here.</li>
  *   <li>Tile indices are int GL indices in a self-managed VAO (1.21.1's {@code VertexBuffer} cannot
  *       take an arbitrary index count).</li>
- *   <li>The terrain is drawn with culling disabled until the triangle winding is confirmed
- *       on-device (see {@link RenderPipelines#TERRAIN}).</li>
+ *   <li>The terrain is drawn double-sided on purpose: the CCW winding was verified, but a height
+ *       field viewed from above gains almost nothing from back-face culling and culling would show
+ *       see-through holes when the orbit camera looks along a ridge (26.2 has cull=true). See
+ *       {@link com.voxymap.compat.gpu.RenderPipelines#TERRAIN}.</li>
  *   <li>No lightmap sampler: the shader is full-bright by construction, matching the "deliberately
  *       full-bright" rule of the 26.2 pass.</li>
  * </ul>
