@@ -53,6 +53,17 @@ processResources {
     }
 }
 
+// Writes the main compile classpath to build/compile-classpath.txt so porting helpers can run
+// javac directly (fast, parallel-safe) instead of taking the Gradle project lock.
+tasks.register('dumpCompileClasspath') {
+    doLast {
+        def f = file("$buildDir/compile-classpath.txt")
+        f.parentFile.mkdirs()
+        f.text = sourceSets.main.compileClasspath.asPath
+        println "compile classpath -> ${f}"
+    }
+}
+
 // Metadata for the jar itself (mod lists, launchers and release tooling read these)
 jar {
     // voxy-map-0.1.0+1.21.1+neoforge.jar — the loader is part of the file name

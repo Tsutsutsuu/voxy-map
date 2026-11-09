@@ -28,11 +28,21 @@ public final class MapStyles {
     private static final int[][] WATER_SOFT = {
             {0, 150, 185, 210}, {500, 70, 120, 180}, {1000, 30, 60, 120},
     };
-
     private MapStyles() {
     }
 
     public static int landColor(String style, int y, int sea, int lo, int hi, boolean adaptive) {
+        if (y < sea) {
+            // Below-sea land is just a slightly darker continuation of the coast colour. Deriving
+            // it from the actual sea-level colour keeps the hue identical (no magenta/blue slab)
+            // and makes the depression barely noticeable, which is what this palette needs.
+            int coast = landColor(style, sea, sea, lo, hi, adaptive);
+            int depth = sea - y;
+            float darken = 0.94f - 0.10f * Math.min(1f, depth / 32f);
+            int lowland = darken(coast, darken);
+            float blend = Math.min(1f, depth / 4f);
+            return mix(coast, lowland, blend);
+        }
         int hh = adaptive ? (int) (((long) (y - lo)) * 820L / Math.max(1, hi - lo)) : (y - sea);
         switch (style) {
             case "gmt":
@@ -72,6 +82,23 @@ public final class MapStyles {
                 if (hh <= 700) return rgb(220, 225, 224);
                 return rgb(250, 252, 255);
         }
+    }
+
+    private static int darken(int color, float factor) {
+        return rgb(
+                clamp((int) (((color >> 16) & 0xFF) * factor)),
+                clamp((int) (((color >> 8) & 0xFF) * factor)),
+                clamp((int) ((color & 0xFF) * factor)));
+    }
+
+    private static int mix(int a, int b, float t) {
+        t = Math.max(0f, Math.min(1f, t));
+        int ar = (a >> 16) & 0xFF, ag = (a >> 8) & 0xFF, ab = a & 0xFF;
+        int br = (b >> 16) & 0xFF, bg = (b >> 8) & 0xFF, bb = b & 0xFF;
+        return rgb(
+                clamp((int) (ar + (br - ar) * t)),
+                clamp((int) (ag + (bg - ag) * t)),
+                clamp((int) (ab + (bb - ab) * t)));
     }
 
     public static int waterColor(String style, int depth) {

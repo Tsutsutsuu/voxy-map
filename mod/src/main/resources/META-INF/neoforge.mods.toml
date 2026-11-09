@@ -15,20 +15,27 @@ logoBlur = false
 description = '''
 A fullscreen world map drawn straight from Voxy's level-of-detail storage.
 
-Voxy Map reads the RocksDB storage Voxy keeps for each world and merges every LOD
-level into one terrain grid, so the whole explored world opens as a clean map in
-about a second - no chunk loading, no in-game visiting.
+Voxy Map reads the RocksDB storage Voxy keeps for each world, decodes every LOD
+level into a unified tile store and draws the whole explored world as a clean map -
+no chunk loading, no in-game visiting.
 
 - Six colour palettes: natural, gradient, GMT, nautical, gradient-turbo, gradient-soft
 - Contour lines, hillshade, water depth shading, ocean blur, optional hole filling
 - Biome boundary overlay and biome labels
+- Unified per-tile 2D rendering (256x256 tile textures streamed from Voxy's live
+  section updates) with a per-world disk cache
+- GPU 3D terrain view: every map tile is meshed on a worker and drawn with its own
+  vertex/index buffers and a texture atlas, with three precision levels, frustum
+  culling, seams hidden by skirts and a render-distance ribbon
+- Self-drawn six-tab config screen (General / Map / Map data / 3D View / Perf /
+  Debug) with draft apply/cancel/reset, sliders and typed values
 - Zoom, pan, render-distance box, coordinates and a right-click menu
   (copy coordinates / teleport / export PNG)
-- Automatic refresh on long distance, disk cache per world, multiplayer aware
-- Releases its textures when the map is closed to free VRAM
-- Almost everything is configurable in config/voxymap-client.toml
+- Nine languages, biome names from the game's own language entries
 
-Controls: N opens the map, scroll to zoom, drag to pan, Space re-centres on the player.
+Controls: N opens the map, scroll to zoom, drag to pan, Space re-centres on the
+player, middle click (or the 3D button) switches between the 2D map and the 3D
+terrain view.
 
 Works best together with Voxy SeedGen, which fills Voxy's storage from the world seed.
 '''

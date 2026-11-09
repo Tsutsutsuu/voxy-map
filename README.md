@@ -62,7 +62,7 @@ Close-up: contour lines, hillshade, water-depth shading, biome boundaries and la
 - Biome boundaries (a 75% / 25% opacity checkerboard) and biome labels (placed at the **centre of the largest inscribed circle** of each region, filtered by area, hidden when a button, menu or text plate would cover them)
 - Unified dark translucent UI: buttons 75%, floating menus 88%, dialogs 90%, info plates 40%, with smooth accent-tint hover animations
 
-**3D view** (Fabric 26.2)
+**3D view** (Fabric 26.2 / 26.1.2 / NeoForge 1.21.1)
 
 - **3D** button next to the style selector: an orbitable height-field view built from the same map data (a second rendering mode of the map, not a separate world render)
 - GPU per-tile terrain: every map tile is meshed on a background worker into one immutable vertex/index buffer plus a 256×256 slot in a 1024×1024 texture atlas, then drawn with Minecraft's own block pipeline in a dedicated render pass (above the world, below the GUI)
@@ -168,7 +168,7 @@ Every option can be changed in the self-drawn in-game config screen (Fabric: "Co
 - Fabric: `config/voxymap-client.json`
 - NeoForge: `config/voxymap-client.toml`
 
-The in-game screen groups options into six tabs (General / Map / Map data / 3D View / Perf / Debug). In the NeoForge TOML the keys are grouped into `refresh` / `data` / `rendering` / `ui`; the Fabric JSON is a flat key list. Common ones:
+The in-game screen groups options into six tabs (General / Map / Map data / 3D View / Perf / Debug). In the NeoForge TOML the keys are grouped into `ui` / `map` / `data` / `view3d` / `perf` / `debug` (plus a retired `legacy` section that is hidden from the screen); the Fabric JSON is a flat key list. Common ones:
 
 | Option | Group | Default | Description |
 | --- | --- | --- | --- |
@@ -189,7 +189,7 @@ The in-game screen groups options into six tabs (General / Map / Map data / 3D V
 | `releaseTexturesOnClose` / `skipWorldRender` | rendering | `true` / `true` | Release the big texture on close / skip world rendering while the map is open |
 | `showCoordinates` / `showHint` / `teleportEnabled` / `debugEnabled` | ui | `true` / `true` / `true` / `true` | Coordinates, controls hint, teleport menu, debug panel |
 
-3D view options (Fabric 26.2 and 26.1.2 — the NeoForge 1.21.1 build has no 3D view yet):
+3D view options (all builds):
 
 | Option | Default | Description |
 | --- | --- | --- |
@@ -232,7 +232,7 @@ Make sure `skipWorldRender = true` (the default); turning off the biome overlay 
 
 - Only the overworld is supported (nothing is drawn in the Nether or the End)
 - Biomes are resolved by registry path, so mods with identically named biomes may show the wrong one (unlikely)
-- The GPU 3D view is available in the Fabric 26.2 and 26.1.2 builds; the NeoForge 1.21.1 build does not have it yet
+- The GPU 3D view is available in all three builds. The NeoForge 1.21.1 implementation runs through a small Blaze3D compatibility layer on 1.21.1's GL pipeline: it re-uses the main target's 24-bit depth buffer with standard Z (the Fabric builds use a private D32 texture and reversed Z), and back-face culling stays off there for safety. Behaviour, LOD, atlas budget, skirts, labels, picking and the render-distance ribbon are the same
 - On Fabric 26.1.2 there is a rare, not-yet-reproducible NVIDIA driver crash (`nvoglv64.dll`) when closing the map while `skipWorldRender` is enabled; Fabric 26.2 is not affected. See `doc/踩坑记录.md` §22.1 (local doc)
 
 ## Building from source
@@ -260,7 +260,7 @@ cd mod
 ./gradlew build
 ```
 
-Output: `mod/build/libs/voxy-map-0.1.0+1.21.1+neoforge.jar`.
+Output: `mod/build/libs/voxy-map-0.2.0+1.21.1+neoforge.jar`.
 
 <details>
 <summary>Repository layout and offline POC tools (developers)</summary>
@@ -359,7 +359,7 @@ Icon and screenshots © Tsutsutsuu; map data comes from Voxy and its SeedGen add
 - 群系边界（75% / 25% 不透明度交替的棋盘格虚线）+ 群系名标签（位置取区域**最大内切圆中心**，按面积过滤，被按钮/菜单/文字框压住时自动隐藏）
 - 界面统一深色半透明风格：按钮 75%、浮层菜单 88%、对话框 90%、信息条 40%，悬停统一为平滑的强调色叠加动画
 
-**3D 视图**（Fabric 26.2）
+**3D 视图**（Fabric 26.2 / 26.1.2 / NeoForge 1.21.1）
 
 - 样式选择器左侧的 **3D** 按钮：可轨道旋转的地形高度场视图（是地图的另一种渲染方式，不是单独渲染世界）
 - GPU per-tile 地形：每个地图瓦片在后台线程生成一份不可变的顶点/索引缓冲，并占用 1024×1024 纹理图集中的一个 256×256 槽位；再由独立的渲染 pass 用 Minecraft 自己的方块管线绘制（在世界之上、GUI 之下）
@@ -465,7 +465,7 @@ Icon and screenshots © Tsutsutsuu; map data comes from Voxy and its SeedGen add
 - Fabric：`config/voxymap-client.json`
 - NeoForge：`config/voxymap-client.toml`
 
-游戏内配置界面分六个标签页（常规 / 地图绘制 / 地图数据 / 3D 视图 / 性能 / 调试）。NeoForge 的 TOML 把配置分成 `refresh` / `data` / `rendering` / `ui` 四组；Fabric 的 JSON 是平铺的键列表。常用项：
+游戏内配置界面分六个标签页（常规 / 地图绘制 / 地图数据 / 3D 视图 / 性能 / 调试）。NeoForge 的 TOML 把配置分成 `ui` / `map` / `data` / `view3d` / `perf` / `debug` 六组（另有一个对界面隐藏的 `legacy` 组存旧键）；Fabric 的 JSON 是平铺的键列表。常用项：
 
 | 配置项 | 分组 | 默认 | 说明 |
 | --- | --- | --- | --- |
@@ -486,7 +486,7 @@ Icon and screenshots © Tsutsutsuu; map data comes from Voxy and its SeedGen add
 | `releaseTexturesOnClose` / `skipWorldRender` | rendering | `true` / `true` | 关闭释放大图纹理 / 打开地图时跳过世界渲染 |
 | `showCoordinates` / `showHint` / `teleportEnabled` / `debugEnabled` | ui | `true` / `true` / `true` / `true` | 坐标、操作提示、传送菜单、调试面板 |
 
-3D 视图配置（Fabric 26.2 与 26.1.2；NeoForge 1.21.1 构建暂无 3D 视图）：
+3D 视图配置（三个构建都有）：
 
 | 配置项 | 默认 | 说明 |
 | --- | --- | --- |
@@ -529,7 +529,7 @@ Icon and screenshots © Tsutsutsuu; map data comes from Voxy and its SeedGen add
 
 - 目前只支持主世界（下界/末地不绘制）
 - 群系按注册名 path 反查，多个模组存在同名群系时可能显示错误（概率低）
-- GPU 3D 视图在 Fabric 26.2 与 26.1.2 版均提供；NeoForge 1.21.1 版暂未包含
+- GPU 3D 视图在三个构建里都有。NeoForge 1.21.1 版通过一层小的 Blaze3D 兼容层跑在 1.21.1 的 GL 管线上：复用主目标的 24bit 深度缓冲 + 标准 Z（Fabric 两版是私有 D32 纹理 + 反向 Z），背面剔除在 1.21.1 上默认关闭以求稳；行为、LOD、atlas 预算、裙边、标签、拾取、距离带都与 Fabric 一致
 - Fabric 26.1.2 在开启 `skipWorldRender` 时关闭地图有**偶发** NV 驱动崩溃（`nvoglv64.dll`，暂未复现定位）；26.2 无此问题。详见本地文档 `doc/踩坑记录.md` §22.1
 
 ## 从源码构建
@@ -557,7 +557,7 @@ cd mod
 ./gradlew build
 ```
 
-产物：`mod/build/libs/voxy-map-0.1.0+1.21.1+neoforge.jar`。
+产物：`mod/build/libs/voxy-map-0.2.0+1.21.1+neoforge.jar`。
 
 <details>
 <summary>仓库结构与离线 POC 工具（开发者）</summary>

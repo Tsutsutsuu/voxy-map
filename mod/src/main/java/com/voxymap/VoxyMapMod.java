@@ -27,10 +27,11 @@ public class VoxyMapMod {
         // "config" button on the mod list entry opens our own config screen (same UI as Fabric)
         container.registerExtensionPoint(IConfigScreenFactory.class,
                 (modContainer, parent) -> new MapConfigScreen(parent));
+        // live Voxy section callbacks feed the unified tile store exactly like the Fabric build
+        VoxyLiveProbe.setSectionConsumer((key, raw) -> MapData.INSTANCE.onLiveSection(key, raw));
         NeoForge.EVENT_BUS.addListener(this::clientTick);
         NeoForge.EVENT_BUS.addListener(this::onLogin);
     }
-
 
     private void registerKeys(RegisterKeyMappingsEvent event) {
         openKey = new KeyMapping("key.voxymap.open", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_N, "key.categories.voxymap");
@@ -41,17 +42,16 @@ public class VoxyMapMod {
 
     private void clientTick(ClientTickEvent.Post event) {
         Minecraft mc = Minecraft.getInstance();
-        if (openKey != null) {
-            // always drain clicks (even while the map is open) so closing it can't reopen it
-            boolean open = false;
-            while (openKey.consumeClick()) {
-                open = true;
-            }
-            if (open && mc.screen == null && mc.player != null) {
+        MapData.INSTANCE.tick();
+        VoxyLiveProbe.tick(mc);
+        if (openKey == null) return;
+        // always drain the queue (even while the map is open) so closing it can't reopen it
+        while (openKey.consumeClick()) {
+            if (mc.player == null) continue;
+            if (!(mc.screen instanceof MapScreen)) {
                 mc.setScreen(new MapScreen());
             }
         }
-        MapData.INSTANCE.tick();
     }
 
     private void onLogin(ClientPlayerNetworkEvent.LoggingIn event) {

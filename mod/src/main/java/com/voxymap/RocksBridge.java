@@ -17,6 +17,9 @@ public final class RocksBridge {
     private static Class<?> cRocksDB, cDBOptions, cCfd, cHandle, cIter;
     private static Constructor<?> ctorOptions, ctorCfd;
     private static Method mLoadLibrary, mOpenReadOnly, mNewIterator, mSeekFirst, mIsValid, mKey, mValue, mNext;
+    private static Method mSeek, mGet;
+    /** optional: RocksDB.getLatestSequenceNumber(), used as a cheap "did anything change" test */
+    private static Method mLatestSequence;
 
     private RocksBridge() {
     }
@@ -42,6 +45,13 @@ public final class RocksBridge {
             ctorOptions = cDBOptions.getConstructor();
             ctorCfd = cCfd.getConstructor(byte[].class);
             mLoadLibrary = cRocksDB.getMethod("loadLibrary");
+            // optional API (present in rocksdbjni 10.2.1, verified with javap); if a future Voxy
+            // bundles a different version without it, only the fast-path check is disabled
+            try {
+                mLatestSequence = cRocksDB.getMethod("getLatestSequenceNumber");
+            } catch (Throwable ignored) {
+                mLatestSequence = null;
+            }
             mOpenReadOnly = cRocksDB.getMethod("openReadOnly", cDBOptions, String.class, List.class, List.class);
             mNewIterator = cRocksDB.getMethod("newIterator", cHandle);
             mSeekFirst = cIter.getMethod("seekToFirst");
@@ -49,6 +59,16 @@ public final class RocksBridge {
             mKey = cIter.getMethod("key");
             mValue = cIter.getMethod("value");
             mNext = cIter.getMethod("next");
+            try {
+                mSeek = cIter.getMethod("seek", byte[].class);
+            } catch (Throwable ignored) {
+                mSeek = null;
+            }
+            try {
+                mGet = cRocksDB.getMethod("get", cHandle, byte[].class);
+            } catch (Throwable ignored) {
+                mGet = null;
+            }
             mLoadLibrary.invoke(null);
         } catch (Throwable t) {
             error = t.toString();
@@ -84,6 +104,7 @@ public final class RocksBridge {
     }
 
     public static Object openReadOnly(String path, List<Object> handlesOut) throws Exception {
+        init();
         Object opts = ctorOptions.newInstance();
         List<Object> cfds = new ArrayList<>();
         for (String name : new String[]{"default", "world_sections", "id_mappings"}) {
@@ -117,6 +138,35 @@ public final class RocksBridge {
 
     public static void next(Object it) throws Exception {
         mNext.invoke(it);
+    }
+
+    /** Random read of one key from a column family (returns null when absent). */
+    public static byte[] get(Object db, Object handle, byte[] key) {
+        if (mGet == null) return null;
+        try {
+            return (byte[]) mGet.invoke(db, handle, key);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    public static void seek(Object it, byte[] key) throws Exception {
+        if (mSeek == null) return;
+        mSeek.invoke(it, key);
+    }
+
+    /**
+     * RocksDB latest sequence number, or -1 when the optional API is unavailable. Any write to any
+     * column family advances it, so an unchanged value means the world_sections scan can be skipped.
+     */
+    public static long latestSequence(Object db) {
+        init();
+        if (db == null || mLatestSequence == null) return -1L;
+        try {
+            return (Long) mLatestSequence.invoke(db);
+        } catch (Throwable t) {
+            return -1L;
+        }
     }
 
     public static void close(Object obj) {
