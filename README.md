@@ -189,7 +189,7 @@ The in-game screen groups options into six tabs (General / Map / Map data / 3D V
 | `releaseTexturesOnClose` / `skipWorldRender` | rendering | `true` / `true` | Release the big texture on close / skip world rendering while the map is open |
 | `showCoordinates` / `showHint` / `teleportEnabled` / `debugEnabled` | ui | `true` / `true` / `true` / `true` | Coordinates, controls hint, teleport menu, debug panel |
 
-3D view options (Fabric 26.2 only — the NeoForge and 26.1.2 builds have no 3D view yet):
+3D view options (Fabric 26.2 and 26.1.2 — the NeoForge 1.21.1 build has no 3D view yet):
 
 | Option | Default | Description |
 | --- | --- | --- |
@@ -232,7 +232,8 @@ Make sure `skipWorldRender = true` (the default); turning off the biome overlay 
 
 - Only the overworld is supported (nothing is drawn in the Nether or the End)
 - Biomes are resolved by registry path, so mods with identically named biomes may show the wrong one (unlikely)
-- The GPU 3D view is available in the Fabric 26.2 build only; the 26.1.2 and NeoForge builds do not have it yet
+- The GPU 3D view is available in the Fabric 26.2 and 26.1.2 builds; the NeoForge 1.21.1 build does not have it yet
+- On Fabric 26.1.2 there is a rare, not-yet-reproducible NVIDIA driver crash (`nvoglv64.dll`) when closing the map while `skipWorldRender` is enabled; Fabric 26.2 is not affected. See `doc/踩坑记录.md` §22.1 (local doc)
 
 ## Building from source
 
@@ -250,7 +251,7 @@ stonecutter/versions/26.2-fabric/build/libs/voxy-map-0.2.0+26.2+fabric.jar
 stonecutter/versions/26.1-fabric/build/libs/voxy-map-0.2.0+26.1.2+fabric.jar
 ```
 
-> The 26.2 GPU 3D code currently uses 26.2-only Blaze3D APIs, so the **26.1.2 node does not compile** yet and a full `build` stops there. Build and test only 26.2 for now with `.\gradlew.bat :26.2-fabric:build`.
+> Both Fabric nodes build: `.\gradlew.bat :26.2-fabric:build` and `:26.1-fabric:build`. Version-specific Blaze3D differences live in `com/voxymap/BlazeCompat.java` (Stonecutter conditional comments); when adding 26.2-only APIs, extend that version barrier instead of scattering conditionals.
 
 The NeoForge build needs **JDK 21**:
 
@@ -485,7 +486,7 @@ Icon and screenshots © Tsutsutsuu; map data comes from Voxy and its SeedGen add
 | `releaseTexturesOnClose` / `skipWorldRender` | rendering | `true` / `true` | 关闭释放大图纹理 / 打开地图时跳过世界渲染 |
 | `showCoordinates` / `showHint` / `teleportEnabled` / `debugEnabled` | ui | `true` / `true` / `true` / `true` | 坐标、操作提示、传送菜单、调试面板 |
 
-3D 视图配置（仅 Fabric 26.2；NeoForge 与 26.1.2 构建暂无 3D 视图）：
+3D 视图配置（Fabric 26.2 与 26.1.2；NeoForge 1.21.1 构建暂无 3D 视图）：
 
 | 配置项 | 默认 | 说明 |
 | --- | --- | --- |
@@ -528,7 +529,8 @@ Icon and screenshots © Tsutsutsuu; map data comes from Voxy and its SeedGen add
 
 - 目前只支持主世界（下界/末地不绘制）
 - 群系按注册名 path 反查，多个模组存在同名群系时可能显示错误（概率低）
-- GPU 3D 视图只在 Fabric 26.2 版提供；26.1.2 与 NeoForge 版暂未包含
+- GPU 3D 视图在 Fabric 26.2 与 26.1.2 版均提供；NeoForge 1.21.1 版暂未包含
+- Fabric 26.1.2 在开启 `skipWorldRender` 时关闭地图有**偶发** NV 驱动崩溃（`nvoglv64.dll`，暂未复现定位）；26.2 无此问题。详见本地文档 `doc/踩坑记录.md` §22.1
 
 ## 从源码构建
 
@@ -546,7 +548,7 @@ stonecutter/versions/26.2-fabric/build/libs/voxy-map-0.2.0+26.2+fabric.jar
 stonecutter/versions/26.1-fabric/build/libs/voxy-map-0.2.0+26.1.2+fabric.jar
 ```
 
-> 26.2 的 GPU 3D 代码目前用了 26.2 独有的 Blaze3D API，**26.1.2 节点还编译不过**，全量 `build` 会在这里中断。现在只构建/测试 26.2：`.\gradlew.bat :26.2-fabric:build`。
+> 两个 Fabric 节点都能构建：`.\gradlew.bat :26.2-fabric:build` 与 `:26.1-fabric:build`。26.2 独有的 Blaze3D 差异集中在 `com/voxymap/BlazeCompat.java`（Stonecutter 条件注释）；新增 26.2-only API 时扩展这个版本屏障，不要在业务代码里散落条件分支。
 
 NeoForge 版本需要 **JDK 21**：
 

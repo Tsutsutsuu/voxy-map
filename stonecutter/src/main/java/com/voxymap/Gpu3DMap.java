@@ -1,8 +1,5 @@
 package com.voxymap;
 
-import com.mojang.blaze3d.GpuFormat;
-import com.mojang.blaze3d.IndexType;
-import com.mojang.blaze3d.PrimitiveTopology;
 import com.mojang.blaze3d.buffers.GpuBuffer;
 import com.mojang.blaze3d.buffers.GpuBufferSlice;
 import com.mojang.blaze3d.pipeline.RenderPipeline;
@@ -31,8 +28,6 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
-import java.util.OptionalDouble;
 import java.util.Set;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -67,22 +62,14 @@ public final class Gpu3DMap {
     private static GpuBuffer overlayIbo;
     private static int overlayIndexCount;
 
+    /**
+     * The distance ribbon re-uses vanilla's debug-quads pipeline: position+color vertices, QUADS
+     * topology (mapped to GL_TRIANGLES by the backend), translucent blending, depth testing without
+     * depth writes and culling disabled - exactly what the ribbon needs, and per-version correct
+     * on both 26.2 (reversed Z) and 26.1.2 (standard Z).
+     */
     private static RenderPipeline overlayPipeline() {
-        RenderPipeline source = RenderPipelines.DEBUG_FILLED_BOX;
-        RenderPipeline.Builder b = RenderPipeline.builder()
-                .withLocation(net.minecraft.resources.Identifier.fromNamespaceAndPath(
-                        "voxymap", "pipeline/gpu3d_overlay"))
-                .withVertexShader(source.getVertexShader())
-                .withFragmentShader(source.getFragmentShader())
-                .withVertexBinding(0, source.getVertexFormatBinding(0))
-                .withPrimitiveTopology(PrimitiveTopology.TRIANGLES)
-                .withColorTargetState(new com.mojang.blaze3d.pipeline.ColorTargetState(
-                        com.mojang.blaze3d.pipeline.BlendFunction.TRANSLUCENT))
-                .withDepthStencilState(new com.mojang.blaze3d.pipeline.DepthStencilState(
-                        com.mojang.blaze3d.platform.CompareOp.GREATER_THAN_OR_EQUAL, false))
-                .withCull(false);
-        for (var layout : source.getBindGroupLayouts()) b.withBindGroupLayout(layout);
-        return b.build();
+        return RenderPipelines.DEBUG_QUADS;
     }
     private static final Map<Long, TileGpu> TILES = new HashMap<>();
     /**
@@ -185,9 +172,8 @@ public final class Gpu3DMap {
         final boolean[] used = new boolean[SLOTS];
 
         Page() {
-            texture = RenderSystem.getDevice().createTexture("voxymap_gpu3d_atlas",
-                    GpuTexture.USAGE_TEXTURE_BINDING | GpuTexture.USAGE_COPY_DST,
-                    GpuFormat.RGBA8_UNORM, ATLAS, ATLAS, 1, 1);
+            texture = BlazeCompat.createColorTexture("voxymap_gpu3d_atlas",
+                    GpuTexture.USAGE_TEXTURE_BINDING | GpuTexture.USAGE_COPY_DST, ATLAS, ATLAS);
             view = RenderSystem.getDevice().createTextureView(texture);
         }
     }
@@ -207,7 +193,6 @@ public final class Gpu3DMap {
         final GpuBuffer vertices;
         final GpuBuffer indices;
         final int indexCount;
-        final IndexType indexType;
         final int step;
         final long stamp;
         final double centerX, centerZ;
@@ -215,13 +200,12 @@ public final class Gpu3DMap {
         final Slot slot;
         final long bytes;
 
-        TileGpu(GpuBuffer vertices, GpuBuffer indices, int indexCount, IndexType indexType, int step,
+        TileGpu(GpuBuffer vertices, GpuBuffer indices, int indexCount, int step,
                 long stamp, double centerX, double centerZ, double minY, double maxY, Slot slot,
                 long bytes) {
             this.vertices = vertices;
             this.indices = indices;
             this.indexCount = indexCount;
-            this.indexType = indexType;
             this.step = step;
             this.stamp = stamp;
             this.centerX = centerX;
@@ -242,13 +226,12 @@ public final class Gpu3DMap {
         final ByteBuffer indices;
         /** 0 means "this tile has no renderable geometry"; vertices/indices are null then. */
         final int indexCount;
-        final IndexType indexType;
         final int step;
         final double centerX, centerZ, minY, maxY;
         final long buildNanos;
 
         BuildResult(int generation, long key, long stamp, Slot slot, ByteBuffer vertices, ByteBuffer indices,
-                    int indexCount, IndexType indexType, int step,
+                    int indexCount, int step,
                     double centerX, double centerZ, double minY, double maxY, long buildNanos) {
             this.generation = generation;
             this.key = key;
@@ -257,7 +240,6 @@ public final class Gpu3DMap {
             this.vertices = vertices;
             this.indices = indices;
             this.indexCount = indexCount;
-            this.indexType = indexType;
             this.step = step;
             this.buildNanos = buildNanos;
             this.centerX = centerX;
@@ -394,8 +376,7 @@ public final class Gpu3DMap {
         if (depthTexture != null && depthWidth == width && depthHeight == height) return;
         if (depthView != null) depthView.close();
         if (depthTexture != null) depthTexture.close();
-        depthTexture = RenderSystem.getDevice().createTexture("voxymap_gpu3d_depth",
-                GpuTexture.USAGE_RENDER_ATTACHMENT, GpuFormat.D32_FLOAT, width, height, 1, 1);
+        depthTexture = BlazeCompat.createDepthTexture("voxymap_gpu3d_depth", width, height);
         depthView = RenderSystem.getDevice().createTextureView(depthTexture);
         depthWidth = width;
         depthHeight = height;
@@ -559,7 +540,7 @@ public final class Gpu3DMap {
             uploadTileTexture(encoder, b.slot, current.rgb, current, live);
             GpuBuffer vbuf = upload(encoder, "voxymap_gpu3d_v", GpuBuffer.USAGE_VERTEX, b.vertices);
             GpuBuffer ibuf = upload(encoder, "voxymap_gpu3d_i", GpuBuffer.USAGE_INDEX, b.indices);
-            TileGpu old = TILES.put(b.key, new TileGpu(vbuf, ibuf, b.indexCount, b.indexType,
+            TileGpu old = TILES.put(b.key, new TileGpu(vbuf, ibuf, b.indexCount,
                     b.step, b.stamp, b.centerX, b.centerZ, b.minY, b.maxY, b.slot, bytes));
             EMPTY.remove(b.key);
             gpuBytes += bytes;
@@ -567,7 +548,7 @@ public final class Gpu3DMap {
             uploaded++;
             buildNanos += b.buildNanos;
         }
-        encoder.submit();
+        BlazeCompat.submit(encoder);
         if (uploaded > 0) {
             lastUploadNanos = System.nanoTime() - uploadStart;
             lastUploadTiles = uploaded;
@@ -670,7 +651,7 @@ public final class Gpu3DMap {
             if (current == null || current.rgb == null) continue;
             uploadTileTexture(encoder, tile.slot, current.rgb, current, live);
         }
-        encoder.submit();
+        BlazeCompat.submit(encoder);
     }
 
     /**
@@ -806,7 +787,7 @@ public final class Gpu3DMap {
         if (maxY == -Double.MAX_VALUE) {
             // Entirely empty tile: every border corner is empty too, so the skirt loop below would
             // skip every segment. Report the empty mesh early and avoid the skirt bookkeeping.
-            return new BuildResult(gen, key, stamp, slot, null, null, 0, IndexType.INT, step,
+            return new BuildResult(gen, key, stamp, slot, null, null, 0, step,
                     cx, cz, 0.0, 0.0, System.nanoTime() - buildStart);
         }
         // Vertical skirt around the tile hides cracks between different LOD steps. Segments that
@@ -837,13 +818,13 @@ public final class Gpu3DMap {
         if (ii == 0) {
             // Nothing renderable: report an empty mesh (indexCount 0) instead of null so the render
             // thread can remember it and stop re-submitting this tile every frame.
-            return new BuildResult(gen, key, stamp, slot, null, null, 0, IndexType.INT, step,
+            return new BuildResult(gen, key, stamp, slot, null, null, 0, step,
                     cx, cz, 0.0, 0.0, System.nanoTime() - buildStart);
         }
-        VertexFormat format = PIPELINE.getVertexFormatBinding(0);
+        VertexFormat format = BlazeCompat.vertexFormat(PIPELINE);
         if (format == null) return null;
         ByteBufferBuilder alloc = new ByteBufferBuilder(Math.max(1024, vi * format.getVertexSize()));
-        BufferBuilder bb = new BufferBuilder(alloc, PrimitiveTopology.TRIANGLES, format);
+        BufferBuilder bb = BlazeCompat.newBufferBuilder(alloc, format);
         for (int i = 0; i < vi; i++) {
             // BLOCK has no Normal element in 26.2, so setNormal would be a no-op.
             bb.addVertex(px[i], py[i], pz[i])
@@ -858,7 +839,7 @@ public final class Gpu3DMap {
         ByteBuffer idata = ByteBuffer.allocateDirect(ii * Integer.BYTES).order(ByteOrder.nativeOrder());
         for (int i = 0; i < ii; i++) idata.putInt(idx[i]);
         idata.flip();
-        return new BuildResult(gen, key, stamp, slot, vdata, idata, ii, IndexType.INT, step,
+        return new BuildResult(gen, key, stamp, slot, vdata, idata, ii, step,
                 cx, cz, minY, maxY, System.nanoTime() - buildStart);
     }
 
@@ -969,7 +950,7 @@ public final class Gpu3DMap {
             }
         }
         cell.flip();
-        encoder.writeToTexture(page.texture, cell, 0, 0, ox, oy, CELL, CELL);
+        BlazeCompat.uploadAtlasCell(encoder, page.texture, cell, ox, oy, CELL, CELL);
     }
 
     /**
@@ -1035,7 +1016,7 @@ public final class Gpu3DMap {
         var encoder = RenderSystem.getDevice().createCommandEncoder();
         encoder.writeToBuffer(new GpuBufferSlice(overlayVbo, 0L, vb.remaining()), vb);
         encoder.writeToBuffer(new GpuBufferSlice(overlayIbo, 0L, ib.remaining()), ib);
-        encoder.submit();
+        BlazeCompat.submit(encoder);
         overlayIndexCount = ii;
         return ii > 0;
     }
@@ -1055,14 +1036,15 @@ public final class Gpu3DMap {
         pass.setPipeline(OVERLAY_PIPELINE);
         RenderSystem.bindDefaultUniforms(pass);
         pass.setUniform("DynamicTransforms", transforms);
-        pass.setVertexBuffer(0, overlayVbo.slice());
-        pass.setIndexBuffer(overlayIbo, IndexType.INT);
-        pass.drawIndexed(overlayIndexCount, 1, 0, 0, 0);
+        BlazeCompat.setVertexBuffer(pass, 0, overlayVbo);
+        BlazeCompat.setIndexBuffer(pass, overlayIbo);
+        BlazeCompat.drawIndexed(pass, overlayIndexCount);
     }
 
     public static void render() {
         Minecraft mc = Minecraft.getInstance();
-        if (!(mc.gui.screen() instanceof MapScreen screen)) return;
+        // Stonecutter rewrites this to Minecraft.screen on 26.1.2 (26.2 moved it behind Gui).
+        if (!(Minecraft.getInstance().gui.screen() instanceof MapScreen screen)) return;
         if (!screen.isGpu3dView()) return;
         Map3D.Camera cam = screen.gpu3dCamera();
         if (cam == null || TILES.isEmpty()) return;
@@ -1076,7 +1058,7 @@ public final class Gpu3DMap {
         Matrix4f proj = p.getMatrix(new Matrix4f());
         Matrix4f view = cam.viewMatrix();
         Matrix4f viewProj = new Matrix4f(proj).mul(view);
-        RenderTarget target = mc.gameRenderer.mainRenderTarget();
+        RenderTarget target = BlazeCompat.mainRenderTarget(mc);
         if (target.getColorTextureView() == null) return;
         ensureDepth(target.width, target.height);
         overlayIndexCount = 0;
@@ -1088,10 +1070,8 @@ public final class Gpu3DMap {
                     com.mojang.blaze3d.ProjectionType.PERSPECTIVE);
             GpuBufferSlice transforms = RenderSystem.getDynamicUniforms()
                     .writeTransform(view, COLOR_MODULATOR, MODEL_OFFSET, TEXTURE_MATRIX);
-            try (RenderPass pass = RenderSystem.getDevice().createCommandEncoder().createRenderPass(
-                    () -> "voxymap_gpu3d", target.getColorTextureView(),
-                    Optional.of(new Vector4f(0.02f, 0.02f, 0.03f, 1f)),
-                    depthView, OptionalDouble.of(0.0))) {
+            try (RenderPass pass = BlazeCompat.beginTerrainPass(
+                    RenderSystem.getDevice().createCommandEncoder(), target, depthView)) {
                 pass.setPipeline(PIPELINE);
                 RenderSystem.bindDefaultUniforms(pass);
                 pass.setUniform("DynamicTransforms", transforms);
@@ -1109,9 +1089,9 @@ public final class Gpu3DMap {
                             tile.minY, tile.maxY, half)) continue;
                     visible++;
                     pass.bindTexture("Sampler0", tile.slot.page.view, sampler);
-                    pass.setVertexBuffer(0, tile.vertices.slice());
-                    pass.setIndexBuffer(tile.indices, tile.indexType);
-                    pass.drawIndexed(tile.indexCount, 1, 0, 0, 0);
+                    BlazeCompat.setVertexBuffer(pass, 0, tile.vertices);
+                    BlazeCompat.setIndexBuffer(pass, tile.indices);
+                    BlazeCompat.drawIndexed(pass, tile.indexCount);
                 }
                 lastVisible = visible;
                 lastTotal = TILES.size();
@@ -1128,8 +1108,9 @@ public final class Gpu3DMap {
 
     private static boolean boxVisible(Matrix4f m, double centerX, double centerZ,
                                       double minY, double maxY, float half) {
-        // Six clip planes from projection * view. Clip z is 0..w (26.2 reversed Z), so the
-        // near plane is w-z>=0 and the far plane is z>=0.
+        // Six clip planes from projection * view. Both depth conventions used by these versions
+        // satisfy 0 <= clipZ <= clipW (26.2 reversed Z: near=w, far=0; 26.1.2 standard Z:
+        // near=0, far=w), so the same near/far halfspaces apply to both.
         float[] planes = CLIP_PLANES;
         setPlane(planes, 0, m.m03() + m.m00(), m.m13() + m.m10(), m.m23() + m.m20(), m.m33() + m.m30());
         setPlane(planes, 4, m.m03() - m.m00(), m.m13() - m.m10(), m.m23() - m.m20(), m.m33() - m.m30());

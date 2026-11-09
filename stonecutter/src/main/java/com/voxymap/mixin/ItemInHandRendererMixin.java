@@ -14,7 +14,13 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 /** Hide first-person hands while the GPU 3D map owns the screen. */
 @Mixin(ItemInHandRenderer.class)
 public abstract class ItemInHandRendererMixin {
-    @Inject(method = "submitHandsWithItems", at = @At("HEAD"), cancellable = true)
+    @Inject(
+            //? if >=26.2 {
+            method = "submitHandsWithItems",
+            //?} else {
+            /*method = "renderHandsWithItems",*/
+            //?}
+            at = @At("HEAD"), cancellable = true)
     private void voxymap$hideHandsIn3d(float partialTick, PoseStack pose, SubmitNodeCollector collector,
                                        LocalPlayer player, int light, CallbackInfo ci) {
         if (Minecraft.getInstance().gui.screen() instanceof MapScreen map && map.isGpu3dView()) {
