@@ -9,15 +9,12 @@ import net.minecraft.resources.ResourceLocation;
  * {@code RenderPipelines.DEBUG_QUADS}.
  *
  * <ul>
- *   <li>{@link #TERRAIN}: opaque, depth-tested, depth-writing, <b>culling disabled on purpose</b>.
- *       The winding is front-facing-CCW (verified offscreen on the target driver through the real
- *       BufferBuilder/ShaderInstance/VAO path: with {@code glCullFace} = BACK the tile is fully
- *       drawn, with FRONT it disappears), so culling could be enabled. It is kept off because:
- *       (a) a height field viewed from above has every triangle front-facing, so back-face
- *       culling would remove almost nothing - the fill-rate saving is negligible; (b) the 3D
- *       orbit camera may look along a ridge and see a mountain's far side, and culling there
- *       turns it into a see-through hole (26.2, with SOLID_BLOCK's cull=true, shows that hole).
- *       For strict 26.2 parity flip this one flag to {@code true}.</li>
+ *   <li>{@link #TERRAIN}: opaque, depth-tested, depth-writing, back-face culled (same as 26.2's
+ *       {@code SOLID_BLOCK}, which defaults to {@code cull=true}). The tile-grid winding is
+ *       front-facing-CCW; it was verified offscreen on the target driver through the real
+ *       BufferBuilder/ShaderInstance/VAO path (with {@code glCullFace} = BACK the tile is fully
+ *       drawn, with FRONT it disappears) and confirmed in game. The tile skirts keep both windings,
+ *       so seams stay closed regardless of culling.</li>
  *   <li>{@link #OVERLAY}: translucent yellow render-distance ribbon, depth-tested but not
  *       depth-writing (same as 26.2's debug-quads pipeline).</li>
  * </ul>
@@ -33,7 +30,7 @@ public final class RenderPipelines {
             false, // no blending: the atlas is fully opaque
             true,  // depth test
             true,  // depth write
-            false  // cull: deliberately double-sided, see the class comment (flip for 26.2 parity)
+            true   // cull back faces: matches 26.2's SOLID_BLOCK (winding verified)
     );
 
     public static final RenderPipeline OVERLAY = new RenderPipeline(

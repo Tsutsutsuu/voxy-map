@@ -104,6 +104,9 @@ public final class RenderPass implements AutoCloseable {
             RenderSystem.disableBlend();
         }
         if (p.cull()) {
+            // GL's cull-face default is BACK and vanilla 1.21.1 has no setter for it, but pin it
+            // explicitly so a stray raw-GL call from another mod cannot flip our terrain inside out.
+            GL11.glCullFace(GL11.GL_BACK);
             RenderSystem.enableCull();
         } else {
             RenderSystem.disableCull();

@@ -232,7 +232,7 @@ Make sure `skipWorldRender = true` (the default); turning off the biome overlay 
 
 - Only the overworld is supported (nothing is drawn in the Nether or the End)
 - Biomes are resolved by registry path, so mods with identically named biomes may show the wrong one (unlikely)
-- The GPU 3D view is available in all three builds. The NeoForge 1.21.1 implementation runs through a small Blaze3D compatibility layer on 1.21.1's GL pipeline: it re-uses the main target's 24-bit depth buffer with standard Z (the Fabric builds use a private D32 texture and reversed Z), and back-face culling stays off there for safety. Behaviour, LOD, atlas budget, skirts, labels, picking and the render-distance ribbon are the same
+- The GPU 3D view is available in all three builds. The NeoForge 1.21.1 implementation runs through a small Blaze3D compatibility layer on 1.21.1's GL pipeline: it re-uses the main target's 24-bit depth buffer with standard Z (the Fabric builds use a private D32 texture and reversed Z), back-face culling matches the Fabric builds (the tile winding was verified). Behaviour, LOD, atlas budget, skirts, labels, picking and the render-distance ribbon are the same
 - On Fabric 26.1.2 there is a rare, not-yet-reproducible NVIDIA driver crash (`nvoglv64.dll`) when closing the map while `skipWorldRender` is enabled; Fabric 26.2 is not affected. See `doc/踩坑记录.md` §22.1 (local doc)
 
 ## Building from source
@@ -529,7 +529,7 @@ Icon and screenshots © Tsutsutsuu; map data comes from Voxy and its SeedGen add
 
 - 目前只支持主世界（下界/末地不绘制）
 - 群系按注册名 path 反查，多个模组存在同名群系时可能显示错误（概率低）
-- GPU 3D 视图在三个构建里都有。NeoForge 1.21.1 版通过一层小的 Blaze3D 兼容层跑在 1.21.1 的 GL 管线上：复用主目标的 24bit 深度缓冲 + 标准 Z（Fabric 两版是私有 D32 纹理 + 反向 Z），背面剔除在 1.21.1 上默认关闭以求稳；行为、LOD、atlas 预算、裙边、标签、拾取、距离带都与 Fabric 一致
+- GPU 3D 视图在三个构建里都有。NeoForge 1.21.1 版通过一层小的 Blaze3D 兼容层跑在 1.21.1 的 GL 管线上：复用主目标的 24bit 深度缓冲 + 标准 Z（Fabric 两版是私有 D32 纹理 + 反向 Z），背面剔除与 Fabric 版一致（瓦片绕序已实机验证）；行为、LOD、atlas 预算、裙边、标签、拾取、距离带都与 Fabric 一致
 - Fabric 26.1.2 在开启 `skipWorldRender` 时关闭地图有**偶发** NV 驱动崩溃（`nvoglv64.dll`，暂未复现定位）；26.2 无此问题。详见本地文档 `doc/踩坑记录.md` §22.1
 
 ## 从源码构建
