@@ -5,7 +5,7 @@
 **[English](#voxy-map)** | [简体中文](#简体中文)
 
 > ***What you see is what you get*** — the map draws exactly as far as you can see.
-> Voxy Map turns Voxy's existing LOD data into a real-time fullscreen map: **no chunk loading, no world generation** — the world you can see becomes a terrain map.
+> Voxy Map turns Voxy's existing LOD data into a real-time fullscreen map: **no chunk loading, no world generation** — the world you can see becomes a 3D terrain map.
 
 Client-side only. **Fabric 26.2 · Fabric 26.1.2 · NeoForge 1.21.1.**
 
@@ -133,7 +133,7 @@ MIT — see [LICENSE](LICENSE). Icon and screenshots © Tsutsutsuu.
 [English](#voxy-map) | **[简体中文](#简体中文)**
 
 > ***所见即所得*** —— 能看多远，地图就画多远。
-> 直接把 Voxy 已有的 LOD 数据变成一张实时全屏地图：**不加载区块、不生成地形**，能看到的世界就是一张地形图。
+> 直接把 Voxy 已有的 LOD 数据变成一张实时全屏地图：**不加载区块、不生成地形**，能看到的世界就是一张 3D 地形图。
 
 纯客户端模组，支持 **Fabric 26.2 · Fabric 26.1.2 · NeoForge 1.21.1**。
 
