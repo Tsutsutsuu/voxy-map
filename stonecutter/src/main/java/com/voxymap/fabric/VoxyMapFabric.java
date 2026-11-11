@@ -18,6 +18,15 @@ public class VoxyMapFabric implements ClientModInitializer {
         VoxyMapConfig.load();
         VoxyMapMod.registerKeys();
         VoxyMapMod.registerTick();
+        // Optional in-game acceptance harness (tools/selftest, only on -Pselftest builds). The
+        // production jar has no such class, so this stays reflective on purpose.
+        try {
+            Class.forName("com.voxymap.MapSelfTest").getMethod("install").invoke(null);
+        } catch (ClassNotFoundException ignored) {
+            // normal build: no self-test harness bundled
+        } catch (Throwable t) {
+            LOGGER.warn("self-test harness could not be installed", t);
+        }
         LOGGER.info("Voxy Map (Fabric, 26.2) initialised");
     }
 }

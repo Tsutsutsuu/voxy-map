@@ -353,6 +353,8 @@ public final class VoxyTileSource {
             long key = list.keys[k];
             int lvl = (int) ((key >>> 60) & 0xF);
             int scale = 1 << lvl;
+            int sy = (int) ((key << 4) >> 56);
+            int sectionMinY = sy * 32 * scale;
             int sx = (int) ((key << 36) >> 40);
             int sz = (int) ((key << 12) >> 40);
             long wx0 = (long) sx * 32 * scale;
@@ -375,6 +377,7 @@ public final class VoxyTileSource {
             for (int c = 0; c < 1024; c++) {
                 long packed = cols[c];
                 if (packed == VoxyMerge.LONG_EMPTY) continue;
+                boolean empty = packed == VoxyMerge.EMPTY_COLUMN;
                 long colX = wx0 + (long) (c & 31) * scale;
                 long colZ = wz0 + (long) (c >> 5) * scale;
                 int px0 = (int) Math.floorDiv(colX - minWX, pixelBlocks);
@@ -390,11 +393,16 @@ public final class VoxyTileSource {
                                 || px >= (tx + 1) * LiveTileStore.TILE_PIXELS) continue;
                         int lx = px - tx * LiveTileStore.TILE_PIXELS;
                         int idx = lz * LiveTileStore.TILE_PIXELS + lx;
-                        pixels[idx] = VoxyMerge.mergeColumn(pixels[idx], lvl,
-                                (int) ((packed >>> 24) & 0xFFFF) - 32768,
-                                (int) (packed & 0xFFFF) - 32768,
-                                (packed & (1L << 52)) != 0,
-                                (int) ((packed >>> 53) & 0x1FF));
+                        if (empty) {
+                            pixels[idx] = VoxyMerge.mergeEmptyColumn(pixels[idx], lvl, sectionMinY);
+                        } else {
+                            pixels[idx] = VoxyMerge.mergeColumn(pixels[idx], lvl,
+                                    (int) ((packed >>> 24) & 0xFFFF) - 32768,
+                                    (int) (packed & 0xFFFF) - 32768,
+                                    (packed & (1L << 52)) != 0,
+                                    (int) ((packed >>> 53) & 0x1FF),
+                                    (int) ((packed >>> 40) & 0xFF));
+                        }
                         any = true;
                     }
                 }

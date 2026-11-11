@@ -21,7 +21,7 @@ Works best together with **Voxy SeedGen** — it pre-generates distant terrain f
 - **A 3D map you can orbit** — GPU-rendered terrain at a true 1:1 scale: middle-click switches, drag to orbit, scroll to zoom; it updates live and stays smooth.
 - **Smooth animation** — the map scales in and out, wheel zoom anchors on the cursor, Space eases the view onto the player, leaving 3D plays a short rotation back to the flat map, and switching between 2D and 3D is seamless.
 - **Works with your pack** — Fabric 26.2 / 26.1.2 and NeoForge 1.21.1; supports Voxy SeedGen, terrain mods and biome mods; 9 languages.
-- **Looks good and is easy to tune** — six palettes, contours, hillshade, water-depth shading, biome borders and labels, a right-click menu (copy / teleport / export PNG), per-world memory, and an in-game config screen where every option is explained.
+- **Looks good and is easy to tune** — seven palettes (the 200-colour **Block colours** map is the default), contours, hillshade, water-depth shading, biome borders and labels, a right-click menu (copy / teleport / export PNG), per-world memory, and an in-game config screen where every option is explained.
 
 ## Screenshots
 
@@ -29,7 +29,7 @@ Works best together with **Voxy SeedGen** — it pre-generates distant terrain f
 
 Using the **Tectonic mod**'s "i use voxy btw" preset terrain, Voxy SeedGen distance 382 chunks, yellow box = real render distance (natural / gradient / GMT / nautical / gradient-turbo / gradient-soft):
 
-![Six palettes (Tectonic terrain)](img/1.png)
+![Seven palettes (Tectonic terrain)](img/1.png)
 
 **Vanilla terrain**, the same palettes, with biome borders and biome labels:
 
@@ -149,7 +149,7 @@ MIT — see [LICENSE](LICENSE). Icon and screenshots © Tsutsutsuu.
 - **能环绕的 3D 地图** —— GPU 渲染、按真实 1:1 渲染的地形：中键拖动就能切换；拖动环绕、滚轮缩放，实时刷新，性能好。
 - **动画顺滑** —— 开关图有缩放动画、滚轮以鼠标为锚点平滑缩放、空格缓动定位到玩家、退出 3D 时短暂旋转回平面地图，2D 模式和 3D 模式之间无缝切换。
 - **兼容你的整合包** —— Fabric 26.2 / 26.1.2 与 NeoForge 1.21.1 都能用；支持 Voxy SeedGen、地形模组和群系模组；9 种语言。
-- **好看也好调** —— 6 套配色、等高线、山体阴影、水深着色、群系边界与标签、右键菜单（复制 / 传送 / 导出 PNG）、每个世界独立记忆，以及每项都有说明的游戏内配置屏。
+- **好看也好调** —— 7 套配色（默认：**方块颜色**的 200 色材质色表）、等高线、山体阴影、水深着色、群系边界与标签、右键菜单（复制 / 传送 / 导出 PNG）、每个世界独立记忆，以及每项都有说明的游戏内配置屏。
 
 ## 截图
 
@@ -157,11 +157,11 @@ MIT — see [LICENSE](LICENSE). Icon and screenshots © Tsutsutsuu.
 
 使用 **Tectonic Mod** 的 "i use voxy btw" 预设地形，Voxy SeedGen 距离 382 区块，黄色框为真实渲染距离（自然地形 / 渐变 / GMT / 航海 / 彩虹渐变 / 柔和渐变）：
 
-![6 种配色对比（Tectonic 地形）](img/1.png)
+![7 种配色对比（Tectonic 地形）](img/1.png)
 
 **原版地形**，同一组配色，带群系边界与群系名标签：
 
-![6 种配色对比（原版地形）](img/2.png)
+![7 种配色对比（原版地形）](img/2.png)
 
 ### 全屏地图
 
@@ -251,3 +251,4 @@ MIT — see [LICENSE](LICENSE). Icon and screenshots © Tsutsutsuu.
 ## 许可证
 
 MIT，详见 [LICENSE](LICENSE)。图标与截图 © Tsutsutsuu。
+

@@ -48,7 +48,7 @@ Voxy 的 RocksDB LOD 存储
 
 - 2D 只绘制视口内的瓦片（含视距裁剪），缩放/平移按 `frameDt` 做动画与插值。
 - 颜色管线（后台 loader 线程，进度分段上报）：解包 → 补洞（可选） → 去噪（可选） → 3×3 平滑 → 水深 BFS（10 级） → 海洋 box blur（仅水） → 自适应色带与等高线 → 配色 + 山体阴影 → 群系边界。
-- 6 套配色：`current`、`gradient`、`gmt`、`nautical`、`gradient-turbo`、`gradient-soft`。`adaptiveColorRamp` 按世界实际高度拉伸色带，`landMaxRamp` 只把陆地色带拉伸到地图最高点（水色不变）。
+- 7 套配色（默认 `blocks` 方块颜色，菜单第一项）：`blocks`、`current`、`gradient`、`gmt`、`nautical`、`gradient-turbo`、`gradient-soft`。`blocks` 使用 200 色材质色表（旧 58 色 + 142 新色，草/树叶/干树叶/水按群系 tint）并叠加同一套山影；其余 6 套为高度配色，`adaptiveColorRamp` 按世界实际高度拉伸色带，`landMaxRamp` 只把陆地色带拉伸到地图最高点（水色不变）。
 - 群系边界：4-邻接比较出边界像素，按 `(x+z)&1` 棋盘格保留一半形成虚线；边界也烘焙进 3D atlas 纹理。
 - 群系标签：锚点取区域**最大内切圆中心**（距离变换），按最小面积过滤；整图构建上限 6,000,000 px（约 91 个瓦片），超限或失败则退化为"视口区域标签"（中心量化到 1024 px、半径量化到 256 px，重建节流 400 ms、失败退避 5 s）；标签被按钮/菜单/文字框压住时隐藏。
 
@@ -87,7 +87,7 @@ Voxy 的 RocksDB LOD 存储
 | 页/组 | 关键项 | 说明 |
 | --- | --- | --- |
 | 常规 / `ui` | `showCoordinates`、`showHint`、`teleportEnabled`、`defaultZoom`、`rememberZoom`、`arrowStyle` | 交互与界面 |
-| 地图绘制 / `map` | `defaultStyle`、`adaptiveColorRamp`、`landMaxRamp`、`drawContours`、`contourDensity`、`minContourArea`、`drawHillshade`、`drawWaterDepth`、`waterBlur*`、`denoise`、`fillHoles`、`autoSeaLevel`、`seaLevelOverride` | 配色与地形渲染 |
+| 地图绘制 / `map` | `defaultStyle`、`adaptiveColorRamp`、`landMaxRamp`、`drawContours`、`contourDensity`、`minContourArea`、`drawHillshade`、`biomeColors`、`drawWaterDepth`、`waterBlur*`、`denoise`、`fillHoles`、`autoSeaLevel`、`seaLevelOverride` | 配色与地形渲染 |
 | 数据与刷新 / `data` | `liveTiles`、`mapScale`、`maxLodLevel`、`cacheKeepCount`、`diskCacheMaxMb` | 数据源、比例与缓存 |
 | 3D 视图 / `view3d` | `fov3d`、`verticalScale3d`、`minDistance3d`、`maxDistance3d`、`rotateSens3d`、`panSens3d`、`zoomSens3d`、`remember3dView`、`gpuTerrain*`、`playerMarker*`、`biomeLabel3dRange`、`autoHideContours3d`、`keep3dTilesIn2d` | 相机、网格精度、标记与标签 |
 | 性能 / `perf` | `tileResidentCap`、`gpuTextureBudgetMb`、`gpu3dBuildThreads`、`gpu3dBatchBuild`、`skipWorldRender`、`releaseTexturesOnClose` | 内存/显存/线程 |
@@ -177,7 +177,7 @@ Voxy's RocksDB LOD storage
 
 - 2D draws only the tiles in view; zoom/pan are animated from `frameDt`.
 - Colour pipeline (background loader thread, segmented progress): unpack → fill holes → denoise → 3×3 smoothing → water-depth BFS (10 levels) → ocean box blur (water only) → adaptive ramp + contours → palette + hillshade → biome edges.
-- Six palettes: `current`, `gradient`, `gmt`, `nautical`, `gradient-turbo`, `gradient-soft`. `adaptiveColorRamp` stretches to the world's real height range; `landMaxRamp` stretches land only (water colours stay put).
+- Seven palettes (default `blocks`, the first menu entry): `blocks`, `current`, `gradient`, `gmt`, `nautical`, `gradient-turbo`, `gradient-soft`. `blocks` uses the 200-colour material palette (58 kept + 142 new; grass/leaves/dry foliage/water use their vanilla biome tints) with the same hillshade; the other six are height palettes where `adaptiveColorRamp` stretches to the world's real height range and `landMaxRamp` stretches land only (water colours stay put).
 - Biome boundaries: 4-neighbour comparison, then `(x+z)&1` checkerboard keeps half the pixels as a dashed line; the same edge mask is baked into the 3D atlas.
 - Biome labels: anchor at the **centre of the largest inscribed circle** (distance transform), filtered by minimum area. A full-map build is capped at 6,000,000 px (≈91 tiles); beyond that (or on failure) it falls back to viewport-local labels (centre quantised to 1024 px, radius to 256 px, 400 ms throttle, 5 s failure backoff). Labels are hidden when a button/menu/text plate would cover them.
 
@@ -216,7 +216,7 @@ Voxy's RocksDB LOD storage
 | Page / group | Key options | Notes |
 | --- | --- | --- |
 | General / `ui` | `showCoordinates`, `showHint`, `teleportEnabled`, `defaultZoom`, `rememberZoom`, `arrowStyle` | interaction and UI |
-| Map / `map` | `defaultStyle`, `adaptiveColorRamp`, `landMaxRamp`, `drawContours`, `contourDensity`, `minContourArea`, `drawHillshade`, `drawWaterDepth`, `waterBlur*`, `denoise`, `fillHoles`, `autoSeaLevel`, `seaLevelOverride` | palette and terrain drawing |
+| Map / `map` | `defaultStyle`, `adaptiveColorRamp`, `landMaxRamp`, `drawContours`, `contourDensity`, `minContourArea`, `drawHillshade`, `biomeColors`, `drawWaterDepth`, `waterBlur*`, `denoise`, `fillHoles`, `autoSeaLevel`, `seaLevelOverride` | palette and terrain drawing |
 | Data / `data` | `liveTiles`, `mapScale`, `maxLodLevel`, `cacheKeepCount`, `diskCacheMaxMb` | data source, scale and caches |
 | 3D View / `view3d` | `fov3d`, `verticalScale3d`, `minDistance3d`, `maxDistance3d`, `rotateSens3d`, `panSens3d`, `zoomSens3d`, `remember3dView`, `gpuTerrain*`, `playerMarker*`, `biomeLabel3dRange`, `autoHideContours3d`, `keep3dTilesIn2d` | camera, mesh precision, marker and labels |
 | Perf / `perf` | `tileResidentCap`, `gpuTextureBudgetMb`, `gpu3dBuildThreads`, `gpu3dBatchBuild`, `skipWorldRender`, `releaseTexturesOnClose` | memory / VRAM / threads |
@@ -262,3 +262,4 @@ cd mod
 - Fabric 26.1.2 has a rare, not-yet-reproducible NVIDIA driver crash when closing the map with `skipWorldRender` enabled; 26.2 is not affected.
 - 3D far-depth precision: Fabric uses a private D32F attachment; NeoForge 1.21.1 uses the main target's 24-bit fixed-point depth. If far terrain ever z-fights, raise the near plane or move the pass to a private D32F target.
 - Black map edges mean Voxy has no data there yet (most common without SeedGen) — not a rendering error. If the data changed but the map looks old, press **Refresh**.
+

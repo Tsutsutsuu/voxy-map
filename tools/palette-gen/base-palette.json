@@ -1,0 +1,262 @@
+{
+  "version": 6,
+  "note": "Frozen 58-colour base palette (v6) used by tools/palette-gen as the \"existing colours\" input. Do not regenerate this file from v7+ output.",
+  "fallbackClass": "FALLBACK",
+  "classes": {
+    "GRASS": {
+      "hex": "#91BD59",
+      "tint": "grass",
+      "factor": "#939393"
+    },
+    "FOLIAGE": {
+      "hex": "#59AE30",
+      "tint": "foliage",
+      "factor": "#92918F"
+    },
+    "WATER": {
+      "hex": "#3F76E4",
+      "tint": "water",
+      "factor": "#B1B1B1"
+    },
+    "SNOW": {
+      "hex": "#F9FEFE"
+    },
+    "ICE": {
+      "hex": "#92B8FE"
+    },
+    "PACKED_ICE": {
+      "hex": "#8EB4FA"
+    },
+    "BLUE_ICE": {
+      "hex": "#74A8FD"
+    },
+    "STONE": {
+      "hex": "#7E7E7E"
+    },
+    "DEEPSLATE": {
+      "hex": "#505053"
+    },
+    "ANDESITE": {
+      "hex": "#888889"
+    },
+    "DIORITE": {
+      "hex": "#BDBCBD"
+    },
+    "GRANITE": {
+      "hex": "#956756"
+    },
+    "TUFF": {
+      "hex": "#6C6D67"
+    },
+    "CALCITE": {
+      "hex": "#DFE0DD"
+    },
+    "DRIPSTONE": {
+      "hex": "#866C5D"
+    },
+    "BRICKS": {
+      "hex": "#976253"
+    },
+    "SAND": {
+      "hex": "#DBCFA3"
+    },
+    "RED_SAND": {
+      "hex": "#BF6721"
+    },
+    "SANDSTONE": {
+      "hex": "#E0D6AA"
+    },
+    "RED_SANDSTONE": {
+      "hex": "#B5621F"
+    },
+    "GRAVEL": {
+      "hex": "#847F7F"
+    },
+    "DIRT": {
+      "hex": "#866043"
+    },
+    "COARSE_DIRT": {
+      "hex": "#77563B"
+    },
+    "PODZOL": {
+      "hex": "#5C3F18"
+    },
+    "MYCELIUM": {
+      "hex": "#6F6365"
+    },
+    "MUD": {
+      "hex": "#3C393D"
+    },
+    "CLAY": {
+      "hex": "#A1A6B3"
+    },
+    "MOSS": {
+      "hex": "#596E2D"
+    },
+    "SCULK": {
+      "hex": "#0D1E24"
+    },
+    "WOOD": {
+      "hex": "#A2834F"
+    },
+    "LEAF_LITTER": {
+      "hex": "#5C4727"
+    },
+    "MUSHROOM_BROWN": {
+      "hex": "#957051"
+    },
+    "MUSHROOM_RED": {
+      "hex": "#C82F2D"
+    },
+    "CHERRY_LEAVES": {
+      "hex": "#E5ADC2"
+    },
+    "PALE_LEAVES": {
+      "hex": "#757A73"
+    },
+    "AZALEA_LEAVES": {
+      "hex": "#5A732C"
+    },
+    "LAVA": {
+      "hex": "#D45A12"
+    },
+    "TERRACOTTA": {
+      "hex": "#985E44"
+    },
+    "TERRACOTTA_WHITE": {
+      "hex": "#D2B2A1"
+    },
+    "TERRACOTTA_ORANGE": {
+      "hex": "#A25426"
+    },
+    "TERRACOTTA_MAGENTA": {
+      "hex": "#96586D"
+    },
+    "TERRACOTTA_LIGHT_BLUE": {
+      "hex": "#716D8A"
+    },
+    "TERRACOTTA_YELLOW": {
+      "hex": "#BA8523"
+    },
+    "TERRACOTTA_LIME": {
+      "hex": "#687635"
+    },
+    "TERRACOTTA_PINK": {
+      "hex": "#A24E4F"
+    },
+    "TERRACOTTA_GRAY": {
+      "hex": "#3A2A24"
+    },
+    "TERRACOTTA_LIGHT_GRAY": {
+      "hex": "#876B62"
+    },
+    "TERRACOTTA_CYAN": {
+      "hex": "#575B5B"
+    },
+    "TERRACOTTA_PURPLE": {
+      "hex": "#764656"
+    },
+    "TERRACOTTA_BLUE": {
+      "hex": "#4A3C5B"
+    },
+    "TERRACOTTA_BROWN": {
+      "hex": "#4D3324"
+    },
+    "TERRACOTTA_GREEN": {
+      "hex": "#4C532A"
+    },
+    "TERRACOTTA_RED": {
+      "hex": "#8F3D2F"
+    },
+    "TERRACOTTA_BLACK": {
+      "hex": "#251710"
+    },
+    "SPRUCE_LEAVES": {
+      "hex": "#304C30"
+    },
+    "BIRCH_LEAVES": {
+      "hex": "#42552B"
+    },
+    "LILY_PAD": {
+      "hex": "#114319"
+    },
+    "FALLBACK": {
+      "hex": "#8C8C8C"
+    }
+  },
+  "exact": {},
+  "snowyOverrides": {
+    "minecraft:grass_block": "SNOW",
+    "minecraft:podzol": "SNOW",
+    "minecraft:mycelium": "SNOW"
+  },
+  "woodFamilies": [
+    "oak",
+    "spruce",
+    "birch",
+    "jungle",
+    "acacia",
+    "dark_oak",
+    "mangrove",
+    "cherry",
+    "pale_oak",
+    "bamboo",
+    "crimson",
+    "warped"
+  ],
+  "plantKeywords": [
+    "grass",
+    "fern",
+    "flower",
+    "tulip",
+    "poppy",
+    "dandelion",
+    "petals",
+    "wildflower",
+    "bush",
+    "lily",
+    "vine",
+    "seagrass",
+    "dripleaf",
+    "lichen",
+    "cactus",
+    "bamboo",
+    "sugar_cane",
+    "sapling",
+    "wheat",
+    "crop",
+    "kelp",
+    "roots",
+    "sprout",
+    "moss_carpet",
+    "bluet",
+    "orchid",
+    "cornflower",
+    "allium",
+    "daisy",
+    "sunflower",
+    "lilac",
+    "rose_bush",
+    "peony",
+    "torchflower",
+    "pitcher",
+    "tall_grass",
+    "short_grass",
+    "leaf_litter",
+    "petal"
+  ],
+  "structureKeywords": [
+    "stairs",
+    "slab",
+    "wall",
+    "fence",
+    "fence_gate",
+    "door",
+    "trapdoor",
+    "sign",
+    "button",
+    "pressure_plate",
+    "pane",
+    "bars"
+  ]
+}

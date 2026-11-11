@@ -21,3 +21,12 @@ img/raw/
 *.tmp
 
 doc/
+
+# local test harness artifacts (jars are built locally, not released from the repo)
+tools/feature/
+tools/baseline/
+tools/selftest-results/
+tools/logs/
+tools/__pycache__/
+tools/palette-gen/__pycache__/
+tmp-cache-test/

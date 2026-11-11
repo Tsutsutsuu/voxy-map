@@ -8,6 +8,10 @@ import java.util.Set;
  *
  * <p>Voxy stores one mapping id per voxel in a 32x32x32 array; the compressed RocksDB section
  * stores a LUT and 16-bit LUT indices, so the same scan works on both representations.</p>
+ *
+ * <p>The literal values still come from {@code data}, but the surface material slot written into
+ * bits 40..47 is resolved through {@link SurfaceClassTable#slotOf(long)} (the
+ * {@code id_mappings} scan publishes that table before any decode).</p>
  */
 public final class VoxySectionDecoder {
     public static final int VOL = 32 * 32 * 32;
@@ -46,7 +50,12 @@ public final class VoxySectionDecoder {
                 }
                 if (!fluid && y > solidY) solidY = y;
             }
-            if (topY < 0 && solidY < 0) continue;
+            if (topY < 0 && solidY < 0) {
+                // all-air column: mark it explicitly so the merge can distinguish an empty section
+                // above a buried surface slice from a missing section (see VoxyMerge)
+                cols[c] = VoxyMerge.EMPTY_COLUMN;
+                continue;
+            }
             int topWorld = topY >= 0
                     ? (topFluid ? (sy * 32 + topY) * scale + scale - 1 : (sy * 32 + topY) * scale)
                     : VoxyMerge.NO_TOP;
@@ -56,6 +65,11 @@ public final class VoxySectionDecoder {
             long out = (((long) (topWorld + 32768)) << 24) | ((solidWorld + 32768) & 0xFFFF);
             if (topFluid) out |= (1L << 52);
             out |= ((long) (((topVox >>> 47) & 0x1FF))) << 53;
+            // surface material class of the visible voxel (0 = unknown), see SurfaceClassTable
+            if (topY >= 0) {
+                int slot = SurfaceClassTable.INSTANCE.slotOf((topVox >>> 27) & BLOCK_MASK);
+                out |= ((long) (slot & 0xFF)) << 40;
+            }
             cols[c] = out;
         }
         return cols;

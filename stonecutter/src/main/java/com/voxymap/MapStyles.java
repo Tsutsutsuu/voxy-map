@@ -3,9 +3,93 @@ package com.voxymap;
 /**
  * Colour palettes for the map. Kept in sync with the offline PoC's six schemes:
  * current, gradient, gmt, nautical, gradient-turbo, gradient-soft.
+ *
+ * <p>{@link #BLOCKS} is the seventh style: land pixels are coloured by surface material class
+ * (see {@link SurfaceClassTable}) times the shared hillshade; water pixels start from the biome's
+ * vanilla water colour and apply the {@code current} palette's depth falloff on top (see
+ * {@link #depthShadeWater}), so shallow water matches vanilla's hue and deep water still darkens
+ * like the current style. It is rendered by a separate branch in {@code MapData} so the six
+ * palettes below are untouched.</p>
  */
 public final class MapStyles {
-    public static final String[] NAMES = {"current", "gradient", "gmt", "nautical", "gradient-turbo", "gradient-soft"};
+    public static final String[] NAMES = {"blocks", "current", "gradient", "gmt", "nautical", "gradient-turbo", "gradient-soft"};
+    /** Material/block-colour style id. */
+    public static final String BLOCKS = "blocks";
+
+    /** Depth buckets used by {@link #depthShadeWater}; the last bucket is reused deeper down. */
+    private static final int WATER_SHADE_DEPTHS = 128;
+    /**
+     * 8.8 fixed-point channel multipliers of the current water ramp relative to its shallowest
+     * colour, packed as {@code r | g<<10 | b<<20}. Computed once from {@link #waterColor}, so the
+     * blocks style keeps exactly the current style's depth layers while using vanilla's water hue.
+     */
+    private static final int[] WATER_SHADE = new int[WATER_SHADE_DEPTHS];
+
+    static {
+        int shallow = waterColor("current", 0);
+        int sr = (shallow >> 16) & 0xFF;
+        int sg = (shallow >> 8) & 0xFF;
+        int sb = shallow & 0xFF;
+        for (int d = 0; d < WATER_SHADE_DEPTHS; d++) {
+            int c = waterColor("current", d);
+            int fr = (int) Math.round(((c >> 16) & 0xFF) * 256.0 / sr);
+            int fg = (int) Math.round(((c >> 8) & 0xFF) * 256.0 / sg);
+            int fb = (int) Math.round((c & 0xFF) * 256.0 / sb);
+            WATER_SHADE[d] = Math.min(1023, fr) | (Math.min(1023, fg) << 10) | (Math.min(1023, fb) << 20);
+        }
+    }
+
+    /** True for the material (block colour) style, which bypasses the height palettes. */
+    public static boolean isBlocks(String style) {
+        return BLOCKS.equals(style);
+    }
+
+    /**
+     * Water colour for the "blocks" style: the biome's vanilla water colour is the shallow anchor
+     * and the current palette's depth falloff is multiplied on top. Depth 0-3 → vanilla water
+     * colour unchanged; 76+ → the current palette's deep-water ratio (≈0.09/0.21/0.45), i.e. the
+     * same layering as the {@code current} style but anchored at vanilla's hue.
+     */
+    public static int depthShadeWater(int biomeWater, int depth) {
+        int d = depth < 0 ? 0 : Math.min(WATER_SHADE_DEPTHS - 1, depth);
+        int f = WATER_SHADE[d];
+        int r = (((biomeWater >> 16) & 0xFF) * (f & 0x3FF)) >> 8;
+        int g = (((biomeWater >> 8) & 0xFF) * ((f >>> 10) & 0x3FF)) >> 8;
+        int b = ((biomeWater & 0xFF) * ((f >>> 20) & 0x3FF)) >> 8;
+        return (Math.min(255, r) << 16) | (Math.min(255, g) << 8) | Math.min(255, b);
+    }
+
+    /**
+     * Vanilla {@code water_still.png} is a grayscale texture (#B1B1B1) with alpha 180/255, and the
+     * biome water colour is multiplied onto it. The palette's WATER factor already applies the
+     * gray average, so {@link #compositeWater} only has to composite the translucent surface over
+     * an estimated background (the in-game water is alpha blended over the sea floor / fog).
+     */
+    private static final int WATER_ALPHA = 180;
+    /** Estimated shallow sea floor (mean of sand/gravel/clay/stone/dirt top colours). */
+    private static final int SEABED_SHALLOW = 0x9A9084;
+    /** Deep-water background: water fog / dark sea floor. */
+    private static final int SEABED_DEEP = 0x10141F;
+    /** Depth over which the background estimate fades from the shallow sea floor to deep fog. */
+    private static final int SEABED_DEPTH_SPAN = 32;
+
+    /**
+     * Final water pixel for the "blocks" style: {@code biomeWaterTint * water texture average} (the
+     * texture average is pre-applied by the palette WATER factor) with the current palette's depth
+     * falloff, then alpha-composited over an estimated background because vanilla water is
+     * translucent (texture alpha 180/255). The background fades from a sandy shallow-sea-floor
+     * tone to dark deep-water fog with depth, which also removes the over-saturation of a pure
+     * opaque tint.
+     */
+    public static int compositeWater(int texturedTint, int depth) {
+        int fg = depthShadeWater(texturedTint, depth);
+        int t = depth < 0 ? 0 : Math.min(255, depth * 255 / SEABED_DEPTH_SPAN);
+        int bg = mix(SEABED_SHALLOW, SEABED_DEEP, t / 255f);
+        int r = ((((fg >> 16) & 0xFF) * WATER_ALPHA + ((bg >> 16) & 0xFF) * (255 - WATER_ALPHA)) / 255);
+        int g = ((((fg >> 8) & 0xFF) * WATER_ALPHA + ((bg >> 8) & 0xFF) * (255 - WATER_ALPHA)) / 255);
+        int b = (((fg & 0xFF) * WATER_ALPHA + (bg & 0xFF) * (255 - WATER_ALPHA)) / 255);
+        return (Math.min(255, r) << 16) | (Math.min(255, g) << 8) | Math.min(255, b);
+    }
 
     private static final int[][] LAND_GRADIENT = {
             {0, 200, 200, 170}, {30, 120, 180, 100}, {100, 90, 150, 80}, {200, 120, 145, 80},
@@ -164,3 +248,4 @@ public final class MapStyles {
         return Math.max(0, Math.min(255, v));
     }
 }
+

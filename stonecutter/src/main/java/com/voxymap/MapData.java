@@ -60,8 +60,18 @@ public final class MapData {
      * landing inside this margin can be merged incrementally instead of forcing a full rebuild.
      */
     private static final long GROW_MARGIN_BLOCKS = 512L;
-    /** 8: snapshots keep a 512-block empty margin so edge exploration can stay incremental. */
-    private static final int CACHE_VERSION = 9;
+    /**
+     * 8: snapshots keep a 512-block empty margin so edge exploration can stay incremental.
+     * 10: {@link VoxyMerge} demotes enclosed water surfaces (water below the column's highest
+     * solid) to dry land at the ceiling block, so cached snapshots from v9 still paint cave
+     * rivers through mountains.
+     * 11: all-air section columns now lock a buried fine surface so a coarse LOD mip cannot raise
+     * a shoreline column to a neighbouring hill's height.
+     * 12: the 200-colour palette (v7) changed every block slot, so cached snapshots from v11 would
+     * still render the old 58-colour mapping.
+     * 13: palette v8 (dry foliage) + surface-biome attribution fix changed pixel data again.
+     */
+    private static final int CACHE_VERSION = 13;
     private static final int FALLBACK_SEA = 63;
 
     static final class Snapshot {
@@ -1248,6 +1258,7 @@ public final class MapData {
         error = "";
         progress = -1;
         biomeKeyCache.clear();
+        BiomeTintTable.INSTANCE.captureRegistry(null);
         applyConfiguredDefaults();
     }
 
@@ -2488,6 +2499,12 @@ public final class MapData {
             return;
         }
         overworldActive = true;
+        // the "blocks" style resolves biome colours from the world's biome registry; 26.2 keeps it
+        // per-world, so cache it here (client thread) before the tint tables are rebuilt on a worker
+        try {
+            BiomeTintTable.INSTANCE.captureRegistry(mc.level == null ? null : mc.level.registryAccess());
+        } catch (Throwable ignored) {
+        }
         long nowMs = System.currentTimeMillis();
         if (sessionStartMs == 0) sessionStartMs = nowMs;
         int delayMinutes = VoxyMapConfig.INITIAL_REFRESH_DELAY_MINUTES.get();
@@ -2712,8 +2729,12 @@ public final class MapData {
      * 3: the colour cache now records the snapshot stamp, so a cached colour buffer can never be
      * paired with a rebuilt snapshot again (that mismatch is what left black blocks on the map when
      * a refresh ran out of memory before it could re-render the colours).
+     * 13: snapshot pixels change for enclosed water (merge invariant), so colours must re-render.
+     * 14: snapshot pixels also change for buried-surface columns (all-air section lock).
+     * 15: palette v7 changed every block slot, so colours must re-render.
+     * 16: palette v8 (dry foliage) and the biome attribution fix change the rendered colours.
      */
-    private static final int COLOR_CACHE_VERSION = 12;
+    private static final int COLOR_CACHE_VERSION = 16;
 
     /** everything that changes the produced pixels; changing any of these invalidates the .vxc */
     private static String colorCacheKey(String style, int sea) {
@@ -2724,7 +2745,12 @@ public final class MapData {
                 + VoxyMapConfig.DRAW_WATER_DEPTH.get() + "|" + VoxyMapConfig.ADAPTIVE_COLOR_RAMP.get() + "|"
                 + VoxyMapConfig.MIN_MAX_RAMP.get() + "|" + VoxyMapConfig.WATER_BLUR.get() + "|"
                 + VoxyMapConfig.WATER_BLUR_RADIUS.get() + "|" + VoxyMapConfig.WATER_BLUR_PASSES.get() + "|"
-                + VoxyMapConfig.DENOISE.get() + "|" + VoxyMapConfig.FILL_HOLES.get();
+                + VoxyMapConfig.DENOISE.get() + "|" + VoxyMapConfig.FILL_HOLES.get()
+                // the material palette / biome tint change the produced colours of the blocks style
+                + (MapStyles.isBlocks(style)
+                        ? "|p" + SurfaceClassTable.INSTANCE.version()
+                        + (VoxyMapConfig.BIOME_COLORS.get() ? "|bc1" : "|bc0")
+                        : "");
     }
 
     private static int[] loadColorCache(Path storage, Snapshot s, String style, int sea) {
@@ -3119,16 +3145,20 @@ public final class MapData {
 
     private void flushSection(long key, long[] cols, long[] pixels, int w, int h, long minWXv, long minWZv, int pixelBlocks) {
         int lvl = (int) ((key >>> 60) & 0xF);
+        int sy = (int) ((key << 4) >> 56);
         int sx = (int) ((key << 36) >> 40);
         int sz = (int) ((key << 12) >> 40);
         int scale = 1 << lvl;
+        int sectionMinY = sy * 32 * scale;
         for (int c = 0; c < 1024; c++) {
             long packed = cols[c];
             if (packed == LONG_EMPTY) continue;
-            int top = (int) ((packed >>> 24) & 0xFFFF) - 32768;
-            int floor = (int) (packed & 0xFFFF) - 32768;
-            boolean topFluid = (packed & (1L << 52)) != 0;
-            int biomeHere = (int) ((packed >>> 53) & 0x1FF);
+            boolean empty = packed == VoxyMerge.EMPTY_COLUMN;
+            int top = empty ? 0 : (int) ((packed >>> 24) & 0xFFFF) - 32768;
+            int floor = empty ? 0 : (int) (packed & 0xFFFF) - 32768;
+            boolean topFluid = !empty && (packed & (1L << 52)) != 0;
+            int biomeHere = empty ? 0 : (int) ((packed >>> 53) & 0x1FF);
+            int slotHere = empty ? 0 : (int) ((packed >>> 40) & 0xFF);
             long wx0 = (long) (sx * 32 + (c & 31)) * scale;
             long wz0 = (long) (sz * 32 + (c >> 5)) * scale;
             int px0 = (int) ((wx0 - minWXv) / pixelBlocks);
@@ -3141,7 +3171,11 @@ public final class MapData {
                 for (int px = px0; px <= px1; px++) {
                     if (px < 0 || px >= w) continue;
                     int idx = row + px;
-                    pixels[idx] = VoxyMerge.mergeColumn(pixels[idx], lvl, top, floor, topFluid, biomeHere);
+                    if (empty) {
+                        pixels[idx] = VoxyMerge.mergeEmptyColumn(pixels[idx], lvl, sectionMinY);
+                    } else {
+                        pixels[idx] = VoxyMerge.mergeColumn(pixels[idx], lvl, top, floor, topFluid, biomeHere, slotHere);
+                    }
                 }
             }
         }
@@ -3205,7 +3239,11 @@ public final class MapData {
                 }
                 if (!fluid && y > solidY) solidY = y;
             }
-            if (topY < 0 && solidY < 0) continue; // empty column
+            if (topY < 0 && solidY < 0) {
+                // all-air column: keep the "empty section" distinction the merge needs
+                cols[c] = VoxyMerge.EMPTY_COLUMN;
+                continue;
+            }
             int topWorld = topY >= 0
                     ? (topFluid ? (sy * 32 + topY) * scale + scale - 1 : (sy * 32 + topY) * scale)
                     : NO_TOP;
@@ -3218,6 +3256,11 @@ public final class MapData {
             long out = (((long) (topWorld + 32768)) << 24) | ((solidWorld + 32768) & 0xFFFF);
             if (topFluid) out |= (1L << 52);
             out |= ((long) (((topVox >>> 47) & 0x1FF))) << 53;
+            // surface material class of the visible voxel (0 = unknown), see SurfaceClassTable
+            if (topY >= 0) {
+                int slot = SurfaceClassTable.INSTANCE.slotOf((topVox >>> 27) & ((1L << 20) - 1));
+                out |= ((long) (slot & 0xFF)) << 40;
+            }
             cols[c] = out;
         }
         return new Decoded(key, cols);
@@ -3239,6 +3282,9 @@ public final class MapData {
 
     private static Set<Long> loadWaterIds(Object db, Object mappings, Map<Integer, String> biomeNames) {
         Set<Long> out = new HashSet<>();
+        // one extra pass over the same mapping entries builds the block-state -> material class
+        // table used by every section decoder; published only after the whole scan succeeded
+        SurfaceClassTable.MappingBuilder classSlots = SurfaceClassTable.INSTANCE.mappingBuilder();
         try {
             Object it = RocksBridge.newIterator(db, mappings);
             try {
@@ -3250,6 +3296,9 @@ public final class MapData {
                         long be = ((long) (k[0] & 0xFF) << 24) | ((long) (k[1] & 0xFF) << 16)
                                 | ((long) (k[2] & 0xFF) << 8) | (k[3] & 0xFF);
                         String text = unzipText(v);
+                        if (text != null && ((be >>> 24) == 0x40)) {
+                            classSlots.add(be & ((1L << 30) - 1), text);
+                        }
                         if (text != null && ((be >>> 24) == 0x80)) {
                             int hi = text.indexOf("minecraft:");
                             if (hi < 0) hi = text.indexOf(':');
@@ -3278,6 +3327,9 @@ public final class MapData {
             } finally {
                 RocksBridge.close(it);
             }
+            classSlots.commit();
+            // biome tint tables are rebuilt from the same mapping names (cheap, once per world)
+            BiomeTintTable.INSTANCE.rebuild(biomeNames);
         } catch (Exception ignored) {
         }
         return out;
@@ -5357,10 +5409,11 @@ public final class MapData {
             return null;
         }
         int[] out = cf.rgb.clone();
+        boolean blocks = MapStyles.isBlocks(style);
         for (int z = cz0; z <= cz1; z++) {
             for (int x = cx0; x <= cx1; x++) {
                 int i = z * w + x;
-                out[i] = colorAt(updated, style, i, x, z);
+                out[i] = blocks ? colorBlocksAt(updated, i, x, z) : colorAt(updated, style, i, x, z);
             }
         }
         report.contourDiff = contourDiff;
@@ -5373,14 +5426,21 @@ public final class MapData {
         final int fw = tc.width;
         final int fh = tc.height;
         final String fStyle = style;
+        final boolean blocks = MapStyles.isBlocks(style);
         final TerrainCache fTc = tc;
         parallelRows(fh, (z0, z1) -> {
             for (int z = z0; z < z1; z++) {
                 if ((z & 63) == 0 && currentRenderToken() != 0
                         && currentRenderToken() != refreshToken.get()) return;
                 int row = z * fw;
-                for (int x = 0; x < fw; x++) {
-                    out[row + x] = colorAt(fTc, fStyle, row + x, x, z);
+                if (blocks) {
+                    for (int x = 0; x < fw; x++) {
+                        out[row + x] = colorBlocksAt(fTc, row + x, x, z);
+                    }
+                } else {
+                    for (int x = 0; x < fw; x++) {
+                        out[row + x] = colorAt(fTc, fStyle, row + x, x, z);
+                    }
                 }
             }
         });
@@ -5388,18 +5448,76 @@ public final class MapData {
     }
 
     /**
-     * Colour of one pixel. Shared by the full {@link #colorize} pass and the incremental colour
-     * patch so both always produce exactly the same colours.
+     * Colour of one pixel in the six height palettes. Shared by the full {@link #colorize} pass and
+     * the incremental colour patch so both always produce exactly the same colours.
      */
     private static int colorAt(TerrainCache tc, String style, int idx, int x, int z) {
         int top = tc.topArr[idx];
         if (top == Integer.MIN_VALUE) return 0;
-        final int fw = tc.width;
-        final int fh = tc.height;
         boolean water = tc.isWaterPix[idx];
         int rgb = water
                 ? MapStyles.waterColor(style, Math.round(VoxyMapConfig.DRAW_WATER_DEPTH.get() ? tc.depthMap[idx] : 1f))
                 : MapStyles.landColor(style, top, tc.sea, tc.rampLo, tc.rampHi, tc.adaptive);
+        return applyShade(rgb, shadeAt(tc, style, idx, x, z, water));
+    }
+
+    /**
+     * Colour of one pixel in the seventh "blocks" style: land = surface material colour, water = the
+     * existing {@code current} water palette multiplied by the biome water colour (normalised to
+     * plains so the depth gradient and the palette's hue survive). Both are then multiplied by the
+     * same hillshade as every palette.
+     *
+     * <p>Biome tinting follows vanilla: grass uses {@code Biome#getGrassColor(x, z)} (position
+     * dependent for dark forest/swamp/mangrove swamp), foliage uses the flat per-biome
+     * {@code getFoliageColor()}. The {@code biomeColors} config switch falls back to the palette's
+     * static class colours and disables the water tint.</p>
+     */
+    private static int colorBlocksAt(TerrainCache tc, int idx, int x, int z) {
+        int top = tc.topArr[idx];
+        if (top == Integer.MIN_VALUE) return 0;
+        long packed = tc.snapshot.pixels[idx];
+        int biome = (int) ((packed >>> 53) & SurfaceClassTable.BIOME_MASK);
+        boolean water = tc.isWaterPix[idx];
+        boolean biomeColors = VoxyMapConfig.BIOME_COLORS.get();
+        int rgb;
+        if (water) {
+            int depth = Math.round(VoxyMapConfig.DRAW_WATER_DEPTH.get() ? tc.depthMap[idx] : 1f);
+            // vanilla water colour × water texture average × current depth falloff, alpha-composited
+            // over an estimated sea floor (vanilla water is translucent; pure tint looks oversaturated)
+            rgb = biomeColors
+                    ? MapStyles.compositeWater(BiomeTintTable.INSTANCE.water(biome), depth)
+                    : MapStyles.waterColor("current", depth);
+        } else {
+            int slot = (int) ((packed >>> 40) & SurfaceClassTable.SLOT_MASK);
+            if (!biomeColors) {
+                rgb = SurfaceClassTable.INSTANCE.colorOf(slot);
+            } else {
+                switch (SurfaceClassTable.INSTANCE.tintOf(slot)) {
+                    case SurfaceClassTable.TINT_GRASS -> {
+                        // vanilla grass tint is per block position (swamp noise); use the pixel centre
+                        int wx = (int) (tc.snapshot.minWX + (long) x * tc.snapshot.pixelBlocks
+                                + tc.snapshot.pixelBlocks / 2);
+                        int wz = (int) (tc.snapshot.minWZ + (long) z * tc.snapshot.pixelBlocks
+                                + tc.snapshot.pixelBlocks / 2);
+                        rgb = BiomeTintTable.INSTANCE.grass(biome, wx, wz);
+                    }
+                    case SurfaceClassTable.TINT_FOLIAGE -> rgb = BiomeTintTable.INSTANCE.foliage(biome);
+                    case SurfaceClassTable.TINT_DRY_FOLIAGE ->
+                            rgb = BiomeTintTable.INSTANCE.dryFoliage(biome);
+                    default -> rgb = SurfaceClassTable.INSTANCE.colorOf(slot);
+                }
+            }
+        }
+        return applyShade(rgb, shadeAt(tc, "blocks", idx, x, z, water));
+    }
+
+    /**
+     * Hillshade / contour / coast darkening shared by every style. Keeping this in one helper makes
+     * the material style use exactly the same terrain shading as the six existing palettes.
+     */
+    private static float shadeAt(TerrainCache tc, String style, int idx, int x, int z, boolean water) {
+        final int fw = tc.width;
+        final int fh = tc.height;
         float shade = 1f;
         if (VoxyMapConfig.DRAW_HILLSHADE.get() && x > 0 && z > 0 && x < fw - 1 && z < fh - 1) {
             int nb0, nb1, nb2, nb3;
@@ -5439,6 +5557,10 @@ public final class MapData {
                     || (x > 0 && tc.isWaterPix[idx - 1]) || (z > 0 && tc.isWaterPix[idx - fw]);
             if (coast) shade *= 0.70f;
         }
+        return shade;
+    }
+
+    private static int applyShade(int rgb, float shade) {
         int r = Math.max(0, Math.min(255, (int) (((rgb >> 16) & 0xFF) * shade)));
         int g = Math.max(0, Math.min(255, (int) (((rgb >> 8) & 0xFF) * shade)));
         int b = Math.max(0, Math.min(255, (int) ((rgb & 0xFF) * shade)));
@@ -5495,3 +5617,7 @@ public final class MapData {
         return out;
     }
 }
+
+
+
+

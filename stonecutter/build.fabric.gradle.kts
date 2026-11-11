@@ -32,6 +32,16 @@ loom {
     fabricModJsonPath = rootProject.file("src/main/resources/fabric.mod.json")
 }
 
+// ---------------------------------------------------------------------------
+// Optional in-game acceptance harness. `-Pselftest` adds tools/selftest to the
+// main source set so the scripted test (MapSelfTest) is bundled into the jar.
+// Normal builds never see that source directory, so the shipped mod has no
+// test code; the Fabric entry point installs it reflectively.
+// ---------------------------------------------------------------------------
+if (providers.gradleProperty("selftest").isPresent) {
+    sourceSets.main.get().java.srcDir(rootProject.file("../tools/selftest"))
+}
+
 tasks.withType<JavaCompile>().configureEach {
     options.release = 25
     options.encoding = "UTF-8"
@@ -45,7 +55,7 @@ tasks.processResources {
 }
 
 tasks.named<Jar>("jar") {
-    archiveFileName = "voxy-map-${project.version}+fabric.jar"
+    archiveFileName = "voxy-map-${project.version}+fabric${if (providers.gradleProperty("selftest").isPresent) "-selftest" else ""}.jar"
     manifest {
         attributes(
             "Implementation-Title" to "Voxy Map",

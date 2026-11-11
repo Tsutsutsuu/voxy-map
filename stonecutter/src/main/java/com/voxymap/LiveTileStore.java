@@ -42,7 +42,21 @@ public final class LiveTileStore {
      */
     private static final long LIVE_PARTIAL_DRAW_GRACE_MS = 2_000L;
     private static final int CACHE_MAGIC = 0x56585431;
-    private static final int CACHE_VERSION = 9;
+    /**
+     * 11: the material palette gained fixed-colour spruce/birch leaf classes (and vine moved to the
+     * foliage tint), so cached pixel slots from v10 would render the wrong leaf colours.
+     * 12: {@link VoxyMerge} demotes enclosed water surfaces (water below the column's highest
+     * solid) to dry land at the ceiling block, so cached pixels from v11 would still show cave
+     * rivers through mountains.
+     * 13: all-air section columns now lock a buried fine surface instead of letting a coarse LOD
+     * mip raise the fallback height, so pixels cached from v12 still show shoreline columns at a
+     * neighbouring hill's height.
+     * 14: the palette went to 200 colours (v7 JSON) and the block->colour mapping was regenerated,
+     * so cached pixel slots from v13 point at the wrong colours.
+     * 15: palette v8 adds the dry-foliage tint class (leaf litter) and fixes surface-biome
+     * attribution, so cached pixels from v14 would still show the wrong biome/leaf colour.
+     */
+    private static final int CACHE_VERSION = 15;
     private static final ExecutorService CACHE_IO = Executors.newFixedThreadPool(2, r -> {
         Thread t = new Thread(r, "voxymap-tile-cache");
         t.setDaemon(true);
@@ -1320,10 +1334,15 @@ public final class LiveTileStore {
         int scale = 1 << lvl;
         int sx = (int) ((key << 36) >> 40);
         int sz = (int) ((key << 12) >> 40);
+        int sy = (int) ((key << 4) >> 56);
+        int sectionMinY = sy * 32 * scale;
         java.util.Set<LiveTile> touched = new java.util.HashSet<>();
         for (int c = 0; c < 1024; c++) {
             long packed = cols[c];
             if (packed == VoxyMerge.LONG_EMPTY) continue;
+            // an all-air section column only affects existing pixels (it can lock a buried fine
+            // surface); it must never create a tile of its own
+            boolean empty = packed == VoxyMerge.EMPTY_COLUMN;
             long wx0 = (long) (sx * 32 + (c & 31)) * scale;
             long wz0 = (long) (sz * 32 + (c >> 5)) * scale;
             int px0 = (int) Math.floorDiv(wx0 - minWX, pixelBlocks);
@@ -1338,6 +1357,7 @@ public final class LiveTileStore {
                     int localX = px - tx * TILE_PIXELS;
                     LiveTile tile = tiles.get(key(tx, tz));
                     if (tile == null) {
+                        if (empty) continue;
                         LiveTile created = new LiveTile(tx, tz, tileMinWX(tx), tileMinWZ(tz));
                         tile = tiles.putIfAbsent(key(tx, tz), created);
                         if (tile == null) {
@@ -1348,11 +1368,16 @@ public final class LiveTileStore {
                     }
                     int idx = localZ * TILE_PIXELS + localX;
                     long prev = tile.pixels[idx];
-                    tile.pixels[idx] = VoxyMerge.mergeColumn(prev, lvl,
-                            (int) ((packed >>> 24) & 0xFFFF) - 32768,
-                            (int) (packed & 0xFFFF) - 32768,
-                            (packed & (1L << 52)) != 0,
-                            (int) ((packed >>> 53) & 0x1FF));
+                    if (empty) {
+                        tile.pixels[idx] = VoxyMerge.mergeEmptyColumn(prev, lvl, sectionMinY);
+                    } else {
+                        tile.pixels[idx] = VoxyMerge.mergeColumn(prev, lvl,
+                                (int) ((packed >>> 24) & 0xFFFF) - 32768,
+                                (int) (packed & 0xFFFF) - 32768,
+                                (packed & (1L << 52)) != 0,
+                                (int) ((packed >>> 53) & 0x1FF),
+                                (int) ((packed >>> 40) & 0xFF));
+                    }
                     touched.add(tile);
                 }
             }
@@ -1442,7 +1467,10 @@ public final class LiveTileStore {
      * render-only flag added here would invalidate the other path's colour jobs.
      */
     private static int tileColorHash(String style, int sea, int colorEpoch) {
-        return ((style == null ? 0 : style.hashCode()) * 31 + sea) * 31 + colorEpoch;
+        // the palette JSON version is part of the identity: editing surface_classes.json must
+        // re-bake colours (and textures) without forcing a pixel-cache rebuild
+        return (((style == null ? 0 : style.hashCode()) * 31 + sea) * 31 + colorEpoch) * 31
+                + SurfaceClassTable.INSTANCE.version();
     }
 
     /** Texture identity: the colour hash plus render-only flags (baked biome borders). */
@@ -1717,3 +1745,6 @@ public final class LiveTileStore {
         if (src != null) src.close();
     }
 }
+
+
+

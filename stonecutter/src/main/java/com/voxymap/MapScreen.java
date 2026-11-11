@@ -1402,7 +1402,7 @@ public class MapScreen extends Screen {
             int menuX = width - 8 - menuW;
             int menuY = selY + 24;
             // the panel fades in together with its rows so the open does not pop
-            g.fill(menuX, menuY, menuX + menuW, menuY + 6 * rowH + 4,
+            g.fill(menuX, menuY, menuX + menuW, menuY + MapStyles.NAMES.length * rowH + 4,
                     withAlpha(COL_PANEL, Math.min(1f, styleMenuT * 1.35f)));
             g.fill(menuX, menuY, menuX + menuW, menuY + 1,
                     withAlpha(COL_BORDER, Math.min(1f, styleMenuT * 1.35f)));

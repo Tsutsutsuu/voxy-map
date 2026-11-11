@@ -60,7 +60,7 @@ public final class VoxyMapConfig {
     /** @deprecated no effect: the "wait for SeedGen" dialog is disabled in tile mode. */
     @Deprecated
     public static final Value<Integer> INITIAL_REFRESH_DELAY_MINUTES = new Value<>("initialRefreshDelayMinutes", 3);
-    public static final Value<String> DEFAULT_STYLE = new Value<>("defaultStyle", "current");
+    public static final Value<String> DEFAULT_STYLE = new Value<>("defaultStyle", "blocks");
     public static final Value<Integer> MAP_SCALE = new Value<>("mapScale", 2);
     public static final Value<Integer> MAX_LOD_LEVEL = new Value<>("maxLodLevel", 4);
     public static final Value<Boolean> AUTO_SEA_LEVEL = new Value<>("autoSeaLevel", true);
@@ -74,6 +74,12 @@ public final class VoxyMapConfig {
     public static final Value<Boolean> FILL_HOLES = new Value<>("fillHoles", false);
     public static final Value<Boolean> DRAW_CONTOURS = new Value<>("drawContours", true);
     public static final Value<Boolean> DRAW_HILLSHADE = new Value<>("drawHillshade", true);
+    /**
+     * Biome-tinted colours for the "blocks" style: grass/foliage use the biome colour (vanilla
+     * {@code Biome#getGrassColor(x,z)} / {@code getFoliageColor()}) and water is multiplied by the
+     * biome water colour. Off = the palette's static class colours and plain current water.
+     */
+    public static final Value<Boolean> BIOME_COLORS = new Value<>("biomeColors", true);
     public static final Value<Boolean> DRAW_WATER_DEPTH = new Value<>("drawWaterDepth", true);
     public static final Value<Boolean> SHOW_COORDINATES = new Value<>("showCoordinates", true);
     public static final Value<Boolean> TELEPORT_ENABLED = new Value<>("teleportEnabled", true);
@@ -242,3 +248,4 @@ public final class VoxyMapConfig {
         }
     }
 }
+

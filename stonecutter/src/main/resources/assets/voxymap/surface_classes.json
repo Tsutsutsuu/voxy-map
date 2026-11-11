@@ -1,0 +1,1883 @@
+{
+  "version": 8,
+  "note": "Surface material classes. Land colour = class colour times hillshade; water pixels use the current palette. v7: 200-colour palette (existing 58 colours kept, 142 added) and a regenerated block->colour mapping.",
+  "fallbackClass": "FALLBACK",
+  "classes": {
+    "GRASS": {
+      "hex": "#91BD59",
+      "tint": "grass",
+      "factor": "#939393"
+    },
+    "FOLIAGE": {
+      "hex": "#59AE30",
+      "tint": "foliage",
+      "factor": "#92918F"
+    },
+    "WATER": {
+      "hex": "#3F76E4",
+      "tint": "water",
+      "factor": "#B1B1B1"
+    },
+    "SNOW": {
+      "hex": "#F9FEFE"
+    },
+    "ICE": {
+      "hex": "#92B8FE"
+    },
+    "PACKED_ICE": {
+      "hex": "#8EB4FA"
+    },
+    "BLUE_ICE": {
+      "hex": "#74A8FD"
+    },
+    "STONE": {
+      "hex": "#7E7E7E"
+    },
+    "DEEPSLATE": {
+      "hex": "#505053"
+    },
+    "ANDESITE": {
+      "hex": "#888889"
+    },
+    "DIORITE": {
+      "hex": "#BDBCBD"
+    },
+    "GRANITE": {
+      "hex": "#956756"
+    },
+    "TUFF": {
+      "hex": "#6C6D67"
+    },
+    "CALCITE": {
+      "hex": "#DFE0DD"
+    },
+    "DRIPSTONE": {
+      "hex": "#866C5D"
+    },
+    "BRICKS": {
+      "hex": "#976253"
+    },
+    "SAND": {
+      "hex": "#DBCFA3"
+    },
+    "RED_SAND": {
+      "hex": "#BF6721"
+    },
+    "SANDSTONE": {
+      "hex": "#E0D6AA"
+    },
+    "RED_SANDSTONE": {
+      "hex": "#B5621F"
+    },
+    "GRAVEL": {
+      "hex": "#847F7F"
+    },
+    "DIRT": {
+      "hex": "#866043"
+    },
+    "COARSE_DIRT": {
+      "hex": "#77563B"
+    },
+    "PODZOL": {
+      "hex": "#5C3F18"
+    },
+    "MYCELIUM": {
+      "hex": "#6F6365"
+    },
+    "MUD": {
+      "hex": "#3C393D"
+    },
+    "CLAY": {
+      "hex": "#A1A6B3"
+    },
+    "MOSS": {
+      "hex": "#596E2D"
+    },
+    "SCULK": {
+      "hex": "#0D1E24"
+    },
+    "WOOD": {
+      "hex": "#A2834F"
+    },
+    "LEAF_LITTER": {
+      "hex": "#5C4727"
+    },
+    "MUSHROOM_BROWN": {
+      "hex": "#957051"
+    },
+    "MUSHROOM_RED": {
+      "hex": "#C82F2D"
+    },
+    "CHERRY_LEAVES": {
+      "hex": "#E5ADC2"
+    },
+    "PALE_LEAVES": {
+      "hex": "#757A73"
+    },
+    "AZALEA_LEAVES": {
+      "hex": "#5A732C"
+    },
+    "LAVA": {
+      "hex": "#D45A12"
+    },
+    "TERRACOTTA": {
+      "hex": "#985E44"
+    },
+    "TERRACOTTA_WHITE": {
+      "hex": "#D2B2A1"
+    },
+    "TERRACOTTA_ORANGE": {
+      "hex": "#A25426"
+    },
+    "TERRACOTTA_MAGENTA": {
+      "hex": "#96586D"
+    },
+    "TERRACOTTA_LIGHT_BLUE": {
+      "hex": "#716D8A"
+    },
+    "TERRACOTTA_YELLOW": {
+      "hex": "#BA8523"
+    },
+    "TERRACOTTA_LIME": {
+      "hex": "#687635"
+    },
+    "TERRACOTTA_PINK": {
+      "hex": "#A24E4F"
+    },
+    "TERRACOTTA_GRAY": {
+      "hex": "#3A2A24"
+    },
+    "TERRACOTTA_LIGHT_GRAY": {
+      "hex": "#876B62"
+    },
+    "TERRACOTTA_CYAN": {
+      "hex": "#575B5B"
+    },
+    "TERRACOTTA_PURPLE": {
+      "hex": "#764656"
+    },
+    "TERRACOTTA_BLUE": {
+      "hex": "#4A3C5B"
+    },
+    "TERRACOTTA_BROWN": {
+      "hex": "#4D3324"
+    },
+    "TERRACOTTA_GREEN": {
+      "hex": "#4C532A"
+    },
+    "TERRACOTTA_RED": {
+      "hex": "#8F3D2F"
+    },
+    "TERRACOTTA_BLACK": {
+      "hex": "#251710"
+    },
+    "SPRUCE_LEAVES": {
+      "hex": "#304C30"
+    },
+    "BIRCH_LEAVES": {
+      "hex": "#42552B"
+    },
+    "LILY_PAD": {
+      "hex": "#114319"
+    },
+    "WOOL_WHITE": {
+      "hex": "#EAECED"
+    },
+    "WOOL_ORANGE": {
+      "hex": "#F17614"
+    },
+    "WOOL_MAGENTA": {
+      "hex": "#BE45B4"
+    },
+    "WOOL_LIGHT_BLUE": {
+      "hex": "#3AAFD9"
+    },
+    "WOOL_YELLOW": {
+      "hex": "#F9C628"
+    },
+    "WOOL_LIME": {
+      "hex": "#70B91A"
+    },
+    "WOOL_PINK": {
+      "hex": "#EE8DAC"
+    },
+    "WOOL_GRAY": {
+      "hex": "#3F4448"
+    },
+    "WOOL_LIGHT_GRAY": {
+      "hex": "#8E8E87"
+    },
+    "WOOL_CYAN": {
+      "hex": "#158A91"
+    },
+    "WOOL_PURPLE": {
+      "hex": "#7A2AAD"
+    },
+    "WOOL_BLUE": {
+      "hex": "#35399D"
+    },
+    "WOOL_BROWN": {
+      "hex": "#724829"
+    },
+    "WOOL_GREEN": {
+      "hex": "#556E1C"
+    },
+    "WOOL_RED": {
+      "hex": "#A12723"
+    },
+    "WOOL_BLACK": {
+      "hex": "#15151A"
+    },
+    "CONCRETE_WHITE": {
+      "hex": "#CFD5D6"
+    },
+    "CONCRETE_ORANGE": {
+      "hex": "#E06101"
+    },
+    "CONCRETE_MAGENTA": {
+      "hex": "#A9309F"
+    },
+    "CONCRETE_LIGHT_BLUE": {
+      "hex": "#2489C7"
+    },
+    "CONCRETE_YELLOW": {
+      "hex": "#F1AF15"
+    },
+    "CONCRETE_LIME": {
+      "hex": "#5EA918"
+    },
+    "CONCRETE_PINK": {
+      "hex": "#D6658F"
+    },
+    "CONCRETE_GRAY": {
+      "hex": "#373A3E"
+    },
+    "CONCRETE_LIGHT_GRAY": {
+      "hex": "#7D7D73"
+    },
+    "CONCRETE_CYAN": {
+      "hex": "#157788"
+    },
+    "CONCRETE_PURPLE": {
+      "hex": "#64209C"
+    },
+    "CONCRETE_BLUE": {
+      "hex": "#2D2F8F"
+    },
+    "CONCRETE_BROWN": {
+      "hex": "#603C20"
+    },
+    "CONCRETE_GREEN": {
+      "hex": "#495B24"
+    },
+    "CONCRETE_RED": {
+      "hex": "#8E2121"
+    },
+    "CONCRETE_BLACK": {
+      "hex": "#080A0F"
+    },
+    "COLOR_086": {
+      "hex": "#794034"
+    },
+    "COLOR_087": {
+      "hex": "#545452"
+    },
+    "COLOR_088": {
+      "hex": "#C4AF51"
+    },
+    "COLOR_089": {
+      "hex": "#988469"
+    },
+    "COLOR_090": {
+      "hex": "#EB7CA1"
+    },
+    "COLOR_091": {
+      "hex": "#E5DBDA"
+    },
+    "COLOR_092": {
+      "hex": "#AF8A55"
+    },
+    "COLOR_093": {
+      "hex": "#C2AF79"
+    },
+    "COLOR_094": {
+      "hex": "#797879"
+    },
+    "COLOR_095": {
+      "hex": "#4B3117"
+    },
+    "COLOR_096": {
+      "hex": "#9F7B67"
+    },
+    "COLOR_097": {
+      "hex": "#529F82"
+    },
+    "COLOR_098": {
+      "hex": "#996C52"
+    },
+    "COLOR_099": {
+      "hex": "#50641F"
+    },
+    "COLOR_100": {
+      "hex": "#705632"
+    },
+    "COLOR_101": {
+      "hex": "#A2D7D7"
+    },
+    "COLOR_102": {
+      "hex": "#412A14"
+    },
+    "COLOR_103": {
+      "hex": "#327E1C"
+    },
+    "COLOR_104": {
+      "hex": "#BE6A4E"
+    },
+    "COLOR_105": {
+      "hex": "#97C179"
+    },
+    "COLOR_106": {
+      "hex": "#4D7A93"
+    },
+    "COLOR_107": {
+      "hex": "#E8C999"
+    },
+    "COLOR_108": {
+      "hex": "#BBAA5D"
+    },
+    "COLOR_109": {
+      "hex": "#68A299"
+    },
+    "COLOR_110": {
+      "hex": "#CD5818"
+    },
+    "COLOR_111": {
+      "hex": "#606660"
+    },
+    "COLOR_112": {
+      "hex": "#E4893D"
+    },
+    "COLOR_113": {
+      "hex": "#9176B9"
+    },
+    "COLOR_114": {
+      "hex": "#B01905"
+    },
+    "COLOR_115": {
+      "hex": "#689738"
+    },
+    "COLOR_116": {
+      "hex": "#255E3E"
+    },
+    "COLOR_117": {
+      "hex": "#4C7F66"
+    },
+    "COLOR_118": {
+      "hex": "#59491D"
+    },
+    "COLOR_119": {
+      "hex": "#9D5837"
+    },
+    "COLOR_120": {
+      "hex": "#F2CD3B"
+    },
+    "COLOR_121": {
+      "hex": "#416554"
+    },
+    "COLOR_122": {
+      "hex": "#E1E132"
+    },
+    "COLOR_123": {
+      "hex": "#965037"
+    },
+    "COLOR_124": {
+      "hex": "#7DC819"
+    },
+    "COLOR_125": {
+      "hex": "#0F4251"
+    },
+    "COLOR_126": {
+      "hex": "#2F262D"
+    },
+    "COLOR_127": {
+      "hex": "#7C7A74"
+    },
+    "COLOR_128": {
+      "hex": "#303446"
+    },
+    "COLOR_129": {
+      "hex": "#6A946C"
+    },
+    "COLOR_130": {
+      "hex": "#963736"
+    },
+    "COLOR_131": {
+      "hex": "#9B1F2D"
+    },
+    "COLOR_132": {
+      "hex": "#4B5F67"
+    },
+    "COLOR_133": {
+      "hex": "#DEAF3F"
+    },
+    "COLOR_134": {
+      "hex": "#EB9318"
+    },
+    "COLOR_135": {
+      "hex": "#A1B839"
+    },
+    "COLOR_136": {
+      "hex": "#8F3F20"
+    },
+    "COLOR_137": {
+      "hex": "#9D9B99"
+    },
+    "COLOR_138": {
+      "hex": "#636834"
+    },
+    "COLOR_139": {
+      "hex": "#CC868B"
+    },
+    "COLOR_140": {
+      "hex": "#906CC4"
+    },
+    "COLOR_141": {
+      "hex": "#34777D"
+    },
+    "COLOR_142": {
+      "hex": "#148E7E"
+    },
+    "COLOR_143": {
+      "hex": "#987091"
+    },
+    "COLOR_144": {
+      "hex": "#6B7960"
+    },
+    "COLOR_145": {
+      "hex": "#776052"
+    },
+    "COLOR_146": {
+      "hex": "#766C52"
+    },
+    "COLOR_147": {
+      "hex": "#3F3520"
+    },
+    "COLOR_148": {
+      "hex": "#6F334C"
+    },
+    "COLOR_149": {
+      "hex": "#826957"
+    },
+    "COLOR_150": {
+      "hex": "#CB7B24"
+    },
+    "COLOR_151": {
+      "hex": "#4B474F"
+    },
+    "COLOR_152": {
+      "hex": "#6A6058"
+    },
+    "COLOR_153": {
+      "hex": "#2E4593"
+    },
+    "COLOR_154": {
+      "hex": "#D0C047"
+    },
+    "COLOR_155": {
+      "hex": "#F8DFD6"
+    },
+    "COLOR_156": {
+      "hex": "#DCE7C8"
+    },
+    "COLOR_157": {
+      "hex": "#A881AD"
+    },
+    "COLOR_158": {
+      "hex": "#AE9C6B"
+    },
+    "COLOR_159": {
+      "hex": "#DFAEA9"
+    },
+    "COLOR_160": {
+      "hex": "#5D3E30"
+    },
+    "COLOR_161": {
+      "hex": "#847D79"
+    },
+    "COLOR_162": {
+      "hex": "#7839A7"
+    },
+    "COLOR_163": {
+      "hex": "#4F3D31"
+    },
+    "COLOR_164": {
+      "hex": "#CB569B"
+    },
+    "COLOR_165": {
+      "hex": "#560F00"
+    },
+    "COLOR_166": {
+      "hex": "#9E714F"
+    },
+    "COLOR_167": {
+      "hex": "#211138"
+    },
+    "COLOR_168": {
+      "hex": "#E38420"
+    },
+    "COLOR_169": {
+      "hex": "#E5E2D0"
+    },
+    "COLOR_170": {
+      "hex": "#2B6A64"
+    },
+    "COLOR_171": {
+      "hex": "#37A4A5"
+    },
+    "COLOR_172": {
+      "hex": "#F00000"
+    },
+    "COLOR_173": {
+      "hex": "#494949"
+    },
+    "COLOR_174": {
+      "hex": "#4C7F99"
+    },
+    "COLOR_175": {
+      "hex": "#2B8280"
+    },
+    "COLOR_176": {
+      "hex": "#65482F"
+    },
+    "COLOR_177": {
+      "hex": "#98534E"
+    },
+    "COLOR_178": {
+      "hex": "#584C48"
+    },
+    "COLOR_179": {
+      "hex": "#D0C8C5"
+    },
+    "COLOR_180": {
+      "hex": "#70C05C"
+    },
+    "COLOR_181": {
+      "hex": "#7F903A"
+    },
+    "COLOR_182": {
+      "hex": "#6D2D2A"
+    },
+    "COLOR_183": {
+      "hex": "#62EDE4"
+    },
+    "COLOR_184": {
+      "hex": "#5E9013"
+    },
+    "COLOR_185": {
+      "hex": "#89395A"
+    },
+    "COLOR_186": {
+      "hex": "#2ACB58"
+    },
+    "COLOR_187": {
+      "hex": "#777618"
+    },
+    "COLOR_188": {
+      "hex": "#76423E"
+    },
+    "COLOR_189": {
+      "hex": "#2D6E28"
+    },
+    "COLOR_190": {
+      "hex": "#5EA547"
+    },
+    "COLOR_191": {
+      "hex": "#85873E"
+    },
+    "COLOR_192": {
+      "hex": "#B3CA8F"
+    },
+    "COLOR_193": {
+      "hex": "#5C7F63"
+    },
+    "COLOR_194": {
+      "hex": "#70372F"
+    },
+    "DRY_FOLIAGE": {
+      "hex": "#A37546",
+      "tint": "dry_foliage",
+      "factor": "#ABABAB"
+    },
+    "FALLBACK": {
+      "hex": "#8C8C8C"
+    }
+  },
+  "exact": {
+    "minecraft:acacia_button": "TERRACOTTA_ORANGE",
+    "minecraft:acacia_door": "COLOR_119",
+    "minecraft:acacia_fence": "TERRACOTTA_ORANGE",
+    "minecraft:acacia_fence_gate": "TERRACOTTA_ORANGE",
+    "minecraft:acacia_hanging_sign": "COLOR_123",
+    "minecraft:acacia_leaves": "FOLIAGE",
+    "minecraft:acacia_log": "COLOR_152",
+    "minecraft:acacia_planks": "TERRACOTTA_ORANGE",
+    "minecraft:acacia_pressure_plate": "TERRACOTTA_ORANGE",
+    "minecraft:acacia_sapling": "COLOR_187",
+    "minecraft:acacia_shelf": "COLOR_119",
+    "minecraft:acacia_sign": "COLOR_119",
+    "minecraft:acacia_slab": "TERRACOTTA_ORANGE",
+    "minecraft:acacia_stairs": "TERRACOTTA_ORANGE",
+    "minecraft:acacia_trapdoor": "COLOR_119",
+    "minecraft:acacia_wall_hanging_sign": "COLOR_123",
+    "minecraft:acacia_wall_sign": "COLOR_119",
+    "minecraft:acacia_wood": "COLOR_152",
+    "minecraft:activator_rail": "COLOR_145",
+    "minecraft:allium": "COLOR_157",
+    "minecraft:amethyst_block": "COLOR_140",
+    "minecraft:amethyst_cluster": "COLOR_140",
+    "minecraft:ancient_debris": "COLOR_160",
+    "minecraft:andesite": "ANDESITE",
+    "minecraft:andesite_slab": "ANDESITE",
+    "minecraft:andesite_stairs": "ANDESITE",
+    "minecraft:andesite_wall": "ANDESITE",
+    "minecraft:anvil": "COLOR_173",
+    "minecraft:attached_melon_stem": "GRASS",
+    "minecraft:attached_pumpkin_stem": "GRASS",
+    "minecraft:azalea": "AZALEA_LEAVES",
+    "minecraft:azalea_leaves": "AZALEA_LEAVES",
+    "minecraft:azure_bluet": "COLOR_105",
+    "minecraft:bamboo": "COLOR_184",
+    "minecraft:bamboo_block": "COLOR_181",
+    "minecraft:bamboo_button": "COLOR_088",
+    "minecraft:bamboo_door": "COLOR_088",
+    "minecraft:bamboo_fence": "COLOR_088",
+    "minecraft:bamboo_fence_gate": "COLOR_088",
+    "minecraft:bamboo_hanging_sign": "COLOR_108",
+    "minecraft:bamboo_mosaic": "COLOR_088",
+    "minecraft:bamboo_mosaic_slab": "COLOR_088",
+    "minecraft:bamboo_mosaic_stairs": "COLOR_088",
+    "minecraft:bamboo_planks": "COLOR_088",
+    "minecraft:bamboo_pressure_plate": "COLOR_088",
+    "minecraft:bamboo_sapling": "COLOR_138",
+    "minecraft:bamboo_shelf": "COLOR_088",
+    "minecraft:bamboo_sign": "COLOR_088",
+    "minecraft:bamboo_slab": "COLOR_088",
+    "minecraft:bamboo_stairs": "COLOR_088",
+    "minecraft:bamboo_trapdoor": "COLOR_088",
+    "minecraft:bamboo_wall_hanging_sign": "COLOR_108",
+    "minecraft:bamboo_wall_sign": "COLOR_088",
+    "minecraft:barrel": "DIRT",
+    "minecraft:basalt": "COLOR_151",
+    "minecraft:beacon": "COLOR_101",
+    "minecraft:bedrock": "COLOR_087",
+    "minecraft:bee_nest": "COLOR_088",
+    "minecraft:beehive": "COLOR_092",
+    "minecraft:beetroots": "COLOR_103",
+    "minecraft:bell": "COLOR_102",
+    "minecraft:big_dripleaf": "COLOR_181",
+    "minecraft:big_dripleaf_stem": "AZALEA_LEAVES",
+    "minecraft:birch_button": "COLOR_093",
+    "minecraft:birch_door": "SANDSTONE",
+    "minecraft:birch_fence": "COLOR_093",
+    "minecraft:birch_fence_gate": "COLOR_093",
+    "minecraft:birch_hanging_sign": "COLOR_158",
+    "minecraft:birch_leaves": "BIRCH_LEAVES",
+    "minecraft:birch_log": "CALCITE",
+    "minecraft:birch_planks": "COLOR_093",
+    "minecraft:birch_pressure_plate": "COLOR_093",
+    "minecraft:birch_sapling": "COLOR_181",
+    "minecraft:birch_shelf": "COLOR_158",
+    "minecraft:birch_sign": "COLOR_093",
+    "minecraft:birch_slab": "COLOR_093",
+    "minecraft:birch_stairs": "COLOR_093",
+    "minecraft:birch_trapdoor": "SAND",
+    "minecraft:birch_wall_hanging_sign": "COLOR_158",
+    "minecraft:birch_wall_sign": "COLOR_093",
+    "minecraft:birch_wood": "CALCITE",
+    "minecraft:black_banner": "WOOD",
+    "minecraft:black_bed": "WOOD",
+    "minecraft:black_candle": "COLOR_128",
+    "minecraft:black_candle_cake": "COLOR_155",
+    "minecraft:black_carpet": "WOOL_BLACK",
+    "minecraft:black_concrete": "CONCRETE_BLACK",
+    "minecraft:black_concrete_powder": "WOOL_BLACK",
+    "minecraft:black_glazed_terracotta": "TERRACOTTA_GRAY",
+    "minecraft:black_shulker_box": "WOOL_BLACK",
+    "minecraft:black_stained_glass": "WOOL_BLACK",
+    "minecraft:black_stained_glass_pane": "WOOL_BLACK",
+    "minecraft:black_terracotta": "TERRACOTTA_BLACK",
+    "minecraft:black_wall_banner": "WOOD",
+    "minecraft:black_wool": "WOOL_BLACK",
+    "minecraft:blackstone": "COLOR_126",
+    "minecraft:blackstone_slab": "COLOR_126",
+    "minecraft:blackstone_stairs": "COLOR_126",
+    "minecraft:blackstone_wall": "COLOR_126",
+    "minecraft:blast_furnace": "DEEPSLATE",
+    "minecraft:blue_banner": "WOOD",
+    "minecraft:blue_bed": "WOOD",
+    "minecraft:blue_candle": "COLOR_153",
+    "minecraft:blue_candle_cake": "COLOR_155",
+    "minecraft:blue_carpet": "WOOL_BLUE",
+    "minecraft:blue_concrete": "CONCRETE_BLUE",
+    "minecraft:blue_concrete_powder": "WOOL_BLUE",
+    "minecraft:blue_glazed_terracotta": "COLOR_153",
+    "minecraft:blue_ice": "BLUE_ICE",
+    "minecraft:blue_orchid": "COLOR_171",
+    "minecraft:blue_shulker_box": "CONCRETE_BLUE",
+    "minecraft:blue_stained_glass": "WOOL_BLUE",
+    "minecraft:blue_stained_glass_pane": "WOOL_BLUE",
+    "minecraft:blue_terracotta": "TERRACOTTA_BLUE",
+    "minecraft:blue_wall_banner": "WOOD",
+    "minecraft:blue_wool": "WOOL_BLUE",
+    "minecraft:bone_block": "COLOR_169",
+    "minecraft:bookshelf": "COLOR_100",
+    "minecraft:brain_coral": "COLOR_164",
+    "minecraft:brain_coral_block": "COLOR_164",
+    "minecraft:brain_coral_fan": "COLOR_164",
+    "minecraft:brain_coral_wall_fan": "COLOR_164",
+    "minecraft:brewing_stand": "COLOR_149",
+    "minecraft:brick_slab": "BRICKS",
+    "minecraft:brick_stairs": "BRICKS",
+    "minecraft:brick_wall": "BRICKS",
+    "minecraft:bricks": "BRICKS",
+    "minecraft:brown_banner": "WOOD",
+    "minecraft:brown_bed": "WOOD",
+    "minecraft:brown_candle": "WOOL_BROWN",
+    "minecraft:brown_candle_cake": "COLOR_155",
+    "minecraft:brown_carpet": "WOOL_BROWN",
+    "minecraft:brown_concrete": "CONCRETE_BROWN",
+    "minecraft:brown_concrete_powder": "COARSE_DIRT",
+    "minecraft:brown_glazed_terracotta": "COLOR_146",
+    "minecraft:brown_mushroom": "COLOR_096",
+    "minecraft:brown_mushroom_block": "MUSHROOM_BROWN",
+    "minecraft:brown_shulker_box": "WOOL_BROWN",
+    "minecraft:brown_stained_glass": "COLOR_176",
+    "minecraft:brown_stained_glass_pane": "COLOR_176",
+    "minecraft:brown_terracotta": "TERRACOTTA_BROWN",
+    "minecraft:brown_wall_banner": "WOOD",
+    "minecraft:brown_wool": "WOOL_BROWN",
+    "minecraft:bubble_column": "WATER",
+    "minecraft:bubble_coral": "CONCRETE_MAGENTA",
+    "minecraft:bubble_coral_block": "CONCRETE_MAGENTA",
+    "minecraft:bubble_coral_fan": "CONCRETE_MAGENTA",
+    "minecraft:bubble_coral_wall_fan": "CONCRETE_MAGENTA",
+    "minecraft:budding_amethyst": "COLOR_140",
+    "minecraft:bush": "GRASS",
+    "minecraft:cactus": "WOOL_GREEN",
+    "minecraft:cactus_flower": "COLOR_139",
+    "minecraft:cake": "COLOR_155",
+    "minecraft:calcite": "CALCITE",
+    "minecraft:calibrated_sculk_sensor": "COLOR_125",
+    "minecraft:campfire": "COLOR_178",
+    "minecraft:candle": "COLOR_107",
+    "minecraft:candle_cake": "COLOR_155",
+    "minecraft:carrots": "COLOR_189",
+    "minecraft:cartography_table": "COLOR_102",
+    "minecraft:carved_pumpkin": "COLOR_150",
+    "minecraft:cauldron": "COLOR_173",
+    "minecraft:cave_vines": "MOSS",
+    "minecraft:cave_vines_plant": "COLOR_099",
+    "minecraft:chain_command_block": "COLOR_109",
+    "minecraft:cherry_button": "COLOR_159",
+    "minecraft:cherry_door": "COLOR_159",
+    "minecraft:cherry_fence": "COLOR_159",
+    "minecraft:cherry_fence_gate": "COLOR_159",
+    "minecraft:cherry_hanging_sign": "COLOR_139",
+    "minecraft:cherry_leaves": "CHERRY_LEAVES",
+    "minecraft:cherry_log": "COLOR_126",
+    "minecraft:cherry_planks": "COLOR_159",
+    "minecraft:cherry_pressure_plate": "COLOR_159",
+    "minecraft:cherry_sapling": "COLOR_143",
+    "minecraft:cherry_shelf": "COLOR_139",
+    "minecraft:cherry_sign": "COLOR_159",
+    "minecraft:cherry_slab": "COLOR_159",
+    "minecraft:cherry_stairs": "COLOR_159",
+    "minecraft:cherry_trapdoor": "COLOR_159",
+    "minecraft:cherry_wall_hanging_sign": "COLOR_139",
+    "minecraft:cherry_wall_sign": "COLOR_159",
+    "minecraft:cherry_wood": "COLOR_126",
+    "minecraft:chest": "WOOD",
+    "minecraft:chipped_anvil": "COLOR_173",
+    "minecraft:chiseled_bookshelf": "COLOR_092",
+    "minecraft:chiseled_cinnabar": "COLOR_130",
+    "minecraft:chiseled_copper": "COLOR_104",
+    "minecraft:chiseled_deepslate": "CONCRETE_GRAY",
+    "minecraft:chiseled_nether_bricks": "TERRACOTTA_BLACK",
+    "minecraft:chiseled_polished_blackstone": "MUD",
+    "minecraft:chiseled_quartz_block": "CALCITE",
+    "minecraft:chiseled_red_sandstone": "RED_SANDSTONE",
+    "minecraft:chiseled_resin_bricks": "COLOR_110",
+    "minecraft:chiseled_sandstone": "SAND",
+    "minecraft:chiseled_stone_bricks": "COLOR_094",
+    "minecraft:chiseled_sulfur": "COLOR_108",
+    "minecraft:chiseled_tuff": "COLOR_111",
+    "minecraft:chiseled_tuff_bricks": "COLOR_111",
+    "minecraft:chorus_flower": "COLOR_143",
+    "minecraft:chorus_plant": "TERRACOTTA_BLUE",
+    "minecraft:cinnabar": "COLOR_177",
+    "minecraft:cinnabar_brick_slab": "COLOR_130",
+    "minecraft:cinnabar_brick_stairs": "COLOR_130",
+    "minecraft:cinnabar_brick_wall": "COLOR_130",
+    "minecraft:cinnabar_bricks": "COLOR_130",
+    "minecraft:cinnabar_slab": "COLOR_177",
+    "minecraft:cinnabar_stairs": "COLOR_177",
+    "minecraft:cinnabar_wall": "COLOR_177",
+    "minecraft:clay": "CLAY",
+    "minecraft:closed_eyeblossom": "MYCELIUM",
+    "minecraft:coal_block": "CONCRETE_BLACK",
+    "minecraft:coal_ore": "TUFF",
+    "minecraft:coarse_dirt": "COARSE_DIRT",
+    "minecraft:cobbled_deepslate": "DEEPSLATE",
+    "minecraft:cobbled_deepslate_slab": "DEEPSLATE",
+    "minecraft:cobbled_deepslate_stairs": "DEEPSLATE",
+    "minecraft:cobbled_deepslate_wall": "DEEPSLATE",
+    "minecraft:cobblestone": "STONE",
+    "minecraft:cobblestone_slab": "STONE",
+    "minecraft:cobblestone_stairs": "STONE",
+    "minecraft:cobblestone_wall": "STONE",
+    "minecraft:cobweb": "WOOL_WHITE",
+    "minecraft:cocoa": "COLOR_191",
+    "minecraft:command_block": "COLOR_096",
+    "minecraft:comparator": "COLOR_137",
+    "minecraft:composter": "WOOL_BROWN",
+    "minecraft:conduit": "COLOR_089",
+    "minecraft:copper_bars": "COLOR_123",
+    "minecraft:copper_block": "COLOR_104",
+    "minecraft:copper_bulb": "COLOR_119",
+    "minecraft:copper_chain": "COLOR_123",
+    "minecraft:copper_chest": "COLOR_104",
+    "minecraft:copper_door": "COLOR_104",
+    "minecraft:copper_golem_statue": "COLOR_104",
+    "minecraft:copper_grate": "COLOR_104",
+    "minecraft:copper_lantern": "COLOR_166",
+    "minecraft:copper_ore": "COLOR_127",
+    "minecraft:copper_torch": "COLOR_146",
+    "minecraft:copper_trapdoor": "COLOR_104",
+    "minecraft:copper_wall_torch": "COLOR_146",
+    "minecraft:cornflower": "COLOR_106",
+    "minecraft:cracked_deepslate_bricks": "WOOL_GRAY",
+    "minecraft:cracked_deepslate_tiles": "CONCRETE_GRAY",
+    "minecraft:cracked_nether_bricks": "TERRACOTTA_BLACK",
+    "minecraft:cracked_polished_blackstone_bricks": "COLOR_126",
+    "minecraft:cracked_stone_bricks": "COLOR_094",
+    "minecraft:crafter": "MYCELIUM",
+    "minecraft:crafting_table": "MUSHROOM_BROWN",
+    "minecraft:creaking_heart": "COLOR_119",
+    "minecraft:creeper_head": "COLOR_163",
+    "minecraft:creeper_wall_head": "COLOR_163",
+    "minecraft:crimson_button": "COLOR_148",
+    "minecraft:crimson_door": "COLOR_148",
+    "minecraft:crimson_fence": "COLOR_148",
+    "minecraft:crimson_fence_gate": "COLOR_148",
+    "minecraft:crimson_fungus": "CONCRETE_RED",
+    "minecraft:crimson_hanging_sign": "COLOR_148",
+    "minecraft:crimson_hyphae": "COLOR_165",
+    "minecraft:crimson_nylium": "CONCRETE_RED",
+    "minecraft:crimson_planks": "COLOR_148",
+    "minecraft:crimson_pressure_plate": "COLOR_148",
+    "minecraft:crimson_roots": "COLOR_131",
+    "minecraft:crimson_shelf": "COLOR_185",
+    "minecraft:crimson_sign": "COLOR_148",
+    "minecraft:crimson_slab": "COLOR_148",
+    "minecraft:crimson_stairs": "COLOR_148",
+    "minecraft:crimson_stem": "COLOR_165",
+    "minecraft:crimson_trapdoor": "COLOR_148",
+    "minecraft:crimson_wall_hanging_sign": "COLOR_148",
+    "minecraft:crimson_wall_sign": "COLOR_148",
+    "minecraft:crying_obsidian": "COLOR_167",
+    "minecraft:cut_copper": "COLOR_104",
+    "minecraft:cut_copper_slab": "COLOR_104",
+    "minecraft:cut_copper_stairs": "COLOR_104",
+    "minecraft:cut_red_sandstone": "RED_SAND",
+    "minecraft:cut_red_sandstone_slab": "RED_SANDSTONE",
+    "minecraft:cut_sandstone": "SAND",
+    "minecraft:cut_sandstone_slab": "SANDSTONE",
+    "minecraft:cyan_banner": "WOOD",
+    "minecraft:cyan_bed": "WOOD",
+    "minecraft:cyan_candle": "COLOR_175",
+    "minecraft:cyan_candle_cake": "COLOR_155",
+    "minecraft:cyan_carpet": "WOOL_CYAN",
+    "minecraft:cyan_concrete": "CONCRETE_CYAN",
+    "minecraft:cyan_concrete_powder": "WOOL_CYAN",
+    "minecraft:cyan_glazed_terracotta": "COLOR_141",
+    "minecraft:cyan_shulker_box": "CONCRETE_CYAN",
+    "minecraft:cyan_stained_glass": "COLOR_174",
+    "minecraft:cyan_stained_glass_pane": "COLOR_106",
+    "minecraft:cyan_terracotta": "TERRACOTTA_CYAN",
+    "minecraft:cyan_wall_banner": "WOOD",
+    "minecraft:cyan_wool": "WOOL_CYAN",
+    "minecraft:damaged_anvil": "COLOR_173",
+    "minecraft:dandelion": "COLOR_135",
+    "minecraft:dark_oak_button": "COLOR_102",
+    "minecraft:dark_oak_door": "COLOR_095",
+    "minecraft:dark_oak_fence": "COLOR_102",
+    "minecraft:dark_oak_fence_gate": "COLOR_102",
+    "minecraft:dark_oak_hanging_sign": "COLOR_163",
+    "minecraft:dark_oak_leaves": "FOLIAGE",
+    "minecraft:dark_oak_log": "COLOR_147",
+    "minecraft:dark_oak_planks": "COLOR_102",
+    "minecraft:dark_oak_pressure_plate": "COLOR_102",
+    "minecraft:dark_oak_sapling": "CONCRETE_GREEN",
+    "minecraft:dark_oak_shelf": "COLOR_147",
+    "minecraft:dark_oak_sign": "COLOR_102",
+    "minecraft:dark_oak_slab": "COLOR_102",
+    "minecraft:dark_oak_stairs": "COLOR_102",
+    "minecraft:dark_oak_trapdoor": "COLOR_095",
+    "minecraft:dark_oak_wall_hanging_sign": "COLOR_163",
+    "minecraft:dark_oak_wall_sign": "COLOR_102",
+    "minecraft:dark_oak_wood": "COLOR_147",
+    "minecraft:dark_prismarine": "COLOR_121",
+    "minecraft:dark_prismarine_slab": "COLOR_121",
+    "minecraft:dark_prismarine_stairs": "COLOR_121",
+    "minecraft:daylight_detector": "COLOR_146",
+    "minecraft:dead_brain_coral": "COLOR_161",
+    "minecraft:dead_brain_coral_block": "COLOR_161",
+    "minecraft:dead_brain_coral_fan": "COLOR_161",
+    "minecraft:dead_brain_coral_wall_fan": "COLOR_161",
+    "minecraft:dead_bubble_coral": "COLOR_161",
+    "minecraft:dead_bubble_coral_block": "COLOR_161",
+    "minecraft:dead_bubble_coral_fan": "COLOR_161",
+    "minecraft:dead_bubble_coral_wall_fan": "COLOR_161",
+    "minecraft:dead_bush": "COLOR_100",
+    "minecraft:dead_fire_coral": "COLOR_161",
+    "minecraft:dead_fire_coral_block": "COLOR_161",
+    "minecraft:dead_fire_coral_fan": "COLOR_161",
+    "minecraft:dead_fire_coral_wall_fan": "COLOR_161",
+    "minecraft:dead_horn_coral": "WOOL_LIGHT_GRAY",
+    "minecraft:dead_horn_coral_block": "COLOR_161",
+    "minecraft:dead_horn_coral_fan": "COLOR_161",
+    "minecraft:dead_horn_coral_wall_fan": "COLOR_161",
+    "minecraft:dead_tube_coral": "TUFF",
+    "minecraft:dead_tube_coral_block": "COLOR_161",
+    "minecraft:dead_tube_coral_fan": "COLOR_161",
+    "minecraft:dead_tube_coral_wall_fan": "COLOR_161",
+    "minecraft:decorated_pot": "TERRACOTTA",
+    "minecraft:deepslate": "DEEPSLATE",
+    "minecraft:deepslate_brick_slab": "COLOR_173",
+    "minecraft:deepslate_brick_stairs": "COLOR_173",
+    "minecraft:deepslate_brick_wall": "COLOR_173",
+    "minecraft:deepslate_bricks": "COLOR_173",
+    "minecraft:deepslate_coal_ore": "COLOR_173",
+    "minecraft:deepslate_copper_ore": "TERRACOTTA_CYAN",
+    "minecraft:deepslate_diamond_ore": "COLOR_132",
+    "minecraft:deepslate_emerald_ore": "COLOR_121",
+    "minecraft:deepslate_gold_ore": "COLOR_146",
+    "minecraft:deepslate_iron_ore": "COLOR_152",
+    "minecraft:deepslate_lapis_ore": "TERRACOTTA_LIGHT_BLUE",
+    "minecraft:deepslate_redstone_ore": "COLOR_178",
+    "minecraft:deepslate_tile_slab": "CONCRETE_GRAY",
+    "minecraft:deepslate_tile_stairs": "CONCRETE_GRAY",
+    "minecraft:deepslate_tile_wall": "CONCRETE_GRAY",
+    "minecraft:deepslate_tiles": "CONCRETE_GRAY",
+    "minecraft:detector_rail": "COLOR_145",
+    "minecraft:diamond_block": "COLOR_183",
+    "minecraft:diamond_ore": "ANDESITE",
+    "minecraft:diorite": "DIORITE",
+    "minecraft:diorite_slab": "DIORITE",
+    "minecraft:diorite_stairs": "DIORITE",
+    "minecraft:diorite_wall": "DIORITE",
+    "minecraft:dirt": "DIRT",
+    "minecraft:dirt_path": "WOOD",
+    "minecraft:dispenser": "TUFF",
+    "minecraft:dragon_egg": "CONCRETE_BLACK",
+    "minecraft:dragon_head": "COLOR_163",
+    "minecraft:dragon_wall_head": "COLOR_163",
+    "minecraft:dried_ghast": "COLOR_137",
+    "minecraft:dried_kelp_block": "COLOR_147",
+    "minecraft:dripstone_block": "DRIPSTONE",
+    "minecraft:dropper": "TUFF",
+    "minecraft:emerald_block": "COLOR_186",
+    "minecraft:emerald_ore": "COLOR_193",
+    "minecraft:enchanting_table": "TERRACOTTA_PURPLE",
+    "minecraft:end_gateway": "CONCRETE_BLACK",
+    "minecraft:end_portal": "CONCRETE_BLACK",
+    "minecraft:end_portal_frame": "COLOR_193",
+    "minecraft:end_rod": "COLOR_179",
+    "minecraft:end_stone": "SANDSTONE",
+    "minecraft:end_stone_brick_slab": "SANDSTONE",
+    "minecraft:end_stone_brick_stairs": "SANDSTONE",
+    "minecraft:end_stone_brick_wall": "SANDSTONE",
+    "minecraft:end_stone_bricks": "SANDSTONE",
+    "minecraft:ender_chest": "CONCRETE_BLACK",
+    "minecraft:exposed_chiseled_copper": "COLOR_096",
+    "minecraft:exposed_copper": "COLOR_096",
+    "minecraft:exposed_copper_bars": "COLOR_149",
+    "minecraft:exposed_copper_bulb": "COLOR_149",
+    "minecraft:exposed_copper_chain": "COLOR_149",
+    "minecraft:exposed_copper_chest": "COLOR_096",
+    "minecraft:exposed_copper_door": "COLOR_096",
+    "minecraft:exposed_copper_golem_statue": "COLOR_096",
+    "minecraft:exposed_copper_grate": "COLOR_096",
+    "minecraft:exposed_copper_lantern": "COLOR_089",
+    "minecraft:exposed_copper_trapdoor": "COLOR_096",
+    "minecraft:exposed_cut_copper": "COLOR_096",
+    "minecraft:exposed_cut_copper_slab": "COLOR_096",
+    "minecraft:exposed_cut_copper_stairs": "COLOR_096",
+    "minecraft:exposed_lightning_rod": "COLOR_096",
+    "minecraft:farmland": "DIRT",
+    "minecraft:fern": "GRASS",
+    "minecraft:fire": "COLOR_150",
+    "minecraft:fire_coral": "COLOR_131",
+    "minecraft:fire_coral_block": "COLOR_131",
+    "minecraft:fire_coral_fan": "COLOR_131",
+    "minecraft:fire_coral_wall_fan": "COLOR_131",
+    "minecraft:firefly_bush": "TERRACOTTA_GREEN",
+    "minecraft:fletching_table": "COLOR_158",
+    "minecraft:flower_pot": "COLOR_086",
+    "minecraft:flowering_azalea": "TERRACOTTA_LIME",
+    "minecraft:flowering_azalea_leaves": "COLOR_138",
+    "minecraft:frogspawn": "COLOR_152",
+    "minecraft:frosted_ice": "PACKED_ICE",
+    "minecraft:furnace": "TUFF",
+    "minecraft:gilded_blackstone": "TERRACOTTA_GRAY",
+    "minecraft:glass": "COLOR_101",
+    "minecraft:glass_pane": "COLOR_101",
+    "minecraft:glow_item_frame": "COLOR_093",
+    "minecraft:glow_lichen": "PALE_LEAVES",
+    "minecraft:glowstone": "COLOR_092",
+    "minecraft:gold_block": "COLOR_120",
+    "minecraft:gold_ore": "COLOR_089",
+    "minecraft:golden_dandelion": "TERRACOTTA_ORANGE",
+    "minecraft:granite": "GRANITE",
+    "minecraft:granite_slab": "GRANITE",
+    "minecraft:granite_stairs": "GRANITE",
+    "minecraft:granite_wall": "GRANITE",
+    "minecraft:grass_block": "GRASS",
+    "minecraft:gravel": "GRAVEL",
+    "minecraft:gray_banner": "WOOD",
+    "minecraft:gray_bed": "WOOD",
+    "minecraft:gray_candle": "COLOR_132",
+    "minecraft:gray_candle_cake": "COLOR_155",
+    "minecraft:gray_carpet": "WOOL_GRAY",
+    "minecraft:gray_concrete": "CONCRETE_GRAY",
+    "minecraft:gray_concrete_powder": "DEEPSLATE",
+    "minecraft:gray_glazed_terracotta": "TERRACOTTA_CYAN",
+    "minecraft:gray_shulker_box": "CONCRETE_GRAY",
+    "minecraft:gray_stained_glass": "COLOR_173",
+    "minecraft:gray_stained_glass_pane": "COLOR_173",
+    "minecraft:gray_terracotta": "TERRACOTTA_GRAY",
+    "minecraft:gray_wall_banner": "WOOD",
+    "minecraft:gray_wool": "WOOL_GRAY",
+    "minecraft:green_banner": "WOOD",
+    "minecraft:green_bed": "WOOD",
+    "minecraft:green_candle": "COLOR_099",
+    "minecraft:green_candle_cake": "COLOR_155",
+    "minecraft:green_carpet": "WOOL_GREEN",
+    "minecraft:green_concrete": "CONCRETE_GREEN",
+    "minecraft:green_concrete_powder": "AZALEA_LEAVES",
+    "minecraft:green_glazed_terracotta": "COLOR_181",
+    "minecraft:green_shulker_box": "COLOR_099",
+    "minecraft:green_stained_glass": "AZALEA_LEAVES",
+    "minecraft:green_stained_glass_pane": "AZALEA_LEAVES",
+    "minecraft:green_terracotta": "TERRACOTTA_GREEN",
+    "minecraft:green_wall_banner": "WOOD",
+    "minecraft:green_wool": "WOOL_GREEN",
+    "minecraft:grindstone": "COLOR_095",
+    "minecraft:hanging_roots": "COLOR_098",
+    "minecraft:hay_block": "TERRACOTTA_YELLOW",
+    "minecraft:heavy_core": "DEEPSLATE",
+    "minecraft:heavy_weighted_pressure_plate": "CALCITE",
+    "minecraft:honey_block": "COLOR_134",
+    "minecraft:honeycomb_block": "COLOR_134",
+    "minecraft:hopper": "CONCRETE_GRAY",
+    "minecraft:horn_coral": "COLOR_154",
+    "minecraft:horn_coral_block": "COLOR_154",
+    "minecraft:horn_coral_fan": "COLOR_154",
+    "minecraft:horn_coral_wall_fan": "COLOR_154",
+    "minecraft:ice": "ICE",
+    "minecraft:infested_chiseled_stone_bricks": "COLOR_094",
+    "minecraft:infested_cobblestone": "STONE",
+    "minecraft:infested_cracked_stone_bricks": "COLOR_094",
+    "minecraft:infested_deepslate": "DEEPSLATE",
+    "minecraft:infested_mossy_stone_bricks": "CONCRETE_LIGHT_GRAY",
+    "minecraft:infested_stone": "STONE",
+    "minecraft:infested_stone_bricks": "COLOR_094",
+    "minecraft:iron_bars": "WOOL_LIGHT_GRAY",
+    "minecraft:iron_block": "CALCITE",
+    "minecraft:iron_chain": "COLOR_128",
+    "minecraft:iron_door": "DIORITE",
+    "minecraft:iron_ore": "COLOR_161",
+    "minecraft:iron_trapdoor": "COLOR_179",
+    "minecraft:item_frame": "COLOR_093",
+    "minecraft:jack_o_lantern": "COLOR_150",
+    "minecraft:jigsaw": "COLOR_151",
+    "minecraft:jukebox": "COLOR_160",
+    "minecraft:jungle_button": "COLOR_166",
+    "minecraft:jungle_door": "COLOR_166",
+    "minecraft:jungle_fence": "COLOR_166",
+    "minecraft:jungle_fence_gate": "COLOR_166",
+    "minecraft:jungle_hanging_sign": "MUSHROOM_BROWN",
+    "minecraft:jungle_leaves": "FOLIAGE",
+    "minecraft:jungle_log": "COLOR_118",
+    "minecraft:jungle_planks": "COLOR_166",
+    "minecraft:jungle_pressure_plate": "COLOR_166",
+    "minecraft:jungle_sapling": "CONCRETE_GREEN",
+    "minecraft:jungle_shelf": "WOOD",
+    "minecraft:jungle_sign": "COLOR_166",
+    "minecraft:jungle_slab": "COLOR_166",
+    "minecraft:jungle_stairs": "COLOR_166",
+    "minecraft:jungle_trapdoor": "COLOR_166",
+    "minecraft:jungle_wall_hanging_sign": "MUSHROOM_BROWN",
+    "minecraft:jungle_wall_sign": "COLOR_166",
+    "minecraft:jungle_wood": "COLOR_118",
+    "minecraft:kelp": "COLOR_115",
+    "minecraft:kelp_plant": "COLOR_115",
+    "minecraft:ladder": "COLOR_100",
+    "minecraft:lantern": "COLOR_152",
+    "minecraft:lapis_block": "COLOR_153",
+    "minecraft:lapis_ore": "TERRACOTTA_LIGHT_BLUE",
+    "minecraft:large_amethyst_bud": "COLOR_113",
+    "minecraft:large_fern": "GRASS",
+    "minecraft:lava": "LAVA",
+    "minecraft:lava_cauldron": "LAVA",
+    "minecraft:leaf_litter": "DRY_FOLIAGE",
+    "minecraft:lectern": "WOOD",
+    "minecraft:lever": "STONE",
+    "minecraft:light_blue_banner": "WOOD",
+    "minecraft:light_blue_bed": "WOOD",
+    "minecraft:light_blue_candle": "CONCRETE_LIGHT_BLUE",
+    "minecraft:light_blue_candle_cake": "COLOR_155",
+    "minecraft:light_blue_carpet": "WOOL_LIGHT_BLUE",
+    "minecraft:light_blue_concrete": "CONCRETE_LIGHT_BLUE",
+    "minecraft:light_blue_concrete_powder": "WOOL_LIGHT_BLUE",
+    "minecraft:light_blue_glazed_terracotta": "WOOL_LIGHT_BLUE",
+    "minecraft:light_blue_shulker_box": "WOOL_LIGHT_BLUE",
+    "minecraft:light_blue_stained_glass": "CONCRETE_LIGHT_BLUE",
+    "minecraft:light_blue_stained_glass_pane": "CONCRETE_LIGHT_BLUE",
+    "minecraft:light_blue_terracotta": "TERRACOTTA_LIGHT_BLUE",
+    "minecraft:light_blue_wall_banner": "WOOD",
+    "minecraft:light_blue_wool": "WOOL_LIGHT_BLUE",
+    "minecraft:light_gray_banner": "WOOD",
+    "minecraft:light_gray_bed": "WOOD",
+    "minecraft:light_gray_candle": "PALE_LEAVES",
+    "minecraft:light_gray_candle_cake": "COLOR_155",
+    "minecraft:light_gray_carpet": "WOOL_LIGHT_GRAY",
+    "minecraft:light_gray_concrete": "CONCRETE_LIGHT_GRAY",
+    "minecraft:light_gray_concrete_powder": "COLOR_137",
+    "minecraft:light_gray_glazed_terracotta": "CLAY",
+    "minecraft:light_gray_shulker_box": "CONCRETE_LIGHT_GRAY",
+    "minecraft:light_gray_stained_glass": "COLOR_137",
+    "minecraft:light_gray_stained_glass_pane": "COLOR_137",
+    "minecraft:light_gray_terracotta": "TERRACOTTA_LIGHT_GRAY",
+    "minecraft:light_gray_wall_banner": "WOOD",
+    "minecraft:light_gray_wool": "WOOL_LIGHT_GRAY",
+    "minecraft:light_weighted_pressure_plate": "COLOR_120",
+    "minecraft:lightning_rod": "COLOR_104",
+    "minecraft:lilac": "GRAVEL",
+    "minecraft:lily_of_the_valley": "COLOR_105",
+    "minecraft:lily_pad": "LILY_PAD",
+    "minecraft:lime_banner": "WOOD",
+    "minecraft:lime_bed": "WOOD",
+    "minecraft:lime_candle": "CONCRETE_LIME",
+    "minecraft:lime_candle_cake": "COLOR_155",
+    "minecraft:lime_carpet": "WOOL_LIME",
+    "minecraft:lime_concrete": "CONCRETE_LIME",
+    "minecraft:lime_concrete_powder": "WOOL_LIME",
+    "minecraft:lime_glazed_terracotta": "COLOR_135",
+    "minecraft:lime_shulker_box": "CONCRETE_LIME",
+    "minecraft:lime_stained_glass": "COLOR_124",
+    "minecraft:lime_stained_glass_pane": "COLOR_124",
+    "minecraft:lime_terracotta": "TERRACOTTA_LIME",
+    "minecraft:lime_wall_banner": "WOOD",
+    "minecraft:lime_wool": "WOOL_LIME",
+    "minecraft:lodestone": "COLOR_094",
+    "minecraft:loom": "COLOR_089",
+    "minecraft:magenta_banner": "WOOD",
+    "minecraft:magenta_bed": "WOOD",
+    "minecraft:magenta_candle": "CONCRETE_MAGENTA",
+    "minecraft:magenta_candle_cake": "COLOR_155",
+    "minecraft:magenta_carpet": "WOOL_MAGENTA",
+    "minecraft:magenta_concrete": "CONCRETE_MAGENTA",
+    "minecraft:magenta_concrete_powder": "WOOL_MAGENTA",
+    "minecraft:magenta_glazed_terracotta": "WOOL_MAGENTA",
+    "minecraft:magenta_shulker_box": "CONCRETE_MAGENTA",
+    "minecraft:magenta_stained_glass": "WOOL_PURPLE",
+    "minecraft:magenta_stained_glass_pane": "WOOL_PURPLE",
+    "minecraft:magenta_terracotta": "TERRACOTTA_MAGENTA",
+    "minecraft:magenta_wall_banner": "WOOD",
+    "minecraft:magenta_wool": "WOOL_MAGENTA",
+    "minecraft:magma_block": "COLOR_136",
+    "minecraft:mangrove_button": "COLOR_194",
+    "minecraft:mangrove_door": "COLOR_182",
+    "minecraft:mangrove_fence": "COLOR_194",
+    "minecraft:mangrove_fence_gate": "COLOR_194",
+    "minecraft:mangrove_hanging_sign": "COLOR_188",
+    "minecraft:mangrove_leaves": "FOLIAGE",
+    "minecraft:mangrove_log": "LEAF_LITTER",
+    "minecraft:mangrove_planks": "COLOR_194",
+    "minecraft:mangrove_pressure_plate": "COLOR_194",
+    "minecraft:mangrove_propagule": "COLOR_190",
+    "minecraft:mangrove_roots": "COLOR_147",
+    "minecraft:mangrove_shelf": "COLOR_182",
+    "minecraft:mangrove_sign": "COLOR_194",
+    "minecraft:mangrove_slab": "COLOR_194",
+    "minecraft:mangrove_stairs": "COLOR_194",
+    "minecraft:mangrove_trapdoor": "COLOR_182",
+    "minecraft:mangrove_wall_hanging_sign": "COLOR_188",
+    "minecraft:mangrove_wall_sign": "COLOR_194",
+    "minecraft:mangrove_wood": "LEAF_LITTER",
+    "minecraft:medium_amethyst_bud": "COLOR_140",
+    "minecraft:melon": "COLOR_184",
+    "minecraft:melon_stem": "GRASS",
+    "minecraft:moss_block": "MOSS",
+    "minecraft:moss_carpet": "MOSS",
+    "minecraft:mossy_cobblestone": "COLOR_144",
+    "minecraft:mossy_cobblestone_slab": "COLOR_144",
+    "minecraft:mossy_cobblestone_stairs": "COLOR_144",
+    "minecraft:mossy_cobblestone_wall": "COLOR_144",
+    "minecraft:mossy_stone_brick_slab": "CONCRETE_LIGHT_GRAY",
+    "minecraft:mossy_stone_brick_stairs": "CONCRETE_LIGHT_GRAY",
+    "minecraft:mossy_stone_brick_wall": "CONCRETE_LIGHT_GRAY",
+    "minecraft:mossy_stone_bricks": "CONCRETE_LIGHT_GRAY",
+    "minecraft:moving_piston": "TUFF",
+    "minecraft:mud": "MUD",
+    "minecraft:mud_brick_slab": "DIRT",
+    "minecraft:mud_brick_stairs": "DIRT",
+    "minecraft:mud_brick_wall": "DIRT",
+    "minecraft:mud_bricks": "DIRT",
+    "minecraft:muddy_mangrove_roots": "COLOR_163",
+    "minecraft:mushroom_stem": "COLOR_179",
+    "minecraft:mycelium": "MYCELIUM",
+    "minecraft:nether_brick_fence": "TERRACOTTA_BLACK",
+    "minecraft:nether_brick_slab": "TERRACOTTA_BLACK",
+    "minecraft:nether_brick_stairs": "TERRACOTTA_BLACK",
+    "minecraft:nether_brick_wall": "TERRACOTTA_BLACK",
+    "minecraft:nether_bricks": "TERRACOTTA_BLACK",
+    "minecraft:nether_gold_ore": "COLOR_194",
+    "minecraft:nether_portal": "WOOL_PURPLE",
+    "minecraft:nether_quartz_ore": "COLOR_188",
+    "minecraft:nether_sprouts": "COLOR_142",
+    "minecraft:nether_wart": "CONCRETE_RED",
+    "minecraft:nether_wart_block": "CONCRETE_RED",
+    "minecraft:netherite_block": "MUD",
+    "minecraft:netherrack": "COLOR_182",
+    "minecraft:note_block": "COLOR_160",
+    "minecraft:oak_button": "WOOD",
+    "minecraft:oak_door": "MUSHROOM_BROWN",
+    "minecraft:oak_fence": "WOOD",
+    "minecraft:oak_fence_gate": "WOOD",
+    "minecraft:oak_hanging_sign": "WOOD",
+    "minecraft:oak_leaves": "FOLIAGE",
+    "minecraft:oak_log": "COLOR_100",
+    "minecraft:oak_planks": "WOOD",
+    "minecraft:oak_pressure_plate": "WOOD",
+    "minecraft:oak_sapling": "MOSS",
+    "minecraft:oak_shelf": "WOOD",
+    "minecraft:oak_sign": "WOOD",
+    "minecraft:oak_slab": "WOOD",
+    "minecraft:oak_stairs": "WOOD",
+    "minecraft:oak_trapdoor": "COLOR_100",
+    "minecraft:oak_wall_hanging_sign": "WOOD",
+    "minecraft:oak_wall_sign": "WOOD",
+    "minecraft:oak_wood": "COLOR_100",
+    "minecraft:observer": "TERRACOTTA_CYAN",
+    "minecraft:obsidian": "CONCRETE_BLACK",
+    "minecraft:ochre_froglight": "SANDSTONE",
+    "minecraft:open_eyeblossom": "GRAVEL",
+    "minecraft:orange_banner": "WOOD",
+    "minecraft:orange_bed": "WOOD",
+    "minecraft:orange_candle": "CONCRETE_ORANGE",
+    "minecraft:orange_candle_cake": "COLOR_155",
+    "minecraft:orange_carpet": "WOOL_ORANGE",
+    "minecraft:orange_concrete": "CONCRETE_ORANGE",
+    "minecraft:orange_concrete_powder": "COLOR_168",
+    "minecraft:orange_glazed_terracotta": "COLOR_158",
+    "minecraft:orange_shulker_box": "CONCRETE_ORANGE",
+    "minecraft:orange_stained_glass": "COLOR_112",
+    "minecraft:orange_stained_glass_pane": "COLOR_150",
+    "minecraft:orange_terracotta": "TERRACOTTA_ORANGE",
+    "minecraft:orange_tulip": "COLOR_184",
+    "minecraft:orange_wall_banner": "WOOD",
+    "minecraft:orange_wool": "WOOL_ORANGE",
+    "minecraft:oxeye_daisy": "COLOR_192",
+    "minecraft:oxidized_chiseled_copper": "COLOR_097",
+    "minecraft:oxidized_copper": "COLOR_097",
+    "minecraft:oxidized_copper_bars": "COLOR_117",
+    "minecraft:oxidized_copper_bulb": "COLOR_117",
+    "minecraft:oxidized_copper_chain": "COLOR_117",
+    "minecraft:oxidized_copper_chest": "COLOR_097",
+    "minecraft:oxidized_copper_door": "COLOR_097",
+    "minecraft:oxidized_copper_golem_statue": "COLOR_097",
+    "minecraft:oxidized_copper_grate": "COLOR_097",
+    "minecraft:oxidized_copper_lantern": "COLOR_117",
+    "minecraft:oxidized_copper_trapdoor": "COLOR_097",
+    "minecraft:oxidized_cut_copper": "COLOR_097",
+    "minecraft:oxidized_cut_copper_slab": "COLOR_097",
+    "minecraft:oxidized_cut_copper_stairs": "COLOR_097",
+    "minecraft:oxidized_lightning_rod": "COLOR_097",
+    "minecraft:packed_ice": "PACKED_ICE",
+    "minecraft:packed_mud": "MUSHROOM_BROWN",
+    "minecraft:pale_hanging_moss": "COLOR_111",
+    "minecraft:pale_moss_block": "TUFF",
+    "minecraft:pale_moss_carpet": "TUFF",
+    "minecraft:pale_oak_button": "COLOR_091",
+    "minecraft:pale_oak_door": "COLOR_179",
+    "minecraft:pale_oak_fence": "COLOR_091",
+    "minecraft:pale_oak_fence_gate": "COLOR_091",
+    "minecraft:pale_oak_hanging_sign": "COLOR_179",
+    "minecraft:pale_oak_leaves": "PALE_LEAVES",
+    "minecraft:pale_oak_log": "COLOR_178",
+    "minecraft:pale_oak_planks": "COLOR_091",
+    "minecraft:pale_oak_pressure_plate": "COLOR_091",
+    "minecraft:pale_oak_sapling": "TUFF",
+    "minecraft:pale_oak_shelf": "COLOR_091",
+    "minecraft:pale_oak_sign": "COLOR_179",
+    "minecraft:pale_oak_slab": "COLOR_091",
+    "minecraft:pale_oak_stairs": "COLOR_091",
+    "minecraft:pale_oak_trapdoor": "COLOR_091",
+    "minecraft:pale_oak_wall_hanging_sign": "COLOR_179",
+    "minecraft:pale_oak_wall_sign": "COLOR_179",
+    "minecraft:pale_oak_wood": "COLOR_178",
+    "minecraft:pearlescent_froglight": "COLOR_091",
+    "minecraft:peony": "COLOR_111",
+    "minecraft:petrified_oak_slab": "WOOD",
+    "minecraft:piglin_head": "COLOR_163",
+    "minecraft:piglin_wall_head": "COLOR_163",
+    "minecraft:pink_banner": "WOOD",
+    "minecraft:pink_bed": "WOOD",
+    "minecraft:pink_candle": "CONCRETE_PINK",
+    "minecraft:pink_candle_cake": "COLOR_155",
+    "minecraft:pink_carpet": "WOOL_PINK",
+    "minecraft:pink_concrete": "CONCRETE_PINK",
+    "minecraft:pink_concrete_powder": "WOOL_PINK",
+    "minecraft:pink_glazed_terracotta": "WOOL_PINK",
+    "minecraft:pink_petals": "GRASS",
+    "minecraft:pink_shulker_box": "COLOR_090",
+    "minecraft:pink_stained_glass": "COLOR_090",
+    "minecraft:pink_stained_glass_pane": "COLOR_090",
+    "minecraft:pink_terracotta": "TERRACOTTA_PINK",
+    "minecraft:pink_tulip": "COLOR_190",
+    "minecraft:pink_wall_banner": "WOOD",
+    "minecraft:pink_wool": "WOOL_PINK",
+    "minecraft:piston": "TUFF",
+    "minecraft:piston_head": "WOOD",
+    "minecraft:pitcher_crop": "COLOR_093",
+    "minecraft:pitcher_plant": "COLOR_193",
+    "minecraft:player_head": "COLOR_163",
+    "minecraft:player_wall_head": "COLOR_163",
+    "minecraft:podzol": "PODZOL",
+    "minecraft:pointed_dripstone": "DRIPSTONE",
+    "minecraft:polished_andesite": "ANDESITE",
+    "minecraft:polished_andesite_slab": "ANDESITE",
+    "minecraft:polished_andesite_stairs": "ANDESITE",
+    "minecraft:polished_basalt": "TERRACOTTA_CYAN",
+    "minecraft:polished_blackstone": "MUD",
+    "minecraft:polished_blackstone_brick_slab": "COLOR_126",
+    "minecraft:polished_blackstone_brick_stairs": "COLOR_126",
+    "minecraft:polished_blackstone_brick_wall": "COLOR_126",
+    "minecraft:polished_blackstone_bricks": "COLOR_126",
+    "minecraft:polished_blackstone_button": "MUD",
+    "minecraft:polished_blackstone_pressure_plate": "MUD",
+    "minecraft:polished_blackstone_slab": "MUD",
+    "minecraft:polished_blackstone_stairs": "MUD",
+    "minecraft:polished_blackstone_wall": "MUD",
+    "minecraft:polished_cinnabar": "COLOR_130",
+    "minecraft:polished_cinnabar_slab": "COLOR_130",
+    "minecraft:polished_cinnabar_stairs": "COLOR_130",
+    "minecraft:polished_cinnabar_wall": "COLOR_130",
+    "minecraft:polished_deepslate": "COLOR_173",
+    "minecraft:polished_deepslate_slab": "COLOR_173",
+    "minecraft:polished_deepslate_stairs": "COLOR_173",
+    "minecraft:polished_deepslate_wall": "COLOR_173",
+    "minecraft:polished_diorite": "DIORITE",
+    "minecraft:polished_diorite_slab": "DIORITE",
+    "minecraft:polished_diorite_stairs": "DIORITE",
+    "minecraft:polished_granite": "GRANITE",
+    "minecraft:polished_granite_slab": "GRANITE",
+    "minecraft:polished_granite_stairs": "GRANITE",
+    "minecraft:polished_sulfur": "COLOR_108",
+    "minecraft:polished_sulfur_slab": "COLOR_108",
+    "minecraft:polished_sulfur_stairs": "COLOR_108",
+    "minecraft:polished_sulfur_wall": "COLOR_108",
+    "minecraft:polished_tuff": "COLOR_111",
+    "minecraft:polished_tuff_slab": "COLOR_111",
+    "minecraft:polished_tuff_stairs": "COLOR_111",
+    "minecraft:polished_tuff_wall": "COLOR_111",
+    "minecraft:poppy": "COLOR_123",
+    "minecraft:potatoes": "COLOR_103",
+    "minecraft:potent_sulfur": "COLOR_154",
+    "minecraft:potted_acacia_sapling": "COLOR_086",
+    "minecraft:potted_allium": "COLOR_086",
+    "minecraft:potted_azalea_bush": "AZALEA_LEAVES",
+    "minecraft:potted_azure_bluet": "COLOR_086",
+    "minecraft:potted_bamboo": "COLOR_086",
+    "minecraft:potted_birch_sapling": "COLOR_086",
+    "minecraft:potted_blue_orchid": "COLOR_086",
+    "minecraft:potted_brown_mushroom": "COLOR_086",
+    "minecraft:potted_cactus": "COLOR_086",
+    "minecraft:potted_cherry_sapling": "COLOR_086",
+    "minecraft:potted_closed_eyeblossom": "COLOR_086",
+    "minecraft:potted_cornflower": "COLOR_086",
+    "minecraft:potted_crimson_fungus": "COLOR_086",
+    "minecraft:potted_crimson_roots": "COLOR_086",
+    "minecraft:potted_dandelion": "COLOR_086",
+    "minecraft:potted_dark_oak_sapling": "COLOR_086",
+    "minecraft:potted_dead_bush": "COLOR_086",
+    "minecraft:potted_fern": "GRASS",
+    "minecraft:potted_flowering_azalea_bush": "COLOR_138",
+    "minecraft:potted_golden_dandelion": "COLOR_086",
+    "minecraft:potted_jungle_sapling": "COLOR_086",
+    "minecraft:potted_lily_of_the_valley": "COLOR_086",
+    "minecraft:potted_mangrove_propagule": "COLOR_086",
+    "minecraft:potted_oak_sapling": "COLOR_086",
+    "minecraft:potted_open_eyeblossom": "COLOR_086",
+    "minecraft:potted_orange_tulip": "COLOR_086",
+    "minecraft:potted_oxeye_daisy": "COLOR_086",
+    "minecraft:potted_pale_oak_sapling": "COLOR_086",
+    "minecraft:potted_pink_tulip": "COLOR_086",
+    "minecraft:potted_poppy": "COLOR_086",
+    "minecraft:potted_red_mushroom": "COLOR_086",
+    "minecraft:potted_red_tulip": "COLOR_086",
+    "minecraft:potted_spruce_sapling": "COLOR_086",
+    "minecraft:potted_torchflower": "COLOR_086",
+    "minecraft:potted_warped_fungus": "COLOR_086",
+    "minecraft:potted_warped_roots": "COLOR_086",
+    "minecraft:potted_white_tulip": "COLOR_086",
+    "minecraft:potted_wither_rose": "COLOR_086",
+    "minecraft:powder_snow": "SNOW",
+    "minecraft:powder_snow_cauldron": "COLOR_173",
+    "minecraft:powered_rail": "MUSHROOM_BROWN",
+    "minecraft:prismarine": "COLOR_109",
+    "minecraft:prismarine_brick_slab": "COLOR_109",
+    "minecraft:prismarine_brick_stairs": "COLOR_109",
+    "minecraft:prismarine_bricks": "COLOR_109",
+    "minecraft:prismarine_slab": "COLOR_109",
+    "minecraft:prismarine_stairs": "COLOR_109",
+    "minecraft:prismarine_wall": "COLOR_109",
+    "minecraft:pumpkin": "COLOR_150",
+    "minecraft:pumpkin_stem": "GRASS",
+    "minecraft:purple_banner": "WOOD",
+    "minecraft:purple_bed": "WOOD",
+    "minecraft:purple_candle": "CONCRETE_PURPLE",
+    "minecraft:purple_candle_cake": "COLOR_155",
+    "minecraft:purple_carpet": "WOOL_PURPLE",
+    "minecraft:purple_concrete": "CONCRETE_PURPLE",
+    "minecraft:purple_concrete_powder": "WOOL_PURPLE",
+    "minecraft:purple_glazed_terracotta": "COLOR_162",
+    "minecraft:purple_shulker_box": "CONCRETE_PURPLE",
+    "minecraft:purple_stained_glass": "COLOR_162",
+    "minecraft:purple_stained_glass_pane": "COLOR_162",
+    "minecraft:purple_terracotta": "TERRACOTTA_PURPLE",
+    "minecraft:purple_wall_banner": "WOOD",
+    "minecraft:purple_wool": "WOOL_PURPLE",
+    "minecraft:purpur_block": "COLOR_157",
+    "minecraft:purpur_pillar": "COLOR_157",
+    "minecraft:purpur_slab": "COLOR_157",
+    "minecraft:purpur_stairs": "COLOR_157",
+    "minecraft:quartz_block": "CALCITE",
+    "minecraft:quartz_bricks": "CALCITE",
+    "minecraft:quartz_pillar": "CALCITE",
+    "minecraft:quartz_slab": "CALCITE",
+    "minecraft:quartz_stairs": "CALCITE",
+    "minecraft:rail": "COLOR_146",
+    "minecraft:raw_copper_block": "COLOR_098",
+    "minecraft:raw_gold_block": "COLOR_133",
+    "minecraft:raw_iron_block": "COLOR_089",
+    "minecraft:red_banner": "WOOD",
+    "minecraft:red_bed": "WOOD",
+    "minecraft:red_candle": "CONCRETE_RED",
+    "minecraft:red_candle_cake": "COLOR_155",
+    "minecraft:red_carpet": "WOOL_RED",
+    "minecraft:red_concrete": "CONCRETE_RED",
+    "minecraft:red_concrete_powder": "WOOL_RED",
+    "minecraft:red_glazed_terracotta": "WOOL_RED",
+    "minecraft:red_mushroom": "MUSHROOM_RED",
+    "minecraft:red_mushroom_block": "MUSHROOM_RED",
+    "minecraft:red_nether_brick_slab": "COLOR_165",
+    "minecraft:red_nether_brick_stairs": "COLOR_165",
+    "minecraft:red_nether_brick_wall": "COLOR_165",
+    "minecraft:red_nether_bricks": "COLOR_165",
+    "minecraft:red_sand": "RED_SAND",
+    "minecraft:red_sandstone": "RED_SANDSTONE",
+    "minecraft:red_sandstone_slab": "RED_SANDSTONE",
+    "minecraft:red_sandstone_stairs": "RED_SANDSTONE",
+    "minecraft:red_sandstone_wall": "RED_SAND",
+    "minecraft:red_shulker_box": "CONCRETE_RED",
+    "minecraft:red_stained_glass": "COLOR_130",
+    "minecraft:red_stained_glass_pane": "COLOR_130",
+    "minecraft:red_terracotta": "TERRACOTTA_RED",
+    "minecraft:red_tulip": "COLOR_115",
+    "minecraft:red_wall_banner": "WOOD",
+    "minecraft:red_wool": "WOOL_RED",
+    "minecraft:redstone_block": "COLOR_114",
+    "minecraft:redstone_lamp": "CONCRETE_BROWN",
+    "minecraft:redstone_ore": "TERRACOTTA_LIGHT_GRAY",
+    "minecraft:redstone_torch": "COLOR_176",
+    "minecraft:redstone_wall_torch": "COLOR_176",
+    "minecraft:redstone_wire": "COLOR_172",
+    "minecraft:reinforced_deepslate": "COLOR_087",
+    "minecraft:repeater": "COLOR_137",
+    "minecraft:repeating_command_block": "COLOR_113",
+    "minecraft:resin_block": "LAVA",
+    "minecraft:resin_brick_slab": "COLOR_110",
+    "minecraft:resin_brick_stairs": "COLOR_110",
+    "minecraft:resin_brick_wall": "COLOR_110",
+    "minecraft:resin_bricks": "COLOR_110",
+    "minecraft:resin_clump": "WOOL_ORANGE",
+    "minecraft:respawn_anchor": "COLOR_167",
+    "minecraft:rooted_dirt": "COLOR_098",
+    "minecraft:rose_bush": "COLOR_118",
+    "minecraft:sand": "SAND",
+    "minecraft:sandstone": "SANDSTONE",
+    "minecraft:sandstone_slab": "SANDSTONE",
+    "minecraft:sandstone_stairs": "SANDSTONE",
+    "minecraft:sandstone_wall": "SAND",
+    "minecraft:scaffolding": "COLOR_092",
+    "minecraft:sculk": "SCULK",
+    "minecraft:sculk_catalyst": "SCULK",
+    "minecraft:sculk_sensor": "COLOR_125",
+    "minecraft:sculk_shrieker": "SAND",
+    "minecraft:sculk_vein": "COLOR_125",
+    "minecraft:sea_lantern": "COLOR_101",
+    "minecraft:sea_pickle": "COLOR_138",
+    "minecraft:seagrass": "COLOR_103",
+    "minecraft:short_dry_grass": "COLOR_158",
+    "minecraft:short_grass": "GRASS",
+    "minecraft:shroomlight": "COLOR_112",
+    "minecraft:shulker_box": "COLOR_143",
+    "minecraft:skeleton_skull": "COLOR_163",
+    "minecraft:skeleton_wall_skull": "COLOR_163",
+    "minecraft:slime_block": "COLOR_180",
+    "minecraft:small_amethyst_bud": "COLOR_140",
+    "minecraft:small_dripleaf": "AZALEA_LEAVES",
+    "minecraft:smithing_table": "TERRACOTTA_GRAY",
+    "minecraft:smoker": "COLOR_087",
+    "minecraft:smooth_basalt": "COLOR_151",
+    "minecraft:smooth_quartz": "CALCITE",
+    "minecraft:smooth_quartz_slab": "CALCITE",
+    "minecraft:smooth_quartz_stairs": "CALCITE",
+    "minecraft:smooth_red_sandstone": "RED_SANDSTONE",
+    "minecraft:smooth_red_sandstone_slab": "RED_SANDSTONE",
+    "minecraft:smooth_red_sandstone_stairs": "RED_SANDSTONE",
+    "minecraft:smooth_sandstone": "SANDSTONE",
+    "minecraft:smooth_sandstone_slab": "SANDSTONE",
+    "minecraft:smooth_sandstone_stairs": "SANDSTONE",
+    "minecraft:smooth_stone": "COLOR_137",
+    "minecraft:smooth_stone_slab": "COLOR_137",
+    "minecraft:sniffer_egg": "MUSHROOM_BROWN",
+    "minecraft:snow": "SNOW",
+    "minecraft:snow_block": "SNOW",
+    "minecraft:soul_campfire": "COLOR_178",
+    "minecraft:soul_fire": "COLOR_171",
+    "minecraft:soul_lantern": "COLOR_132",
+    "minecraft:soul_sand": "COLOR_163",
+    "minecraft:soul_soil": "COLOR_163",
+    "minecraft:soul_torch": "COLOR_144",
+    "minecraft:soul_wall_torch": "COLOR_144",
+    "minecraft:spawner": "COLOR_128",
+    "minecraft:sponge": "COLOR_154",
+    "minecraft:spore_blossom": "COLOR_181",
+    "minecraft:spruce_button": "COLOR_100",
+    "minecraft:spruce_door": "COLOR_100",
+    "minecraft:spruce_fence": "COLOR_100",
+    "minecraft:spruce_fence_gate": "COLOR_100",
+    "minecraft:spruce_hanging_sign": "COLOR_100",
+    "minecraft:spruce_leaves": "SPRUCE_LEAVES",
+    "minecraft:spruce_log": "COLOR_102",
+    "minecraft:spruce_planks": "COLOR_100",
+    "minecraft:spruce_pressure_plate": "COLOR_100",
+    "minecraft:spruce_sapling": "SPRUCE_LEAVES",
+    "minecraft:spruce_shelf": "COLOR_100",
+    "minecraft:spruce_sign": "COLOR_100",
+    "minecraft:spruce_slab": "COLOR_100",
+    "minecraft:spruce_stairs": "COLOR_100",
+    "minecraft:spruce_trapdoor": "COLOR_100",
+    "minecraft:spruce_wall_hanging_sign": "COLOR_100",
+    "minecraft:spruce_wall_sign": "COLOR_100",
+    "minecraft:spruce_wood": "COLOR_102",
+    "minecraft:sticky_piston": "TUFF",
+    "minecraft:stone": "STONE",
+    "minecraft:stone_brick_slab": "COLOR_094",
+    "minecraft:stone_brick_stairs": "COLOR_094",
+    "minecraft:stone_brick_wall": "COLOR_094",
+    "minecraft:stone_bricks": "COLOR_094",
+    "minecraft:stone_button": "STONE",
+    "minecraft:stone_pressure_plate": "STONE",
+    "minecraft:stone_slab": "STONE",
+    "minecraft:stone_stairs": "STONE",
+    "minecraft:stonecutter": "COLOR_127",
+    "minecraft:stripped_acacia_log": "COLOR_104",
+    "minecraft:stripped_acacia_wood": "COLOR_104",
+    "minecraft:stripped_bamboo_block": "COLOR_088",
+    "minecraft:stripped_birch_log": "COLOR_093",
+    "minecraft:stripped_birch_wood": "COLOR_093",
+    "minecraft:stripped_cherry_log": "COLOR_139",
+    "minecraft:stripped_cherry_wood": "COLOR_139",
+    "minecraft:stripped_crimson_hyphae": "COLOR_185",
+    "minecraft:stripped_crimson_stem": "COLOR_185",
+    "minecraft:stripped_dark_oak_log": "COLOR_147",
+    "minecraft:stripped_dark_oak_wood": "COLOR_147",
+    "minecraft:stripped_jungle_log": "COLOR_092",
+    "minecraft:stripped_jungle_wood": "COLOR_092",
+    "minecraft:stripped_mangrove_log": "COLOR_194",
+    "minecraft:stripped_mangrove_wood": "COLOR_194",
+    "minecraft:stripped_oak_log": "COLOR_092",
+    "minecraft:stripped_oak_wood": "COLOR_092",
+    "minecraft:stripped_pale_oak_log": "WOOL_WHITE",
+    "minecraft:stripped_pale_oak_wood": "WOOL_WHITE",
+    "minecraft:stripped_spruce_log": "COLOR_100",
+    "minecraft:stripped_spruce_wood": "COLOR_100",
+    "minecraft:stripped_warped_hyphae": "COLOR_171",
+    "minecraft:stripped_warped_stem": "COLOR_171",
+    "minecraft:structure_block": "MUD",
+    "minecraft:sugar_cane": "GRASS",
+    "minecraft:sulfur": "COLOR_108",
+    "minecraft:sulfur_brick_slab": "COLOR_108",
+    "minecraft:sulfur_brick_stairs": "COLOR_108",
+    "minecraft:sulfur_brick_wall": "COLOR_108",
+    "minecraft:sulfur_bricks": "COLOR_108",
+    "minecraft:sulfur_slab": "COLOR_108",
+    "minecraft:sulfur_spike": "COLOR_108",
+    "minecraft:sulfur_stairs": "COLOR_108",
+    "minecraft:sulfur_wall": "COLOR_108",
+    "minecraft:sunflower": "COLOR_103",
+    "minecraft:suspicious_gravel": "GRAVEL",
+    "minecraft:suspicious_sand": "SAND",
+    "minecraft:sweet_berry_bush": "COLOR_116",
+    "minecraft:tall_dry_grass": "COLOR_093",
+    "minecraft:tall_grass": "GRASS",
+    "minecraft:tall_seagrass": "COLOR_103",
+    "minecraft:target": "COLOR_159",
+    "minecraft:terracotta": "TERRACOTTA",
+    "minecraft:test_block": "COLOR_105",
+    "minecraft:test_instance_block": "COLOR_161",
+    "minecraft:tinted_glass": "COLOR_126",
+    "minecraft:tnt": "TERRACOTTA_RED",
+    "minecraft:torch": "WOOD",
+    "minecraft:torchflower": "COLOR_146",
+    "minecraft:torchflower_crop": "COLOR_116",
+    "minecraft:trapped_chest": "WOOD",
+    "minecraft:trial_spawner": "COLOR_132",
+    "minecraft:tripwire": "STONE",
+    "minecraft:tripwire_hook": "CONCRETE_LIGHT_GRAY",
+    "minecraft:tube_coral": "WOOL_BLUE",
+    "minecraft:tube_coral_block": "WOOL_BLUE",
+    "minecraft:tube_coral_fan": "WOOL_BLUE",
+    "minecraft:tube_coral_wall_fan": "WOOL_BLUE",
+    "minecraft:tuff": "TUFF",
+    "minecraft:tuff_brick_slab": "COLOR_111",
+    "minecraft:tuff_brick_stairs": "COLOR_111",
+    "minecraft:tuff_brick_wall": "COLOR_111",
+    "minecraft:tuff_bricks": "COLOR_111",
+    "minecraft:tuff_slab": "TUFF",
+    "minecraft:tuff_stairs": "TUFF",
+    "minecraft:tuff_wall": "TUFF",
+    "minecraft:turtle_egg": "COLOR_156",
+    "minecraft:twisting_vines": "COLOR_142",
+    "minecraft:twisting_vines_plant": "COLOR_142",
+    "minecraft:vault": "WOOL_GRAY",
+    "minecraft:verdant_froglight": "COLOR_156",
+    "minecraft:vine": "FOLIAGE",
+    "minecraft:wall_torch": "WOOD",
+    "minecraft:warped_button": "COLOR_170",
+    "minecraft:warped_door": "COLOR_175",
+    "minecraft:warped_fence": "COLOR_170",
+    "minecraft:warped_fence_gate": "COLOR_170",
+    "minecraft:warped_fungus": "COLOR_121",
+    "minecraft:warped_hanging_sign": "COLOR_175",
+    "minecraft:warped_hyphae": "COLOR_128",
+    "minecraft:warped_nylium": "COLOR_170",
+    "minecraft:warped_planks": "COLOR_170",
+    "minecraft:warped_pressure_plate": "COLOR_170",
+    "minecraft:warped_roots": "COLOR_142",
+    "minecraft:warped_shelf": "COLOR_175",
+    "minecraft:warped_sign": "COLOR_170",
+    "minecraft:warped_slab": "COLOR_170",
+    "minecraft:warped_stairs": "COLOR_170",
+    "minecraft:warped_stem": "COLOR_128",
+    "minecraft:warped_trapdoor": "COLOR_170",
+    "minecraft:warped_wall_hanging_sign": "COLOR_175",
+    "minecraft:warped_wall_sign": "COLOR_170",
+    "minecraft:warped_wart_block": "COLOR_175",
+    "minecraft:water": "WATER",
+    "minecraft:water_cauldron": "WATER",
+    "minecraft:waxed_chiseled_copper": "COLOR_104",
+    "minecraft:waxed_copper_bars": "COLOR_123",
+    "minecraft:waxed_copper_block": "COLOR_104",
+    "minecraft:waxed_copper_bulb": "COLOR_119",
+    "minecraft:waxed_copper_chain": "COLOR_123",
+    "minecraft:waxed_copper_chest": "COLOR_104",
+    "minecraft:waxed_copper_door": "COLOR_104",
+    "minecraft:waxed_copper_golem_statue": "COLOR_104",
+    "minecraft:waxed_copper_grate": "COLOR_104",
+    "minecraft:waxed_copper_lantern": "COLOR_166",
+    "minecraft:waxed_copper_trapdoor": "COLOR_104",
+    "minecraft:waxed_cut_copper": "COLOR_104",
+    "minecraft:waxed_cut_copper_slab": "COLOR_104",
+    "minecraft:waxed_cut_copper_stairs": "COLOR_104",
+    "minecraft:waxed_exposed_chiseled_copper": "COLOR_096",
+    "minecraft:waxed_exposed_copper": "COLOR_096",
+    "minecraft:waxed_exposed_copper_bars": "COLOR_149",
+    "minecraft:waxed_exposed_copper_bulb": "COLOR_149",
+    "minecraft:waxed_exposed_copper_chain": "COLOR_149",
+    "minecraft:waxed_exposed_copper_chest": "COLOR_096",
+    "minecraft:waxed_exposed_copper_door": "COLOR_096",
+    "minecraft:waxed_exposed_copper_golem_statue": "COLOR_096",
+    "minecraft:waxed_exposed_copper_grate": "COLOR_096",
+    "minecraft:waxed_exposed_copper_lantern": "COLOR_089",
+    "minecraft:waxed_exposed_copper_trapdoor": "COLOR_096",
+    "minecraft:waxed_exposed_cut_copper": "COLOR_096",
+    "minecraft:waxed_exposed_cut_copper_slab": "COLOR_096",
+    "minecraft:waxed_exposed_cut_copper_stairs": "COLOR_096",
+    "minecraft:waxed_exposed_lightning_rod": "COLOR_096",
+    "minecraft:waxed_lightning_rod": "COLOR_104",
+    "minecraft:waxed_oxidized_chiseled_copper": "COLOR_097",
+    "minecraft:waxed_oxidized_copper": "COLOR_097",
+    "minecraft:waxed_oxidized_copper_bars": "COLOR_117",
+    "minecraft:waxed_oxidized_copper_bulb": "COLOR_117",
+    "minecraft:waxed_oxidized_copper_chain": "COLOR_117",
+    "minecraft:waxed_oxidized_copper_chest": "COLOR_097",
+    "minecraft:waxed_oxidized_copper_door": "COLOR_097",
+    "minecraft:waxed_oxidized_copper_golem_statue": "COLOR_097",
+    "minecraft:waxed_oxidized_copper_grate": "COLOR_097",
+    "minecraft:waxed_oxidized_copper_lantern": "COLOR_117",
+    "minecraft:waxed_oxidized_copper_trapdoor": "COLOR_097",
+    "minecraft:waxed_oxidized_cut_copper": "COLOR_097",
+    "minecraft:waxed_oxidized_cut_copper_slab": "COLOR_097",
+    "minecraft:waxed_oxidized_cut_copper_stairs": "COLOR_097",
+    "minecraft:waxed_oxidized_lightning_rod": "COLOR_097",
+    "minecraft:waxed_weathered_chiseled_copper": "COLOR_129",
+    "minecraft:waxed_weathered_copper": "COLOR_129",
+    "minecraft:waxed_weathered_copper_bars": "COLOR_193",
+    "minecraft:waxed_weathered_copper_bulb": "COLOR_193",
+    "minecraft:waxed_weathered_copper_chain": "COLOR_121",
+    "minecraft:waxed_weathered_copper_chest": "COLOR_129",
+    "minecraft:waxed_weathered_copper_door": "COLOR_129",
+    "minecraft:waxed_weathered_copper_golem_statue": "COLOR_129",
+    "minecraft:waxed_weathered_copper_grate": "COLOR_129",
+    "minecraft:waxed_weathered_copper_lantern": "COLOR_193",
+    "minecraft:waxed_weathered_copper_trapdoor": "COLOR_129",
+    "minecraft:waxed_weathered_cut_copper": "COLOR_129",
+    "minecraft:waxed_weathered_cut_copper_slab": "COLOR_129",
+    "minecraft:waxed_weathered_cut_copper_stairs": "COLOR_129",
+    "minecraft:waxed_weathered_lightning_rod": "COLOR_129",
+    "minecraft:weathered_chiseled_copper": "COLOR_129",
+    "minecraft:weathered_copper": "COLOR_129",
+    "minecraft:weathered_copper_bars": "COLOR_193",
+    "minecraft:weathered_copper_bulb": "COLOR_193",
+    "minecraft:weathered_copper_chain": "COLOR_121",
+    "minecraft:weathered_copper_chest": "COLOR_129",
+    "minecraft:weathered_copper_door": "COLOR_129",
+    "minecraft:weathered_copper_golem_statue": "COLOR_129",
+    "minecraft:weathered_copper_grate": "COLOR_129",
+    "minecraft:weathered_copper_lantern": "COLOR_193",
+    "minecraft:weathered_copper_trapdoor": "COLOR_129",
+    "minecraft:weathered_cut_copper": "COLOR_129",
+    "minecraft:weathered_cut_copper_slab": "COLOR_129",
+    "minecraft:weathered_cut_copper_stairs": "COLOR_129",
+    "minecraft:weathered_lightning_rod": "COLOR_129",
+    "minecraft:weeping_vines": "CONCRETE_RED",
+    "minecraft:weeping_vines_plant": "CONCRETE_RED",
+    "minecraft:wet_sponge": "COLOR_135",
+    "minecraft:wheat": "COLOR_103",
+    "minecraft:white_banner": "WOOD",
+    "minecraft:white_bed": "WOOD",
+    "minecraft:white_candle": "CONCRETE_WHITE",
+    "minecraft:white_candle_cake": "COLOR_155",
+    "minecraft:white_carpet": "WOOL_WHITE",
+    "minecraft:white_concrete": "CONCRETE_WHITE",
+    "minecraft:white_concrete_powder": "CALCITE",
+    "minecraft:white_glazed_terracotta": "CONCRETE_WHITE",
+    "minecraft:white_shulker_box": "CALCITE",
+    "minecraft:white_stained_glass": "SNOW",
+    "minecraft:white_stained_glass_pane": "SNOW",
+    "minecraft:white_terracotta": "TERRACOTTA_WHITE",
+    "minecraft:white_tulip": "COLOR_190",
+    "minecraft:white_wall_banner": "WOOD",
+    "minecraft:white_wool": "WOOL_WHITE",
+    "minecraft:wildflowers": "GRASS",
+    "minecraft:wither_rose": "COLOR_147",
+    "minecraft:wither_skeleton_skull": "COLOR_163",
+    "minecraft:wither_skeleton_wall_skull": "COLOR_163",
+    "minecraft:yellow_banner": "WOOD",
+    "minecraft:yellow_bed": "WOOD",
+    "minecraft:yellow_candle": "COLOR_133",
+    "minecraft:yellow_candle_cake": "COLOR_155",
+    "minecraft:yellow_carpet": "WOOL_YELLOW",
+    "minecraft:yellow_concrete": "CONCRETE_YELLOW",
+    "minecraft:yellow_concrete_powder": "COLOR_120",
+    "minecraft:yellow_glazed_terracotta": "COLOR_133",
+    "minecraft:yellow_shulker_box": "WOOL_YELLOW",
+    "minecraft:yellow_stained_glass": "COLOR_122",
+    "minecraft:yellow_stained_glass_pane": "COLOR_122",
+    "minecraft:yellow_terracotta": "TERRACOTTA_YELLOW",
+    "minecraft:yellow_wall_banner": "WOOD",
+    "minecraft:yellow_wool": "WOOL_YELLOW",
+    "minecraft:zombie_head": "COLOR_163",
+    "minecraft:zombie_wall_head": "COLOR_163"
+  },
+  "snowyOverrides": {
+    "minecraft:grass_block": "SNOW",
+    "minecraft:podzol": "SNOW",
+    "minecraft:mycelium": "SNOW"
+  },
+  "woodFamilies": [
+    "oak",
+    "spruce",
+    "birch",
+    "jungle",
+    "acacia",
+    "dark_oak",
+    "mangrove",
+    "cherry",
+    "pale_oak",
+    "bamboo",
+    "crimson",
+    "warped"
+  ],
+  "plantKeywords": [
+    "grass",
+    "fern",
+    "flower",
+    "tulip",
+    "poppy",
+    "dandelion",
+    "petals",
+    "wildflower",
+    "bush",
+    "lily",
+    "vine",
+    "seagrass",
+    "dripleaf",
+    "lichen",
+    "cactus",
+    "bamboo",
+    "sugar_cane",
+    "sapling",
+    "wheat",
+    "crop",
+    "kelp",
+    "roots",
+    "sprout",
+    "moss_carpet",
+    "bluet",
+    "orchid",
+    "cornflower",
+    "allium",
+    "daisy",
+    "sunflower",
+    "lilac",
+    "rose_bush",
+    "peony",
+    "torchflower",
+    "pitcher",
+    "tall_grass",
+    "short_grass",
+    "leaf_litter",
+    "petal"
+  ],
+  "structureKeywords": [
+    "stairs",
+    "slab",
+    "wall",
+    "fence",
+    "fence_gate",
+    "door",
+    "trapdoor",
+    "sign",
+    "button",
+    "pressure_plate",
+    "pane",
+    "bars"
+  ]
+}
