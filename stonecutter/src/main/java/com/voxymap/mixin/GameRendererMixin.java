@@ -1,6 +1,7 @@
 package com.voxymap.mixin;
 
 import com.voxymap.MapScreen;
+import com.voxymap.RefreshDebug;
 import com.voxymap.VoxyMapConfig;
 import net.minecraft.client.DeltaTracker;
 import net.minecraft.client.Minecraft;
@@ -16,25 +17,52 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * still draws the whole level every frame. Flipping the level-render flag off for our screen skips
  * that work while the screen itself keeps rendering.
  *
- * <p>With {@code debugEnabled} on, the first frames after the world render resumes are traced. This
- * is the only known place where the Fabric 26.1.2 + Voxy 0.2.18 combination can hit an
- * intermittent driver fail-fast; the trace pins down the stage if it ever happens again.</p>
+ * <p>Pausing the world renderer for minutes and then resuming could make the NVIDIA driver
+ * fail-fast on 26.1.2 (see {@link #voxymap$keepalive}), so one hidden world frame is let through
+ * per second while the map is open. With {@code debugEnabled} on, the first frames after the world
+ * render resumes are traced and the available VRAM is logged.</p>
  */
 @Mixin(GameRenderer.class)
 public class GameRendererMixin {
-    private static boolean voxymap$lastSkip;
+    private static boolean voxymap$lastWantSkip;
+    private static long voxymap$lastWorldFrameNs;
     private static int voxymap$watchFrames;
+
+    private static final long KEEPALIVE_INTERVAL_NS = 1_000_000_000L;
+
+    /**
+     * Let one world frame through per second while the map covers the screen.
+     *
+     * <p>Pausing the world renderer for a long time and then resuming made Voxy request an
+     * impossible amount of GPU memory from the NVIDIA driver on 26.1.2 (Voxy 0.2.18); the driver
+     * then fail-fasts (nvoglv64, exit 0xc0000409) with no Java crash report. The game was using
+     * only ~3.4 GB of an 8 GB card at the time, so this is a bad resume-time allocation, not
+     * capacity exhaustion. Voxy 0.2.18 and 0.2.19 have byte-identical geometry allocation code,
+     * so 26.2 has the same edge case; one hidden frame per second (the map is opaque) keeps the
+     * render ring and upload queues warm on both versions.</p>
+     */
+    private static final boolean voxymap$keepalive = true;
 
     @ModifyVariable(method = "render", at = @At("HEAD"), argsOnly = true, ordinal = 0)
     private boolean voxymap$skipWorldBehindMap(boolean advanceGameTime) {
-        boolean skip = advanceGameTime
+        boolean wantSkip = advanceGameTime
                 && VoxyMapConfig.SKIP_WORLD_RENDER.get()
                 && Minecraft.getInstance().gui.screen() instanceof MapScreen;
-        if (skip != voxymap$lastSkip) {
-            voxymap$lastSkip = skip;
+        long now = System.nanoTime();
+        boolean skip = wantSkip;
+        if (wantSkip && voxymap$keepalive) {
+            if (voxymap$lastWorldFrameNs == 0L) voxymap$lastWorldFrameNs = now;
+            if (now - voxymap$lastWorldFrameNs >= KEEPALIVE_INTERVAL_NS) {
+                skip = false;
+                voxymap$lastWorldFrameNs = now;
+            }
+        }
+        if (!skip) voxymap$lastWorldFrameNs = now;
+        if (wantSkip != voxymap$lastWantSkip) {
+            voxymap$lastWantSkip = wantSkip;
             if (VoxyMapConfig.DEBUG_ENABLED.get()) {
-                System.out.println("[voxymap] world render skip=" + skip);
-                if (!skip) voxymap$watchFrames = 12;
+                System.out.println("[voxymap] world render skip=" + wantSkip);
+                if (!wantSkip) voxymap$watchFrames = 12;
             }
         }
         return skip ? false : advanceGameTime;
@@ -76,7 +104,8 @@ public class GameRendererMixin {
                     + " activeTex=" + org.lwjgl.opengl.GL11.glGetInteger(0x84E0)
                     + " program=" + org.lwjgl.opengl.GL11.glGetInteger(0x8B8D)
                     + " vao=" + org.lwjgl.opengl.GL11.glGetInteger(0x85B5)
-                    + " fbo=" + org.lwjgl.opengl.GL11.glGetInteger(0x8CA6);
+                    + " fbo=" + org.lwjgl.opengl.GL11.glGetInteger(0x8CA6)
+                    + " vram=" + RefreshDebug.vramInfo();
         } catch (Throwable t) {
             return "gl state query failed: " + t;
         }

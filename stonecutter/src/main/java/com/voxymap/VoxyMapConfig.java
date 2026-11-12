@@ -68,7 +68,7 @@ public final class VoxyMapConfig {
     public static final Value<Boolean> ADAPTIVE_COLOR_RAMP = new Value<>("adaptiveColorRamp", true);
     public static final Value<Boolean> MIN_MAX_RAMP = new Value<>("landMaxRamp", true);
     public static final Value<Boolean> WATER_BLUR = new Value<>("waterBlur", true);
-    public static final Value<Integer> WATER_BLUR_RADIUS = new Value<>("waterBlurRadius", 8);
+    public static final Value<Integer> WATER_BLUR_RADIUS = new Value<>("waterBlurRadius", 4);
     public static final Value<Integer> WATER_BLUR_PASSES = new Value<>("waterBlurPasses", 2);
     public static final Value<Boolean> DENOISE = new Value<>("denoise", false);
     public static final Value<Boolean> FILL_HOLES = new Value<>("fillHoles", false);
@@ -101,7 +101,7 @@ public final class VoxyMapConfig {
     /** Soft resident tile cap; eviction only happens above this, down to ~70%. */
     public static final Value<Integer> TILE_RESIDENT_CAP = new Value<>("tileResidentCap", 1024);
     /** Estimated VRAM budget for tile textures (256×256 RGBA ≈ 256 KiB each). */
-    public static final Value<Integer> GPU_TEXTURE_BUDGET_MB = new Value<>("gpuTextureBudgetMb", 256);
+    public static final Value<Integer> GPU_TEXTURE_BUDGET_MB = new Value<>("gpuTextureBudgetMb", 472);
     /** Experimental: build 3D mesh per map tile and rebuild only changed tiles. */
     /** Disk .vxt cache soft limit. Oldest files are removed first. */
     public static final Value<Integer> DISK_CACHE_MAX_MB = new Value<>("diskCacheMaxMb", 8192);
@@ -111,7 +111,7 @@ public final class VoxyMapConfig {
     public static final Value<Integer> CONTOUR_DENSITY = new Value<>("contourDensity", 12);
     public static final Value<Boolean> SHOW_BIOMES = new Value<>("showBiomes", false);
     public static final Value<String> ARROW_STYLE = new Value<>("arrowStyle", "clean");
-    public static final Value<Boolean> SHOW_RENDER_DISTANCE = new Value<>("showRenderDistance", false);
+    public static final Value<Boolean> SHOW_RENDER_DISTANCE = new Value<>("showRenderDistance", true);
     public static final Value<Boolean> RELEASE_TEXTURES_ON_CLOSE = new Value<>("releaseTexturesOnClose", true);
     public static final Value<Integer> BIOME_LABEL_MIN_AREA = new Value<>("biomeLabelMinArea", 600);
     public static final Value<Boolean> BIOME_LABEL_BACKGROUND = new Value<>("biomeLabelBackground", true);
@@ -141,7 +141,7 @@ public final class VoxyMapConfig {
     public static final Value<Boolean> REMEMBER_3D_VIEW = new Value<>("remember3dView", true);
     public static final Value<Boolean> AUTO_HIDE_CONTOURS_3D = new Value<>("autoHideContours3d", false);
     public static final Value<Double> PLAYER_MARKER_HEIGHT_3D = new Value<>("playerMarkerHeight3d", 50.0);
-    public static final Value<Double> PLAYER_MARKER_SCALE_3D = new Value<>("playerMarkerScale3d", 2.0);
+    public static final Value<Double> PLAYER_MARKER_SCALE_3D = new Value<>("playerMarkerScale3d", 2.5);
     /** pixel count above which the map asks before loading (memory guard) */
     /** @deprecated no effect: the legacy snapshot memory guard is unreachable in tile mode. */
     @Deprecated

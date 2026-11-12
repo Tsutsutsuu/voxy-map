@@ -1801,7 +1801,7 @@ public class MapScreen extends Screen {
         if (styleMenuOpen) {
             int menuW = styleMenuWidth();
             labelBlockers.add(new int[]{width - 8 - menuW - 2, STYLE_ROW_Y + 22, width - 6,
-                    STYLE_ROW_Y + 24 + 6 * 20 + 6});
+                    STYLE_ROW_Y + 24 + MapStyles.NAMES.length * 20 + 6});
         }
         // biome / distance toggles (bottom-left)
         labelBlockers.add(new int[]{6, height - 32, 8 + biomesWidth() + 2, height - 8});
@@ -2116,17 +2116,24 @@ public class MapScreen extends Screen {
         // closing the map while still in 3D used to leave the contour/label overrides set for the
         // rest of the session (2D contours vanished, biome labels stopped rebuilding)
         restore3dOverrides();
-        // Real close: release the GPU terrain unless the player asked to keep 3D tiles around.
+        // Real close: always release the GPU 3D terrain. `keep3dTilesIn2d` only means "keep the
+        // built 3D terrain while the map stays open and you toggle back to 2D"; it must NOT keep
+        // hundreds of MB of atlas pages/mesh buffers resident after the map is closed (that starves
+        // the driver when world rendering resumes, especially with Voxy's multi-GB sparse buffer).
         // A config-screen round trip goes through removed() only (no finishClose) and keeps them;
         // MapData clears them on a world change.
-        if (!VoxyMapConfig.KEEP_3D_TILES_IN_2D.get()) {
-            Gpu3DMap.clear();
-        }
+        boolean debugClose = VoxyMapConfig.DEBUG_ENABLED.get();
+        if (debugClose) System.out.println("[voxymap] map close vram=" + RefreshDebug.vramInfo());
+        Gpu3DMap.clear();
+        if (debugClose) System.out.println("[voxymap] map close: 3d cleared vram=" + RefreshDebug.vramInfo());
         if (VoxyMapConfig.RELEASE_TEXTURES_ON_CLOSE.get()) {
             try {
                 MapData.INSTANCE.releaseTextures();
             } catch (Throwable t) {
                 System.err.println("[voxymap] release textures failed: " + t);
+            }
+            if (debugClose) {
+                System.out.println("[voxymap] map close: textures released vram=" + RefreshDebug.vramInfo());
             }
         }
         super.onClose();
@@ -2142,7 +2149,7 @@ public class MapScreen extends Screen {
         MapData.INSTANCE.onMapClosed();
         releaseArrowTexture();
         // Gpu3DMap is intentionally NOT cleared here: a 3D -> config screen -> map round trip must
-        // keep the built terrain. finishClose() releases it on a real close (unless
+        // keep the built terrain. finishClose() always releases it on a real close (regardless of
         // keep3dTilesIn2d) and MapData clears it when the world changes.
         super.removed();
     }

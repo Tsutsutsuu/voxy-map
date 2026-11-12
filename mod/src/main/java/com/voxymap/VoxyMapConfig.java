@@ -61,6 +61,7 @@ public final class VoxyMapConfig {
     public static final Value<Boolean> ADAPTIVE_COLOR_RAMP;
     public static final Value<Boolean> MIN_MAX_RAMP;
     public static final Value<Boolean> DRAW_HILLSHADE;
+    public static final Value<Boolean> BIOME_COLORS;
     public static final Value<Boolean> DRAW_WATER_DEPTH;
     public static final Value<Boolean> AUTO_SEA_LEVEL;
     public static final Value<Integer> SEA_LEVEL_OVERRIDE;
@@ -149,12 +150,12 @@ public final class VoxyMapConfig {
                 .define("rememberZoom", true), true);
         ARROW_STYLE = new Value<>(b.comment("Arrow marker style: clean or classic")
                 .define("arrowStyle", "clean"), "clean");
-        DEFAULT_STYLE = new Value<>(b.comment("Default palette: current, gradient, gmt, nautical, gradient-turbo, gradient-soft")
-                .define("defaultStyle", "current"), "current");
+        DEFAULT_STYLE = new Value<>(b.comment("Default palette: blocks, current, gradient, gmt, nautical, gradient-turbo, gradient-soft")
+                .define("defaultStyle", "blocks"), "blocks");
         SHOW_BIOMES = new Value<>(b.comment("Show the biome boundary overlay when opening the map")
                 .define("showBiomes", false), false);
         SHOW_RENDER_DISTANCE = new Value<>(b.comment("Show the player render distance as a yellow box")
-                .define("showRenderDistance", false), false);
+                .define("showRenderDistance", true), true);
         BIOME_LABEL_MIN_AREA = new Value<>(b.comment("Minimum biome region area (map pixels) needed to show its name")
                 .defineInRange("biomeLabelMinArea", 600, 1, 5000), 600);
         BIOME_LABEL_BACKGROUND = new Value<>(b.comment("Draw a semi-transparent background behind biome labels")
@@ -168,6 +169,8 @@ public final class VoxyMapConfig {
                 .define("landMaxRamp", true), true);
         DRAW_HILLSHADE = new Value<>(b.comment("Apply hillshade to the terrain")
                 .define("drawHillshade", true), true);
+        BIOME_COLORS = new Value<>(b.comment("Tint grass, leaves and water by biome in the block-color style")
+                .define("biomeColors", true), true);
         DRAW_WATER_DEPTH = new Value<>(b.comment("Colour water by bathymetry depth")
                 .define("drawWaterDepth", true), true);
         AUTO_SEA_LEVEL = new Value<>(b.comment("Read the sea level from the world (adapts to terrain mods)")
@@ -183,7 +186,7 @@ public final class VoxyMapConfig {
         WATER_BLUR = new Value<>(b.comment("Blur the water depth to smooth out sea-floor speckles")
                 .define("waterBlur", true), true);
         WATER_BLUR_RADIUS = new Value<>(b.comment("Water blur radius in map pixels")
-                .defineInRange("waterBlurRadius", 8, 1, 16), 8);
+                .defineInRange("waterBlurRadius", 4, 1, 16), 4);
         WATER_BLUR_PASSES = new Value<>(b.comment("Water blur passes (more = smoother)")
                 .defineInRange("waterBlurPasses", 2, 1, 5), 2);
         DENOISE = new Value<>(b.comment("Remove isolated height outliers on land")
@@ -239,7 +242,7 @@ public final class VoxyMapConfig {
         PLAYER_MARKER_HEIGHT_3D = new Value<>(b.comment("3D player marker height above the terrain")
                 .defineInRange("playerMarkerHeight3d", 50.0, 0.0, 200.0), 50.0);
         PLAYER_MARKER_SCALE_3D = new Value<>(b.comment("3D player marker scale")
-                .defineInRange("playerMarkerScale3d", 2.0, 0.0, 5.0), 2.0);
+                .defineInRange("playerMarkerScale3d", 2.5, 0.0, 5.0), 2.5);
         BIOME_LABEL_3D_RANGE = new Value<>(b.comment("Horizontal range (blocks) for 3D biome labels")
                 .defineInRange("biomeLabel3dRange", 3000, 200, 20000), 3000);
         AUTO_HIDE_CONTOURS_3D = new Value<>(b.comment("Hide the 2D contour lines while in the 3D view")
@@ -252,7 +255,7 @@ public final class VoxyMapConfig {
         TILE_RESIDENT_CAP = new Value<>(b.comment("Soft resident tile cap")
                 .defineInRange("tileResidentCap", 1024, 64, 65536), 1024);
         GPU_TEXTURE_BUDGET_MB = new Value<>(b.comment("Tile-texture VRAM budget in MB (shared 2D/3D estimate)")
-                .defineInRange("gpuTextureBudgetMb", 256, 16, 4096), 256);
+                .defineInRange("gpuTextureBudgetMb", 472, 16, 4096), 472);
         GPU3D_BUILD_THREADS = new Value<>(b.comment("3D mesh build threads (0 = automatic)")
                 .defineInRange("gpu3dBuildThreads", 0, 0, 16), 0);
         GPU3D_BATCH_BUILD = new Value<>(b.comment("3D mesh uploads per frame")

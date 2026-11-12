@@ -1693,7 +1693,8 @@ public final class MapData {
             }
             gentleStage = "decode";
             Map<Integer, String> biomeNames = new HashMap<>(prevSnap.biomeNames);
-            Set<Long> waterIds = loadWaterIds(db, mappings, biomeNames);
+            Set<Long> loadedWaterIds = loadWaterIds(db, mappings, biomeNames);
+            final Set<Long> waterIds = loadedWaterIds == null ? Set.of() : loadedWaterIds;
             waterIdsCache = waterIds;
             int changed = scan.changedKeys.length;
             int dx0 = Integer.MAX_VALUE, dz0 = Integer.MAX_VALUE;
@@ -2000,8 +2001,9 @@ public final class MapData {
                     }
                     progress = 30;
                     Map<Integer, String> biomeNames = new HashMap<>(prevSnap.biomeNames);
-                    Set<Long> waterIds = loadWaterIds(db, mappings, biomeNames);
-            waterIdsCache = waterIds;
+                    Set<Long> loadedWaterIds = loadWaterIds(db, mappings, biomeNames);
+                    final Set<Long> waterIds = loadedWaterIds == null ? Set.of() : loadedWaterIds;
+                    waterIdsCache = waterIds;
                     int changed = scan.changedKeys.length;
                     // union of the changed sections' pixel footprints (used by the colour patch)
                     int dx0 = Integer.MAX_VALUE, dz0 = Integer.MAX_VALUE;
@@ -3004,7 +3006,8 @@ public final class MapData {
             Object sections = handles.get(1);
             Object mappings = handles.get(2);
             Map<Integer, String> biomeNames = new HashMap<>();
-            Set<Long> waterIds = loadWaterIds(db, mappings, biomeNames);
+            Set<Long> loadedWaterIds = loadWaterIds(db, mappings, biomeNames);
+            final Set<Long> waterIds = loadedWaterIds == null ? Set.of() : loadedWaterIds;
             waterIdsCache = waterIds;
 
             int totalSections = 0;
@@ -3280,6 +3283,12 @@ public final class MapData {
         }
     }
 
+    /**
+     * Scans {@code id_mappings}: liquid ids, biome names and the block-state material-class table.
+     *
+     * @return the liquid ids, or {@code null} when the scan failed (the caller may retry); an empty
+     *         set is a valid result for a world whose mappings contain no liquid state
+     */
     private static Set<Long> loadWaterIds(Object db, Object mappings, Map<Integer, String> biomeNames) {
         Set<Long> out = new HashSet<>();
         // one extra pass over the same mapping entries builds the block-state -> material class
@@ -3328,9 +3337,17 @@ public final class MapData {
                 RocksBridge.close(it);
             }
             classSlots.commit();
-            // biome tint tables are rebuilt from the same mapping names (cheap, once per world)
-            BiomeTintTable.INSTANCE.rebuild(biomeNames);
-        } catch (Exception ignored) {
+            // Rebuild the tint tables only when this scan actually resolved biome names: callers pass
+            // a fresh map and loadWaterIds fills it from the same 0x80 entries, but a scan that
+            // parses none (unexpected mapping format) must not reset every tint to plains.
+            if (!biomeNames.isEmpty()) {
+                BiomeTintTable.INSTANCE.rebuild(biomeNames);
+            }
+        } catch (Exception e) {
+            // report the failure instead of silently publishing a partial table: the caller can
+            // retry (ensureWaterIdsAsync keeps waterIdsLoaded=false when this returns null)
+            System.err.println("[voxymap] id_mappings scan failed: " + e);
+            return null;
         }
         return out;
     }
@@ -3773,7 +3790,9 @@ public final class MapData {
 
     /** Loads the Voxy liquid ids from an already-open database (used by VoxyTileSource). */
     public static Set<Long> loadWaterIdsFromDb(Object db, Object mappings) {
-        return loadWaterIds(db, mappings, new HashMap<>());
+        Set<Long> ids = loadWaterIds(db, mappings, new HashMap<>());
+        // a failed scan must not look like "this world has no liquids"
+        return ids == null ? Set.of() : ids;
     }
 
     /** Loads the Voxy liquid id set without building the global Snapshot (needed by live tiles). */
@@ -3790,23 +3809,29 @@ public final class MapData {
                 if (db != null && handles.size() >= 3) {
                     HashMap<Integer, String> names = new HashMap<>();
                     Set<Long> loaded = loadWaterIds(db, handles.get(2), names);
-                    tileBiomeNames = names;
-                    biomeKeyCache.clear();
-                    boolean hadWater = !waterIdsCache.isEmpty();
-                    waterIdsCache = loaded;
-                    waterIdsLoaded = true;
-                    Minecraft.getInstance().execute(() -> {
-                        LiveTileStore store = liveTiles;
-                        if (store != null) {
-                            if (!hadWater) {
-                                // In-memory tiles created before the liquid ids were known are dry;
-                                // drop them, but keep the .vxt files: any cached file was written
-                                // after cacheReady=true, so it already has correct water data.
-                                store.dropAllTiles(false);
+                    if (loaded == null) {
+                        // Mapping scan failed: leave waterIdsLoaded=false so a later refresh retries
+                        // instead of rendering every liquid as dry forever.
+                        System.err.println("[voxymap] id_mappings scan failed; liquid ids will retry");
+                    } else {
+                        tileBiomeNames = names;
+                        biomeKeyCache.clear();
+                        boolean hadWater = !waterIdsCache.isEmpty();
+                        waterIdsCache = loaded;
+                        waterIdsLoaded = true;
+                        Minecraft.getInstance().execute(() -> {
+                            LiveTileStore store = liveTiles;
+                            if (store != null) {
+                                if (!hadWater) {
+                                    // In-memory tiles created before the liquid ids were known are dry;
+                                    // drop them, but keep the .vxt files: any cached file was written
+                                    // after cacheReady=true, so it already has correct water data.
+                                    store.dropAllTiles(false);
+                                }
+                                store.setCacheReady(true);
                             }
-                            store.setCacheReady(true);
-                        }
-                    });
+                        });
+                    }
                 }
             } catch (Throwable t) {
                 // water ids are advisory; leave the previous/empty set
@@ -5467,10 +5492,10 @@ public final class MapData {
      * plains so the depth gradient and the palette's hue survive). Both are then multiplied by the
      * same hillshade as every palette.
      *
-     * <p>Biome tinting follows vanilla: grass uses {@code Biome#getGrassColor(x, z)} (position
-     * dependent for dark forest/swamp/mangrove swamp), foliage uses the flat per-biome
-     * {@code getFoliageColor()}. The {@code biomeColors} config switch falls back to the palette's
-     * static class colours and disables the water tint.</p>
+     * <p>Biome tinting follows vanilla: grass uses {@code Biome#getGrassColor(x, z)} (only the
+     * swamp/mangrove-swamp modifiers depend on the position; dark forest is a flat transform),
+     * foliage uses the flat per-biome {@code getFoliageColor()}. The {@code biomeColors} config
+     * switch falls back to the palette's static class colours and disables the water tint.</p>
      */
     private static int colorBlocksAt(TerrainCache tc, int idx, int x, int z) {
         int top = tc.topArr[idx];

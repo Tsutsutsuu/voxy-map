@@ -47,7 +47,8 @@ public final class BiomeTintTable {
 
     /** Vanilla plains colours: the fallback for unknown biomes. */
     public static final int PLAINS_GRASS = 0x91BD59;
-    public static final int PLAINS_FOLIAGE = 0x59AE30;
+    /** 26.2 plains foliage colormap sample at (0.8, 0.4); not the darker forest colour. */
+    public static final int PLAINS_FOLIAGE = 0x77AB2F;
     public static final int PLAINS_WATER = 0x3F76E4;
     public static final int PLAINS_DRY_FOLIAGE = 0xA37546;
 
@@ -105,16 +106,19 @@ public final class BiomeTintTable {
      * while the tint tables are rebuilt later from a worker thread.
      */
     public void captureRegistry(RegistryAccess access) {
-        if (access == registryAccess) return;
-        registryAccess = access;
+        // same registry and already resolved (or nothing to resolve): nothing to do
+        if (access == registryAccess && (access == null || registry != null)) return;
         Registry<Biome> next = null;
         if (access != null) {
             try {
                 next = access.lookupOrThrow(Registries.BIOME);
             } catch (Throwable ignored) {
-                // registry not synced (yet): keep the plains defaults
+                // registry not synced yet: keep the current tables (possibly the plains defaults)
+                // and let the next tick retry instead of caching "unresolved" forever
+                if (registry != null) return;
             }
         }
+        registryAccess = access;
         if (next == registry) return;
         registry = next;
         // a registry captured after the mapping scan gets an immediate rebuild of the last names
@@ -182,12 +186,16 @@ public final class BiomeTintTable {
         Arrays.fill(w, SurfaceClassTable.mulColor(PLAINS_WATER, waterFactor));
         int built = 0;
         if (reg != null) {
+            // Voxy drops the namespace of some (mostly modded) biome entries; labels already recover
+            // it by path (MapData#getBiomeTranslationKey), and the tint tables need the same fallback.
+            Map<String, Identifier> pathIndex = new java.util.HashMap<>();
+            for (Identifier key : reg.keySet()) {
+                pathIndex.putIfAbsent(key.getPath(), key);
+            }
             for (Map.Entry<Integer, String> e : lastNames.entrySet()) {
                 String name = e.getValue();
                 if (name == null) continue;
-                Identifier id = Identifier.tryParse(name);
-                if (id == null) continue;
-                Biome biome = reg.getValue(id);
+                Biome biome = resolveBiome(reg, pathIndex, name);
                 if (biome == null) continue;
                 int slot = e.getKey() & SurfaceClassTable.BIOME_MASK;
                 BiomeSpecialEffects.GrassColorModifier modifier =
@@ -215,6 +223,31 @@ public final class BiomeTintTable {
     /** Number of biomes resolved to a real client Biome in the last rebuild (diagnostics). */
     public int builtBiomes() {
         return builtBiomes;
+    }
+
+    /**
+     * Resolves one Voxy mapping biome name. Vanilla entries carry their namespace; modded entries
+     * in Voxy's id table often lost it (for example {@code ":woodland"}), in which case the client
+     * registry is searched by path - the same fallback the biome labels use.
+     */
+    private static Biome resolveBiome(Registry<Biome> reg, Map<String, Identifier> pathIndex,
+                                      String name) {
+        if (name.isEmpty()) return null;
+        boolean namespaced = name.indexOf(':') > 0;
+        Identifier id = Identifier.tryParse(name);
+        if (id != null) {
+            Biome biome = reg.getValue(id);
+            if (biome != null || namespaced) return biome;
+        }
+        // only fall back by path for entries without a usable namespace, so a namespaced name that
+        // is missing from the registry cannot silently resolve to another mod's same-path biome
+        if (namespaced) return null;
+        String path = name;
+        int colon = path.indexOf(':');
+        if (colon >= 0) path = path.substring(colon + 1);
+        if (path.isEmpty()) return null;
+        Identifier byPath = pathIndex.get(path);
+        return byPath == null ? null : reg.getValue(byPath);
     }
 }
 

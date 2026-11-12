@@ -9,6 +9,9 @@ package com.voxymap;
  *
  * <pre>
  * bits  0..15  floor height + 32768   (NO_SOLID sentinel = 0)
+ * bits  16..19 LOD level that supplied the floor (the "solid" level)
+ * bit  20      floor came from a buried fine slice (its ceiling is not the real surface)
+ * bits  21..23 unused
  * bits 24..39  top height + 32768     (NO_TOP sentinel = 1)
  * bits 40..47  surface material class slot (0 = unknown; "blocks" style only)
  * bit  48..51  LOD level that supplied the current top
@@ -20,6 +23,13 @@ package com.voxymap;
  * that lies <em>below</em> its highest solid block. Enclosed water bodies (cave rivers, aquifers,
  * underground lakes) are covered by solid rock, so the visible surface is that rock; the packed
  * pixel becomes a dry land pixel at {@code floor} with the ceiling block's material slot/biome.</p>
+ *
+ * <p>{@link #mergeEmptyColumn} locks a buried fine slice only when the all-air section is merged
+ * <em>after</em> it. The DB-backed and tile paths feed sections in ascending key order (fine levels
+ * first, y ascending within a level), so that holds there; a live section update that delivers a
+ * coarse section before the fine one can lose the lock, because a packed pixel has no room to
+ * remember "nothing above" before its first solid arrives. That is a limitation of the incremental
+ * path, not of the full rebuild.</p>
  */
 public final class VoxyMerge {
     public static final long LONG_EMPTY = Long.MIN_VALUE;
@@ -47,11 +57,15 @@ public final class VoxyMerge {
      * shoreline column ended up at y=112 instead of y=63.</p>
      *
      * @param sectionMinWorldY world Y of this section's lowest block (empty and above the ceiling)
+     * @return prevPacked unchanged, or with the buried bit cleared once the ceiling is locked
      */
     public static long mergeEmptyColumn(long prevPacked, int lvl, int sectionMinWorldY) {
         if (prevPacked == LONG_EMPTY) return prevPacked;
         boolean curWater = (prevPacked & (1L << 52)) != 0;
-        // enclosed water is already demoted to dry land by the water invariant in mergeColumn
+        // a water pixel's top is a real water surface (coarse solids are never allowed to poke
+        // through it, see mergeColumn), so an all-air section above changes nothing there. A
+        // water+buried pixel (lake floor exactly on a section boundary) is handled by that same
+        // guard rather than by this lock.
         if (curWater) return prevPacked;
         boolean buried = (prevPacked & (1L << 20)) != 0;
         int solidLvl = (int) ((prevPacked >>> 16) & 0xF);
@@ -72,11 +86,16 @@ public final class VoxyMerge {
      * @param floor      section's highest solid height, or {@link #NO_SOLID}
      * @param topFluid   whether the surface voxel is water
      * @param biome      biome id decoded from the section
-     * @param slot       surface material class of this section's top voxel (0 = unknown)
+     * @param slot       surface material class of this section's top voxel (0 = unknown); when that
+     *                   voxel is fluid its class describes the water, not the solid floor, so the
+     *                   floor slot falls back to 0 in that case
      */
     public static long mergeColumn(long prevPacked, int lvl, int top, int floor,
                                    boolean topFluid, int biome, int slot) {
         int solidHere = floor != NO_SOLID ? floor : Integer.MIN_VALUE;
+        // the visible dry pixel shows the block at the floor, so its material class comes from
+        // that block; a section whose top voxel is fluid only gives us the water class, hence 0.
+        final int floorSlotHere = topFluid ? 0 : slot;
         int curTop;
         boolean curWater;
         int curLvl;
@@ -156,7 +175,7 @@ public final class VoxyMerge {
                 int nextFloor = top != NO_TOP ? solidHere : Math.max(solidHere, curFloor);
                 if (nextFloor != curFloor || top != NO_TOP) {
                     // the new section's ceiling block is the block at the visible height
-                    curFloorSlot = slot;
+                    curFloorSlot = floorSlotHere;
                     curFloorBiome = biome;
                 }
                 curFloor = nextFloor;
@@ -165,7 +184,7 @@ public final class VoxyMerge {
             } else if (lvl == curSolidLvl) {
                 if (solidHere > curFloor) {
                     curFloor = solidHere;
-                    curFloorSlot = slot;
+                    curFloorSlot = floorSlotHere;
                     curFloorBiome = biome;
                 }
                 if (top != NO_TOP) curSolidBuried = false;
@@ -176,7 +195,7 @@ public final class VoxyMerge {
                     // never let it poke through a (finer) surface water pixel
                 } else {
                     curFloor = solidHere;
-                    curFloorSlot = slot;
+                    curFloorSlot = floorSlotHere;
                     curFloorBiome = biome;
                 }
             }
@@ -189,7 +208,7 @@ public final class VoxyMerge {
             // whose surface is stony_peaks), otherwise biome borders/labels use the cave biome.
             curSlot = curFloorSlot;
             curBiome = curFloorBiome;
-        } else if (curFloor != NO_SOLID && curFloor > curTop) {
+        } else if (curFloor != NO_SOLID && curFloor > curTop && curSolidLvl <= curLvl) {
             // Semantic invariant: a water surface cannot sit below the column's highest solid
             // block. floor > top means the "water surface" is covered by solid rock (cave river,
             // aquifer, underground lake), so the visible surface is that rock. This is the exact
@@ -198,6 +217,12 @@ public final class VoxyMerge {
             // becomes the finest-level "top" because coarse LOD tops are never allowed to
             // override a finer level. Demote it to dry land at floor instead of clamping floor
             // below the water.
+            //
+            // Only demote when the floor does not come from a coarser LOD than the water top: a
+            // coarse mip "solid" is a maximum over its cell and may belong to a neighbouring hill
+            // (e.g. coarse dry@112 merged before this column's fine water surface arrives). In that
+            // case v0.3.0's clamp is the correct answer - the coarse height must not turn a real
+            // water pixel into dry land.
             curWater = false;
             curTop = curFloor;
             curSlot = curFloorSlot;

@@ -1,7 +1,7 @@
 package com.voxymap;
 
 /**
- * Colour palettes for the map. Kept in sync with the offline PoC's six schemes:
+ * Colour palettes for the map. Kept in sync with the offline PoC's six height schemes:
  * current, gradient, gmt, nautical, gradient-turbo, gradient-soft.
  *
  * <p>{@link #BLOCKS} is the seventh style: land pixels are coloured by surface material class

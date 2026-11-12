@@ -162,6 +162,7 @@ public final class Gpu3DMap {
     private static volatile int lastUploadTiles, lastDrawTiles, lastAtlasPages;
     private static volatile long lastGpuBytes, lastAtlasBytes, lastDepthBytes;
     private static long gpuBytes;
+    private static long lastVramLogMs;
 
     private Gpu3DMap() {
     }
@@ -1047,19 +1048,34 @@ public final class Gpu3DMap {
         if (!(Minecraft.getInstance().gui.screen() instanceof MapScreen screen)) return;
         if (!screen.isGpu3dView()) return;
         Map3D.Camera cam = screen.gpu3dCamera();
-        if (cam == null || TILES.isEmpty()) return;
+        if (cam == null) return;
+        RenderTarget target = BlazeCompat.mainRenderTarget(mc);
+        if (target.getColorTextureView() == null) return;
+        if (TILES.isEmpty()) {
+            // A keepalive world frame (GameRendererMixin lets one through per second while the
+            // map is open) can paint the world behind the still-empty 3D view. Clear it here,
+            // before the GUI phase, so the loading view never flashes the world for one frame.
+            // This is a background clear, not a UI overlay: anything rendered later (labels, and
+            // the terrain once the first tiles arrive) stays fully visible.
+            ensureDepth(target.width, target.height);
+            try (RenderPass clearPass = BlazeCompat.beginTerrainPass(
+                    RenderSystem.getDevice().createCommandEncoder(), target, depthView)) {
+                // clear-only pass
+            }
+            return;
+        }
         ensureProjection();
         int w = mc.getWindow().getGuiScaledWidth();
         int h = mc.getWindow().getGuiScaledHeight();
         if (w <= 0 || h <= 0) return;
+        long rasterStartNs = System.nanoTime();
+        int trisDrawn = 0;
         float fov = Math.max(30, Math.min(110, VoxyMapConfig.FOV_3D.get()));
         net.minecraft.client.renderer.Projection p = new net.minecraft.client.renderer.Projection();
         p.setupPerspective(0.05f, 60000f, fov, w, h);
         Matrix4f proj = p.getMatrix(new Matrix4f());
         Matrix4f view = cam.viewMatrix();
         Matrix4f viewProj = new Matrix4f(proj).mul(view);
-        RenderTarget target = BlazeCompat.mainRenderTarget(mc);
-        if (target.getColorTextureView() == null) return;
         ensureDepth(target.width, target.height);
         overlayIndexCount = 0;
         boolean drawOverlay = prepareOverlay();
@@ -1088,6 +1104,7 @@ public final class Gpu3DMap {
                     if (!boxVisible(viewProj, tile.centerX, tile.centerZ,
                             tile.minY, tile.maxY, half)) continue;
                     visible++;
+                    trisDrawn += tile.indexCount / 3;
                     pass.bindTexture("Sampler0", tile.slot.page.view, sampler);
                     BlazeCompat.setVertexBuffer(pass, 0, tile.vertices);
                     BlazeCompat.setIndexBuffer(pass, tile.indices);
@@ -1099,11 +1116,23 @@ public final class Gpu3DMap {
                 lastAtlasPages = PAGES.size();
                 lastAtlasBytes = atlasBytes();
                 lastDepthBytes = depthBytes();
+                if (VoxyMapConfig.DEBUG_ENABLED.get()) {
+                    long nowMs = System.currentTimeMillis();
+                    if (nowMs - lastVramLogMs >= 2000L) {
+                        lastVramLogMs = nowMs;
+                        System.out.println("[voxymap] 3d vram=" + RefreshDebug.vramInfo()
+                                + " tiles=" + TILES.size()
+                                + " atlas=" + (lastAtlasBytes >> 20) + "MB"
+                                + " mesh=" + (lastGpuBytes >> 20) + "MB");
+                    }
+                }
                 if (drawOverlay) drawOverlay(pass, transforms);
             }
         } finally {
             RenderSystem.restoreProjectionMatrix();
         }
+        // frame counter for the perf panel / the scripted acceptance test's 3D settle detection
+        MapPerf.INSTANCE.rasterFrame(System.nanoTime() - rasterStartNs, trisDrawn);
     }
 
     private static boolean boxVisible(Matrix4f m, double centerX, double centerZ,

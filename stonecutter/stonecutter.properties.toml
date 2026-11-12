@@ -3,7 +3,7 @@
 mod.id = "voxymap"
 mod.name = "Voxy Map"
 mod.group = "com.voxymap"
-mod.version = "0.3.0"
+mod.version = "0.4.0"
 
 loomx.loom_version = "1.17-SNAPSHOT"
 

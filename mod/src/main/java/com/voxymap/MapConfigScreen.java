@@ -89,6 +89,7 @@ public class MapConfigScreen extends Screen {
         add(Group.MAP, "adaptiveColorRamp", VoxyMapConfig.ADAPTIVE_COLOR_RAMP, 0, 0, null);
         add(Group.MAP, "landMaxRamp", VoxyMapConfig.MIN_MAX_RAMP, 0, 0, null);
         add(Group.MAP, "drawHillshade", VoxyMapConfig.DRAW_HILLSHADE, 0, 0, null);
+        add(Group.MAP, "biomeColors", VoxyMapConfig.BIOME_COLORS, 0, 0, null);
         add(Group.MAP, "drawWaterDepth", VoxyMapConfig.DRAW_WATER_DEPTH, 0, 0, null);
         add(Group.MAP, "autoSeaLevel", VoxyMapConfig.AUTO_SEA_LEVEL, 0, 0, null);
         add(Group.MAP, "seaLevelOverride", VoxyMapConfig.SEA_LEVEL_OVERRIDE, -2048, 2048, null);

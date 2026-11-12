@@ -14,11 +14,12 @@ import java.util.Map;
 /**
  * Runtime surface-material palette for the "blocks" map style.
  *
- * <p>Loads {@code assets/voxymap/surface_classes.json} (55 classes, flat colours, a small exact
- * name table, wood families and plant keywords). The rule ladder that turns a block registry name
- * into a class is hardcoded here on purpose: it mirrors the offline census classifier
- * ({@code poc/classify_test.py}) one-to-one, keeps the hot decode path free of JSON walking, and
- * only ever runs once per block-state mapping (not per pixel).</p>
+ * <p>Loads {@code assets/voxymap/surface_classes.json} (200 classes including the reserved
+ * FALLBACK entry, i.e. 199 usable slots, flat colours, a small exact name table, wood families and
+ * plant keywords). The rule ladder that turns a block registry name into a class is hardcoded here
+ * on purpose: it mirrors the offline census classifier ({@code poc/classify_test.py}) one-to-one,
+ * keeps the hot decode path free of JSON walking, and only ever runs once per block-state mapping
+ * (not per pixel).</p>
  *
  * <p>This class deliberately has no Minecraft imports so it can be reused by offline tools. The
  * biome-tinted colour part lives in {@link BiomeTintTable} (client-side).</p>
@@ -288,6 +289,12 @@ public final class SurfaceClassTable {
                     // registry names never start with one
                     while (start < colon && text.charAt(start) == '.') start++;
                     String name = text.substring(start, end);
+                    // Voxy renders the NBT string terminator as '.', and '.' is a legal resource
+                    // location character, so the scan above can swallow it (1.21.1 mapping text:
+                    // "Name .minecraft:oak_leaves. .Properties"). A trailing dot then misses the
+                    // exact palette lookup and the rule fallback classifies leaves as wood. Strip
+                    // it like the offline MappingNames helper does.
+                    while (name.endsWith(".")) name = name.substring(0, name.length() - 1);
                     if (!name.isEmpty() && name.indexOf(':') > 0) return name;
                 }
             }

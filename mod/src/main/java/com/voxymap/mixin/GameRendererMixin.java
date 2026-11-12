@@ -4,6 +4,7 @@ import com.voxymap.Gpu3DMap;
 import com.voxymap.Map3D;
 import com.voxymap.MapData;
 import com.voxymap.MapScreen;
+import com.voxymap.RefreshDebug;
 import com.voxymap.VoxyMapConfig;
 import net.minecraft.client.DeltaTracker;
 import net.minecraft.client.Minecraft;
@@ -37,8 +38,24 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  */
 @Mixin(GameRenderer.class)
 public class GameRendererMixin {
-    private static boolean voxymap$lastSkip;
+    private static boolean voxymap$lastWantSkip;
+    private static long voxymap$lastWorldFrameNs;
     private static int voxymap$watchFrames;
+
+    private static final long KEEPALIVE_INTERVAL_NS = 1_000_000_000L;
+
+    /**
+     * Let one world frame through per second while the map covers the screen.
+     *
+     * <p>Pausing the world renderer for a long time and resuming made Voxy/BLAZE3D ask the NVIDIA
+     * driver for an impossible amount of GPU memory on the Fabric 26.1.2 line (Voxy 0.2.18); the
+     * driver then fail-fasts (nvoglv64, exit 0xc0000409) with no Java crash report. The game used
+     * only ~3.4 GB of an 8 GB card, so this is a bad resume-time allocation, not capacity
+     * exhaustion. Voxy 0.2.18 and 0.2.19 have byte-identical geometry allocation code, so the
+     * same edge case can hit any version/loader; one hidden frame per second keeps the render
+     * ring and upload queues warm.</p>
+     */
+    private static final boolean voxymap$keepalive = true;
 
     /** Runs after the first {@code RenderSystem.clear} of the frame (the world-frame clear) and
      *  before the GUI ortho projection is set up, i.e. before any GUI batch is built.
@@ -64,14 +81,24 @@ public class GameRendererMixin {
 
     @ModifyVariable(method = "render", at = @At("HEAD"), argsOnly = true, ordinal = 0)
     private boolean voxymap$skipWorldBehindMap(boolean renderLevel) {
-        boolean skip = renderLevel
+        boolean wantSkip = renderLevel
                 && VoxyMapConfig.SKIP_WORLD_RENDER.get()
                 && Minecraft.getInstance().screen instanceof MapScreen;
-        if (skip != voxymap$lastSkip) {
-            voxymap$lastSkip = skip;
+        long now = System.nanoTime();
+        boolean skip = wantSkip;
+        if (wantSkip && voxymap$keepalive) {
+            if (voxymap$lastWorldFrameNs == 0L) voxymap$lastWorldFrameNs = now;
+            if (now - voxymap$lastWorldFrameNs >= KEEPALIVE_INTERVAL_NS) {
+                skip = false;
+                voxymap$lastWorldFrameNs = now;
+            }
+        }
+        if (!skip) voxymap$lastWorldFrameNs = now;
+        if (wantSkip != voxymap$lastWantSkip) {
+            voxymap$lastWantSkip = wantSkip;
             if (VoxyMapConfig.DEBUG_ENABLED.get()) {
-                System.out.println("[voxymap] world render skip=" + skip);
-                if (!skip) voxymap$watchFrames = 12;
+                System.out.println("[voxymap] world render skip=" + wantSkip);
+                if (!wantSkip) voxymap$watchFrames = 12;
             }
         }
         return skip ? false : renderLevel;
@@ -104,7 +131,8 @@ public class GameRendererMixin {
                     + " activeTex=" + org.lwjgl.opengl.GL11.glGetInteger(0x84E0)
                     + " program=" + org.lwjgl.opengl.GL11.glGetInteger(0x8B8D)
                     + " vao=" + org.lwjgl.opengl.GL11.glGetInteger(0x85B5)
-                    + " fbo=" + org.lwjgl.opengl.GL11.glGetInteger(0x8CA6);
+                    + " fbo=" + org.lwjgl.opengl.GL11.glGetInteger(0x8CA6)
+                    + " vram=" + RefreshDebug.vramInfo();
         } catch (Throwable t) {
             return "gl state query failed: " + t;
         }

@@ -14,8 +14,10 @@ import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 
@@ -24,7 +26,9 @@ import java.util.function.Consumer;
  * cached data, it scans the Voxy section keys (built once) and decodes only the sections that
  * intersect that tile. This lets the tile map grow beyond the original global Snapshot rectangle.
  *
- * <p>A small dedicated I/O pool; callbacks are forwarded to the client thread.</p>
+ * <p>A small dedicated I/O pool handles tile requests; the (possibly thousands of) sections of one
+ * tile are decoded on a second pool in parallel, then merged in key order so the result is identical
+ * to a single-threaded build. Callbacks are forwarded to the client thread.</p>
  */
 public final class VoxyTileSource {
     private static final int INDEX_MAGIC = 0x56585349;
@@ -41,6 +45,26 @@ public final class VoxyTileSource {
         t.setPriority(Thread.MIN_PRIORITY);
         return t;
     });
+    /**
+     * Decodes the sections of one tile in parallel. A coarse map scale puts thousands of sections
+     * into a single tile, and that tile used to be decoded on one io thread while every other core
+     * idled. Decoding one section is pure (read-only RocksDB get + zstd + LUT scan); the merge that
+     * follows stays strictly in the original key order, so the produced pixels are identical to the
+     * sequential implementation.
+     */
+    private final ExecutorService decodePool = Executors.newFixedThreadPool(
+            Math.max(2, Math.min(6, Runtime.getRuntime().availableProcessors() - 1)), r -> {
+                Thread t = new Thread(r, "voxymap-section-decode");
+                t.setDaemon(true);
+                t.setPriority(Thread.MIN_PRIORITY);
+                return t;
+            });
+    /** Sections per decode/merge batch: bounds the decoded columns held in memory (8 KiB each). */
+    private static final int DECODE_BATCH_SECTIONS = 256;
+    /** Sections per parallel decode task: small enough to balance, large enough to amortise. */
+    private static final int DECODE_CHUNK_SECTIONS = 32;
+    private static final ThreadLocal<ByteBuffer> KEY_BUFFER =
+            ThreadLocal.withInitial(() -> ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN));
     private final AtomicBoolean closed = new AtomicBoolean();
     private volatile boolean indexed;
     /**
@@ -348,59 +372,156 @@ public final class VoxyTileSource {
         boolean any = false;
         KeyList list = byTile.get(tileKey(tx, tz));
         if (list == null) return null;
-        ByteBuffer keyBuf = ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN);
-        for (int k = 0; k < list.size; k++) {
-            long key = list.keys[k];
-            int lvl = (int) ((key >>> 60) & 0xF);
-            int scale = 1 << lvl;
-            int sx = (int) ((key << 36) >> 40);
-            int sz = (int) ((key << 12) >> 40);
-            long wx0 = (long) sx * 32 * scale;
-            long wz0 = (long) sz * 32 * scale;
-            long wx1 = wx0 + 32L * scale;
-            long wz1 = wz0 + 32L * scale;
-            if (wx1 <= tileX0 || wx0 >= tileX1 || wz1 <= tileZ0 || wz0 >= tileZ1) continue;
-            long[] cols = sectionCache.get(key);
-            if (cols == null) {
-                keyBuf.clear();
-                keyBuf.putLong(key);
-                byte[] val = RocksBridge.get(db, sectionsHandle, keyBuf.array());
-                if (val == null) continue;
-                Set<Long> ids = waterIds.get();
-                if (ids.isEmpty()) ids = ownWaterIds;
-                cols = MapData.decodeSectionColumns(key, val, ids);
-                if (cols == null) continue;
-                sectionCache.put(key, cols);
+        Set<Long> ids = waterIds.get();
+        if (ids.isEmpty()) ids = ownWaterIds;
+        // optional split timing for the debug tile trace: how much of a tile build is section
+        // decoding (now parallel) versus the ordered merge (still serial)
+        final boolean trace = TileTrace.enabled();
+        long decodeNs = 0L;
+        long mergeNs = 0L;
+        int batches = 0;
+        // A coarse map scale puts thousands of sections in one tile. Decode each batch of sections
+        // in parallel (the expensive part) and merge them in the original key order afterwards, so
+        // the pixels are byte-for-byte what the sequential builder produced.
+        for (int base = 0; base < list.size; base += DECODE_BATCH_SECTIONS) {
+            batches++;
+            int end = Math.min(list.size, base + DECODE_BATCH_SECTIONS);
+            int len = end - base;
+            long[][] decoded = new long[len][];
+            int[] misses = new int[len];
+            int missCount = 0;
+            for (int j = 0; j < len; j++) {
+                long key = list.keys[base + j];
+                if (!intersectsTile(key, tileX0, tileX1, tileZ0, tileZ1)) continue;
+                long[] cols = sectionCache.get(key);
+                if (cols != null) {
+                    decoded[j] = cols;
+                } else {
+                    misses[missCount++] = j;
+                }
             }
-            for (int c = 0; c < 1024; c++) {
-                long packed = cols[c];
-                if (packed == VoxyMerge.LONG_EMPTY) continue;
-                long colX = wx0 + (long) (c & 31) * scale;
-                long colZ = wz0 + (long) (c >> 5) * scale;
-                int px0 = (int) Math.floorDiv(colX - minWX, pixelBlocks);
-                int pz0 = (int) Math.floorDiv(colZ - minWZ, pixelBlocks);
-                int px1 = (int) Math.floorDiv(colX + scale - 1 - minWX, pixelBlocks);
-                int pz1 = (int) Math.floorDiv(colZ + scale - 1 - minWZ, pixelBlocks);
-                for (int pz = pz0; pz <= pz1; pz++) {
-                    if (pz < tz * LiveTileStore.TILE_PIXELS
-                            || pz >= (tz + 1) * LiveTileStore.TILE_PIXELS) continue;
-                    int lz = pz - tz * LiveTileStore.TILE_PIXELS;
-                    for (int px = px0; px <= px1; px++) {
-                        if (px < tx * LiveTileStore.TILE_PIXELS
-                                || px >= (tx + 1) * LiveTileStore.TILE_PIXELS) continue;
-                        int lx = px - tx * LiveTileStore.TILE_PIXELS;
-                        int idx = lz * LiveTileStore.TILE_PIXELS + lx;
-                        pixels[idx] = VoxyMerge.mergeColumn(pixels[idx], lvl,
-                                (int) ((packed >>> 24) & 0xFFFF) - 32768,
-                                (int) (packed & 0xFFFF) - 32768,
-                                (packed & (1L << 52)) != 0,
-                                (int) ((packed >>> 53) & 0x1FF));
-                        any = true;
+            long decodeStartNs = trace ? System.nanoTime() : 0L;
+            if (missCount > 0) {
+                decodeMisses(list, base, misses, missCount, decoded, ids);
+            }
+            if (trace) decodeNs += System.nanoTime() - decodeStartNs;
+            long mergeStartNs = trace ? System.nanoTime() : 0L;
+            // Merge in key order: this is what makes the result identical to a single-threaded pass.
+            for (int j = 0; j < len; j++) {
+                long[] cols = decoded[j];
+                if (cols == null) continue;
+                long key = list.keys[base + j];
+                int lvl = (int) ((key >>> 60) & 0xF);
+                int scale = 1 << lvl;
+                int sy = (int) ((key << 4) >> 56);
+                int sectionMinY = sy * 32 * scale;
+                int sx = (int) ((key << 36) >> 40);
+                int sz = (int) ((key << 12) >> 40);
+                long wx0 = (long) sx * 32 * scale;
+                long wz0 = (long) sz * 32 * scale;
+                for (int c = 0; c < 1024; c++) {
+                    long packed = cols[c];
+                    if (packed == VoxyMerge.LONG_EMPTY) continue;
+                    boolean empty = packed == VoxyMerge.EMPTY_COLUMN;
+                    long colX = wx0 + (long) (c & 31) * scale;
+                    long colZ = wz0 + (long) (c >> 5) * scale;
+                    int px0 = (int) Math.floorDiv(colX - minWX, pixelBlocks);
+                    int pz0 = (int) Math.floorDiv(colZ - minWZ, pixelBlocks);
+                    int px1 = (int) Math.floorDiv(colX + scale - 1 - minWX, pixelBlocks);
+                    int pz1 = (int) Math.floorDiv(colZ + scale - 1 - minWZ, pixelBlocks);
+                    for (int pz = pz0; pz <= pz1; pz++) {
+                        if (pz < tz * LiveTileStore.TILE_PIXELS
+                                || pz >= (tz + 1) * LiveTileStore.TILE_PIXELS) continue;
+                        int lz = pz - tz * LiveTileStore.TILE_PIXELS;
+                        for (int px = px0; px <= px1; px++) {
+                            if (px < tx * LiveTileStore.TILE_PIXELS
+                                    || px >= (tx + 1) * LiveTileStore.TILE_PIXELS) continue;
+                            int lx = px - tx * LiveTileStore.TILE_PIXELS;
+                            int idx = lz * LiveTileStore.TILE_PIXELS + lx;
+                            if (empty) {
+                                // an all-air column only locks an existing pixel (see VoxyMerge); it
+                                // can never bring a tile into existence on its own
+                                pixels[idx] = VoxyMerge.mergeEmptyColumn(pixels[idx], lvl, sectionMinY);
+                            } else {
+                                pixels[idx] = VoxyMerge.mergeColumn(pixels[idx], lvl,
+                                        (int) ((packed >>> 24) & 0xFFFF) - 32768,
+                                        (int) (packed & 0xFFFF) - 32768,
+                                        (packed & (1L << 52)) != 0,
+                                        (int) ((packed >>> 53) & 0x1FF),
+                                        (int) ((packed >>> 40) & 0xFF));
+                                any = true;
+                            }
+                        }
                     }
                 }
             }
+            if (trace) mergeNs += System.nanoTime() - mergeStartNs;
+        }
+        if (trace) {
+            TileTrace.stage(tx, tz, "src_build_split", "decode_ms=" + (decodeNs / 1_000_000L)
+                    + " merge_ms=" + (mergeNs / 1_000_000L) + " batches=" + batches);
         }
         return any ? pixels : null;
+    }
+
+    /**
+     * Decodes this batch's cache misses on the decode pool. Each task only writes its own slots of
+     * {@code decoded} (and publishes into the thread-safe section cache), so no locking is needed.
+     */
+    private void decodeMisses(KeyList list, int base, int[] misses, int missCount,
+                              long[][] decoded, Set<Long> ids) throws Exception {
+        List<Future<?>> futures = new ArrayList<>(
+                (missCount + DECODE_CHUNK_SECTIONS - 1) / DECODE_CHUNK_SECTIONS);
+        for (int m = 0; m < missCount; m += DECODE_CHUNK_SECTIONS) {
+            final int from = m;
+            final int to = Math.min(missCount, m + DECODE_CHUNK_SECTIONS);
+            futures.add(decodePool.submit(() -> {
+                for (int q = from; q < to; q++) {
+                    int j = misses[q];
+                    long key = list.keys[base + j];
+                    long[] cols = decodeSection(key, ids);
+                    if (cols != null) {
+                        decoded[j] = cols;
+                        sectionCache.put(key, cols);
+                    }
+                }
+            }));
+        }
+        for (Future<?> f : futures) {
+            try {
+                f.get();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw e;
+            } catch (ExecutionException e) {
+                Throwable cause = e.getCause();
+                if (cause instanceof Exception ex) throw ex;
+                throw new RuntimeException(cause);
+            }
+        }
+    }
+
+    /** Reads and decodes one section; thread-safe (read-only RocksDB get + pure decoding). */
+    private long[] decodeSection(long key, Set<Long> ids) {
+        ByteBuffer buf = KEY_BUFFER.get();
+        buf.clear();
+        buf.putLong(key);
+        byte[] val = RocksBridge.get(db, sectionsHandle, buf.array());
+        if (val == null) return null;
+        return MapData.decodeSectionColumns(key, val, ids);
+    }
+
+    /** True when the section key's horizontal footprint overlaps the tile's footprint. */
+    private static boolean intersectsTile(long key, long tileX0, long tileX1,
+                                          long tileZ0, long tileZ1) {
+        int lvl = (int) ((key >>> 60) & 0xF);
+        int scale = 1 << lvl;
+        int sx = (int) ((key << 36) >> 40);
+        int sz = (int) ((key << 12) >> 40);
+        long wx0 = (long) sx * 32 * scale;
+        long wz0 = (long) sz * 32 * scale;
+        return !(wx0 + 32L * scale <= tileX0 || wx0 >= tileX1
+                || wz0 + 32L * scale <= tileZ0 || wz0 >= tileZ1);
     }
 
     public void close() {
@@ -408,6 +529,13 @@ public final class VoxyTileSource {
         io.shutdown();
         try {
             io.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        // buildTile always waits for its own decode tasks, so the pool is idle by now
+        decodePool.shutdown();
+        try {
+            decodePool.awaitTermination(2, java.util.concurrent.TimeUnit.SECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }

@@ -1093,12 +1093,38 @@ public final class Gpu3DMap {
         if (!(mc.screen instanceof MapScreen screen)) return;
         if (!screen.isGpu3dView()) return;
         Map3D.Camera cam = screen.gpu3dCamera();
-        if (cam == null || TILES.isEmpty()) return;
+        if (cam == null) return;
         renderedThisFrame = true;
-        ensureAtlas();
         int w = mc.getWindow().getGuiScaledWidth();
         int h = mc.getWindow().getGuiScaledHeight();
         if (w <= 0 || h <= 0) return;
+        RenderTarget target = mc.getMainRenderTarget();
+        if (target == null) return;
+        if (TILES.isEmpty()) {
+            // A keepalive world frame (GameRendererMixin lets one through per second while the map
+            // is open) can paint the world behind the still-empty 3D view; clear it here, before
+            // the GUI phase, so the loading view never flashes the world for one frame. This is a
+            // background clear, not a UI overlay: labels and the terrain (once tiles exist) are
+            // drawn later and stay fully visible.
+            depthWidth = target.width;
+            depthHeight = target.height;
+            float[] savedClearColor = new float[4];
+            GL11.glGetFloatv(GL11.GL_COLOR_CLEAR_VALUE, savedClearColor);
+            float[] savedClearDepth = new float[1];
+            GL11.glGetFloatv(GL11.GL_DEPTH_CLEAR_VALUE, savedClearDepth);
+            RenderSystem.disableScissor();
+            target.bindWrite(true);
+            RenderSystem.colorMask(true, true, true, true);
+            RenderSystem.depthMask(true);
+            RenderSystem.clearColor(0.02f, 0.02f, 0.03f, 1f);
+            RenderSystem.clearDepth(1.0);
+            RenderSystem.clear(GL11.GL_COLOR_BUFFER_BIT | GL11.GL_DEPTH_BUFFER_BIT, Minecraft.ON_OSX);
+            RenderSystem.clearDepth(savedClearDepth[0]);
+            RenderSystem.clearColor(savedClearColor[0], savedClearColor[1],
+                    savedClearColor[2], savedClearColor[3]);
+            return;
+        }
+        ensureAtlas();
         float fov = Math.max(30, Math.min(110, VoxyMapConfig.FOV_3D.get()));
         // 1.21.1 uses standard OpenGL depth: 0 at the near plane, 1 at the far plane, cleared to
         // 1.0 and compared with LEQUAL. (26.2 used reversed Z and a private D32_FLOAT attachment;
@@ -1120,8 +1146,6 @@ public final class Gpu3DMap {
                 4.0f, 60000f);
         Matrix4f view = cam.viewMatrix();
         Matrix4f viewProj = new Matrix4f(proj).mul(view);
-        RenderTarget target = mc.getMainRenderTarget();
-        if (target == null) return;
         depthWidth = target.width;
         depthHeight = target.height;
         overlayIndexCount = 0;
