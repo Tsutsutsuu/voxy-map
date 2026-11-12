@@ -16,34 +16,25 @@ Works best together with **Voxy SeedGen** — it pre-generates distant terrain f
 
 ## Why Voxy Map
 
+- **Real block colours** — the map can now be drawn in each block's actual colours, and this is the default style; for now only vanilla blocks are covered, mod support is planned.
 - **See the whole world at a glance** — the map is built directly from the LOD data Voxy has already stored, so opening it shows the entire explored world at once; nothing is loaded or generated while the map is open, and newly explored areas appear on the map as you play.
 - **Opens fast, runs well** — the first open takes a few seconds, and each world keeps its own cache, so afterwards (even after restarting the game) it opens almost instantly; while the map is open, world rendering is paused so the frame rate goes to the map.
 - **A 3D map you can orbit** — GPU-rendered terrain at a true 1:1 scale: middle-click switches, drag to orbit, scroll to zoom; it updates live and stays smooth.
 - **Smooth animation** — the map scales in and out, wheel zoom anchors on the cursor, Space eases the view onto the player, leaving 3D plays a short rotation back to the flat map, and switching between 2D and 3D is seamless.
 - **Works with your pack** — Fabric 26.2 / 26.1.2 and NeoForge 1.21.1; supports Voxy SeedGen, terrain mods and biome mods; 9 languages.
-- **Looks good and is easy to tune** — seven palettes (the 200-colour **Block colours** map is the default), contours, hillshade, water-depth shading, biome borders and labels, a right-click menu (copy / teleport / export PNG), per-world memory, and an in-game config screen where every option is explained.
+- **Looks good and is easy to tune** — seven palettes (default: the 200-colour **Block colours** material palette), contours, hillshade, water-depth shading, biome borders and labels, a right-click menu (copy / teleport / export PNG), per-world memory, and an in-game config screen where every option is explained.
 
 ## Screenshots
-
-### Six palettes
-
-Using the **Tectonic mod**'s "i use voxy btw" preset terrain, Voxy SeedGen distance 382 chunks, yellow box = real render distance (natural / gradient / GMT / nautical / gradient-turbo / gradient-soft):
-
-![Seven palettes (Tectonic terrain)](img/1.png)
-
-**Vanilla terrain**, the same palettes, with biome borders and biome labels:
-
-![Six palettes (vanilla terrain)](img/2.png)
 
 ### Fullscreen map
 
 Using the **Tectonic mod**'s "i use voxy btw" preset terrain, Voxy SeedGen distance 382 chunks, yellow box = real render distance:
 
-![Fullscreen map far (Tectonic terrain)](img/en_3.png)
+![Fullscreen map far (Tectonic terrain)](img/en_11.png)
 
-Close-up: contours, hillshade, water-depth shading, biome borders and labels:
+**Vanilla terrain**, Voxy SeedGen distance 382 chunks, yellow box = real render distance:
 
-![Fullscreen map close-up (Tectonic terrain)](img/en_4.png)
+![Fullscreen map far (vanilla terrain)](img/en_9.png)
 
 **Vanilla terrain**, Voxy SeedGen distance 382 chunks, yellow box = real render distance:
 
@@ -55,13 +46,21 @@ Close-up: contours, hillshade, water-depth shading, biome borders and labels:
 
 3D mode:
 
-![3D mode 1](img/en_5.png)
+![3D mode 0](img/en_10.png)
+
+![3D mode 1](img/en_8.png)
 
 ![3D mode 2](img/en_6.png)
 
 Config screen:
 
 ![Config screen](img/en_7.png)
+
+### Six palettes
+
+Using the **Tectonic mod**'s "i use voxy btw" preset terrain, Voxy SeedGen distance 382 chunks, yellow box = real render distance (natural / gradient / GMT / nautical / gradient-turbo / gradient-soft):
+
+![Six palettes (Tectonic terrain)](img/1.png)
 
 ## Quick start
 
@@ -106,12 +105,12 @@ The complete option list is in **[TECHNICAL.md](TECHNICAL.md#config-reference)**
 - **The map only covers part of the world / the edges are black?** Voxy is missing (NeoForge also needs Roxy), or SeedGen is not installed and the map only covers what Voxy actually stored. Black edges mean "no data", not a rendering error.
 - **The map looks wrong right after opening?** It corrects itself once loading finishes; if it still looks wrong, click **Refresh** in the bottom-right corner.
 - **Frame rate feels low?** Keep `skipWorldRender` on (it is by default); turning off the biome overlay or using a coarser map scale also helps.
+- **Only part of the map's tiles show up?** This is most likely the VRAM budget; adjust it in the config screen to match your GPU's memory.
 
 ## Known limitations
 
 - Currently overworld only — the Nether and the End are not drawn.
 - Biomes are matched by registry name, so identically named biomes from different mods may rarely collide.
-- Fabric 26.1.2 has a very rare NVIDIA driver crash when closing the map in some setups; 26.2 and 1.21.1 are not affected.
 
 Implementation details, the full option list and build instructions: **[TECHNICAL.md](TECHNICAL.md)**.
 
@@ -133,7 +132,7 @@ MIT — see [LICENSE](LICENSE). Icon and screenshots © Tsutsutsuu.
 [English](#voxy-map) | **[简体中文](#简体中文)**
 
 > ***所见即所得*** —— 能看多远，地图就画多远。
-> 直接把 Voxy 已有的 LOD 数据变成一张实时全屏地图：**不加载区块、不生成地形**，能看到的世界就是一张 3D 地形图。
+> 直接把 Voxy 已有的 LOD 数据变成一张实时地图：**不加载区块、不生成地形**，能看到的世界就是一张 3D 地图。
 
 纯客户端模组，支持 **Fabric 26.2 · Fabric 26.1.2 · NeoForge 1.21.1**。
 
@@ -144,6 +143,7 @@ MIT — see [LICENSE](LICENSE). Icon and screenshots © Tsutsutsuu.
 
 ## 亮点
 
+- **新的按方块实际颜色着色** —— 现在已经支持按照方块实际颜色绘制地图，已经设为默认配置，暂时只支持原版方块，Mod支持计划中。
 - **一眼看完整张地图** —— 地图直接用 Voxy 已经存下的 LOD 数据构建，打开就是整片探索过的世界；开图期间不加载、不生成任何东西，之后探索到的新区域也会实时出现在地图上。
 - **开得快，性能好** —— 首次打开几秒出图，每个世界都有自己的缓存，之后（包括重启游戏后）几乎秒开；开图时世界渲染会暂停，帧率全留给地图。
 - **能环绕的 3D 地图** —— GPU 渲染、按真实 1:1 渲染的地形：中键拖动就能切换；拖动环绕、滚轮缩放，实时刷新，性能好。
@@ -153,25 +153,16 @@ MIT — see [LICENSE](LICENSE). Icon and screenshots © Tsutsutsuu.
 
 ## 截图
 
-### 6 种配色
-
-使用 **Tectonic Mod** 的 "i use voxy btw" 预设地形，Voxy SeedGen 距离 382 区块，黄色框为真实渲染距离（自然地形 / 渐变 / GMT / 航海 / 彩虹渐变 / 柔和渐变）：
-
-![7 种配色对比（Tectonic 地形）](img/1.png)
-
-**原版地形**，同一组配色，带群系边界与群系名标签：
-
-![7 种配色对比（原版地形）](img/2.png)
 
 ### 全屏地图
 
 使用 **Tectonic Mod** 的 "i use voxy btw" 预设地形，Voxy SeedGen 距离 382 区块，黄色框为真实渲染距离：
 
-![全屏地图远景（Tectonic 地形）](img/zh_3.png)
+![全屏地图远景（Tectonic 地形）](img/zh_11.png)
 
-近景细节：等高线、山体阴影、水深着色、群系边界与标签：
+**原版地形**，Voxy SeedGen 距离 382 区块，黄色框为真实渲染距离：
 
-![全屏地图近景（Tectonic 地形）](img/zh_4.png)
+![全屏地图远景（原版地形）](img/zh_9.png)
 
 **原版地形**，Voxy SeedGen 距离 382 区块，黄色框为真实渲染距离：
 
@@ -183,13 +174,21 @@ MIT — see [LICENSE](LICENSE). Icon and screenshots © Tsutsutsuu.
 
 3D模式：
 
-![3D模式-1](img/zh_5.png)
+![3D模式-0](img/zh_10.png)
+
+![3D模式-1](img/zh_8.png)
 
 ![3D模式-2](img/zh_6.png)
 
 配置界面：
 
 ![配置界面](img/zh_7.png)
+
+### 6 种配色
+
+使用 **Tectonic Mod** 的 "i use voxy btw" 预设地形，Voxy SeedGen 距离 382 区块，黄色框为真实渲染距离（自然地形 / 渐变 / GMT / 航海 / 彩虹渐变 / 柔和渐变）：
+
+![6 种配色对比（Tectonic 地形）](img/1.png)
 
 ## 快速开始
 
@@ -232,14 +231,14 @@ MIT — see [LICENSE](LICENSE). Icon and screenshots © Tsutsutsuu.
 ## 常见问题
 
 - **地图只覆盖了一部分 / 边缘是黑的？** 没装 Voxy（NeoForge 还需要 Roxy），或者没装 SeedGen，地图只覆盖 Voxy 已存下的数据——黑边是「没有数据」，不是渲染错误。
-- **刚打开地图地图有错误？** 等加载完之后会自动修正，如果还是没修正，点右下角刷新就好。
+- **刚打开地图地图有错误？某些区块加载不出来？** 等加载完之后会自动修正，如果还是没修正，点右下角刷新就好。
 - **帧率偏低？** 保持 `skipWorldRender` 开启（默认就是开）；关闭群系叠加、把地图比例调粗也能减负。
+- **只能显示一部分地图瓦片？** 大概率是显存预算的限制原因，可以根据自己显存容量在配置界面调整。
 
 ## 已知限制
 
 - 暂时仅支持主世界——下界、末地不绘制。
 - 群系按注册名匹配，不同模组的同名群系极少情况下可能显示错误。
-- Fabric 26.1.2 在部分环境下关闭地图有极低概率触发 NVIDIA 驱动崩溃；26.2 与 1.21.1 无此问题。
 
 实现细节、完整配置表与构建方式见 **[TECHNICAL.md](TECHNICAL.md)**。
 
