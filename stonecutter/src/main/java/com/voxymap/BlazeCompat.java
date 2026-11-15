@@ -8,10 +8,17 @@ import com.mojang.blaze3d.systems.RenderPass;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.textures.GpuTexture;
 import com.mojang.blaze3d.textures.GpuTextureView;
+import com.mojang.blaze3d.pipeline.BlendFunction;
+import com.mojang.blaze3d.pipeline.ColorTargetState;
+import com.mojang.blaze3d.pipeline.DepthStencilState;
+import com.mojang.blaze3d.platform.CompareOp;
 import com.mojang.blaze3d.vertex.BufferBuilder;
 import com.mojang.blaze3d.vertex.ByteBufferBuilder;
+import com.mojang.blaze3d.vertex.DefaultVertexFormat;
 import com.mojang.blaze3d.vertex.VertexFormat;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.renderer.RenderPipelines;
 
 import java.nio.ByteBuffer;
 
@@ -122,13 +129,18 @@ public final class BlazeCompat {
     }
 
     public static void drawIndexed(RenderPass pass, int indexCount) {
+        drawIndexed(pass, 0, indexCount);
+    }
+
+    /** Indexed draw starting at {@code firstIndex} into the bound index buffer. */
+    public static void drawIndexed(RenderPass pass, int firstIndex, int indexCount) {
         //? if >=26.2 {
-        pass.drawIndexed(indexCount, 1, 0, 0, 0);
+        pass.drawIndexed(indexCount, 1, firstIndex, 0, 0);
         //?} else {
         /*// 26.1.2 argument order is (baseVertex, firstIndex, indexCount, instanceCount) -
         // very different from 26.2's (indexCount, instanceCount, firstIndex, vertexOffset,
         // firstInstance). Passing the 26.2 order here drew indexCount=0, i.e. nothing at all.
-        pass.drawIndexed(0, 0, indexCount, 1);*/
+        pass.drawIndexed(0, firstIndex, indexCount, 1);*/
         //?}
     }
 
@@ -141,6 +153,104 @@ public final class BlazeCompat {
         encoder.submit();
         //?} else {
         /*// no explicit submit on 26.1.2*/
+        //?}
+    }
+
+    /**
+     * Fence for "the GPU has finished reading this buffer". 26.2's encoder creates a real
+     * {@code GpuFence}; 26.1.2 has no fence type at all (its encoder executes immediately), so the
+     * helpers degrade to no-ops there and the caller's 3-slot ring is the only protection.
+     */
+    public static Object createFence(CommandEncoder encoder) {
+        //? if >=26.2 {
+        return encoder.createFence();
+        //?} else {
+        /*return null;*/
+        //?}
+    }
+
+    /** Waits for a fence created by {@link #createFence} and closes it; no-op for null. */
+    public static void awaitAndCloseFence(Object fence) {
+        //? if >=26.2 {
+        if (fence instanceof com.mojang.blaze3d.buffers.GpuFence f) {
+            try {
+                f.awaitCompletion(Long.MAX_VALUE);
+            } finally {
+                f.close();
+            }
+        }
+        //?} else {
+        /*// 26.1.2: no fence objects exist*/
+        //?}
+    }
+
+    /**
+     * Opens a screen immediately (no forced frame). 26.2 moved the screen accessor onto
+     * {@code Gui}; 26.1.2 still has it on {@code Minecraft}.
+     */
+    public static void openScreen(Screen screen) {
+        //? if >=26.2 {
+        Minecraft.getInstance().gui.setScreen(screen);
+        //?} else {
+        /*Minecraft.getInstance().setScreen(screen);*/
+        //?}
+    }
+
+    /** True when the vanilla HUD is hidden — the same state F1 toggles. */
+    public static boolean isHudHidden() {
+        //? if >=26.2 {
+        return Minecraft.getInstance().gui.hud.isHidden();
+        //?} else {
+        /*return Minecraft.getInstance().options.hideGui;*/
+        //?}
+    }
+
+    /** Toggles the F1 HUD state. */
+    public static void toggleHud() {
+        //? if >=26.2 {
+        Minecraft.getInstance().gui.hud.toggle();
+        //?} else {
+        /*Minecraft.getInstance().options.hideGui = !Minecraft.getInstance().options.hideGui;*/
+        //?}
+    }
+
+    /**
+     * Textured, depth-test-free world pipeline for the player arrow: GLOBALS + projection +
+     * Sampler0, vanilla {@code core/position_tex}, POSITION_TEX vertices, translucent blending.
+     *
+     * <p>The two versions describe a pipeline differently: 26.2 declares bind-group layouts and a
+     * per-slot vertex binding plus a primitive topology, while 26.1.2 has no bind-group or
+     * PrimitiveTopology classes and declares the uniforms, a sampler and one vertex format instead.
+     * Fully qualified names keep this file free of version-specific imports.</p>
+     */
+    public static RenderPipeline arrowPipeline() {
+        //? if >=26.2 {
+        return RenderPipelines.register(RenderPipeline.builder(RenderPipelines.GLOBALS_SNIPPET)
+                .withBindGroupLayout(net.minecraft.client.renderer.BindGroupLayouts.MATRICES_PROJECTION)
+                .withLocation("pipeline/voxymap_marker_arrow")
+                .withVertexShader("core/position_tex")
+                .withFragmentShader("core/position_tex")
+                .withBindGroupLayout(net.minecraft.client.renderer.BindGroupLayouts.SAMPLER0)
+                .withColorTargetState(new ColorTargetState(BlendFunction.TRANSLUCENT))
+                .withVertexBinding(0, DefaultVertexFormat.POSITION_TEX)
+                .withPrimitiveTopology(com.mojang.blaze3d.PrimitiveTopology.QUADS)
+                .withDepthStencilState(new DepthStencilState(CompareOp.ALWAYS_PASS, false))
+                .withCull(false)
+                .build());
+        //?} else {
+        /*return RenderPipelines.register(RenderPipeline.builder(RenderPipelines.GLOBALS_SNIPPET)
+                .withUniform("DynamicTransforms", com.mojang.blaze3d.shaders.UniformType.UNIFORM_BUFFER)
+                .withUniform("Projection", com.mojang.blaze3d.shaders.UniformType.UNIFORM_BUFFER)
+                .withLocation("pipeline/voxymap_marker_arrow")
+                .withVertexShader("core/position_tex")
+                .withFragmentShader("core/position_tex")
+                .withSampler("Sampler0")
+                .withColorTargetState(new ColorTargetState(BlendFunction.TRANSLUCENT))
+                .withVertexFormat(DefaultVertexFormat.POSITION_TEX,
+                        com.mojang.blaze3d.vertex.VertexFormat.Mode.QUADS)
+                .withDepthStencilState(new DepthStencilState(CompareOp.ALWAYS_PASS, false))
+                .withCull(false)
+                .build());*/
         //?}
     }
 

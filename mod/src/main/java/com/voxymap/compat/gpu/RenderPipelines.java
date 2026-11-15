@@ -44,6 +44,39 @@ public final class RenderPipelines {
             false  // no culling
     );
 
+    /**
+     * Player marker line: 26.2's {@code DEBUG_FILLED_SNIPPET} + {@code CompareOp.ALWAYS_PASS}. It is
+     * a UI annotation, not terrain, so the depth test is off entirely - the "buried half is grey"
+     * rule is decided from map data, never from the depth buffer. Camera-facing ribbon, hence
+     * cull off.
+     */
+    public static final RenderPipeline MARKER = new RenderPipeline(
+            "voxymap_gpu3d_marker",
+            ResourceLocation.fromNamespaceAndPath("voxymap", "overlay"),
+            DefaultVertexFormat.POSITION_COLOR,
+            VertexFormat.Mode.TRIANGLES,
+            true,  // translucent (the white/grey tint uses alpha 0xFF, but keep the same blend path)
+            false, // NO depth test: always visible over the terrain
+            false, // no depth write
+            false  // camera-facing ribbon: never cull
+    );
+
+    /**
+     * Player arrow: a world-space quad textured with the 2D arrow PNG, perspective-correct in
+     * hardware instead of the old per-pixel CPU rasteriser. Uses vanilla's {@code position_tex}
+     * (Position + UV0, Sampler0 on unit 0), no depth test so the arrow stays visible.
+     */
+    public static final RenderPipeline ARROW = new RenderPipeline(
+            "voxymap_gpu3d_arrow",
+            ResourceLocation.fromNamespaceAndPath("minecraft", "position_tex"),
+            DefaultVertexFormat.POSITION_TEX,
+            VertexFormat.Mode.TRIANGLES,
+            true,  // translucent: the PNG has transparent pixels
+            false, // NO depth test
+            false, // no depth write
+            false  // a downward-facing quad must not be culled
+    );
+
     private RenderPipelines() {
     }
 }

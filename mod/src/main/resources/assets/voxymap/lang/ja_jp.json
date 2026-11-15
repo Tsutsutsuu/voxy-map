@@ -190,5 +190,17 @@
   "voxymap.config.autoHideContours3d": "3D で等高線を非表示",
   "voxymap.config.desc.autoHideContours3d": "3D ビューを開いている間は等高線を非表示にします。",
   "voxymap.config.biomeLabel3dRange": "3D バイオームラベルの範囲（ブロック）",
-  "voxymap.config.desc.biomeLabel3dRange": "3D では、この水平距離内にあるバイオームラベルのみを表示します。"
+  "voxymap.config.desc.biomeLabel3dRange": "3D では、この水平距離内にあるバイオームラベルのみを表示します。",
+  "voxymap.config.hideHud": "ゲーム UI を隠す",
+  "voxymap.config.desc.hideHud": "マップを開いている間、HUD（ホットバー・チャット・スコアボード・各種オーバーレイ）を F1 と同じように隠します。マップの上に描画される一部のサードパーティ製オーバーレイはこの方法でしか隠せません。",
+  "voxymap.config.section.xaero": "Xaero 連携",
+  "voxymap.config.xaeroWaypoints": "Xaero ウェイポイント",
+  "voxymap.config.desc.xaeroWaypoints": "Xaero のミニマップのウェイポイントを 2D / 3D の地図に描画します。",
+  "voxymap.config.xaeroWaypointLabels": "ウェイポイント名",
+  "voxymap.config.desc.xaeroWaypointLabels": "マーカーの横に名前を表示します。オフにすると色付きの点だけになります。",
+  "voxymap.ui.xaeroAdd": "Xaero にウェイポイントを追加",
+  "voxymap.ui.xaeroMissing": "Xaero のミニマップが未導入か、対応していないバージョンです",
+  "voxymap.ui.track": "軌跡",
+  "voxymap.ui.trackStarted": "軌跡を記録中",
+  "voxymap.ui.trackCleared": "軌跡を停止して消去しました"
 }

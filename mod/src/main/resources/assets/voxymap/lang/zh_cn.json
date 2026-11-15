@@ -190,5 +190,17 @@
   "voxymap.config.autoHideContours3d": "自动隐藏等高线",
   "voxymap.config.desc.autoHideContours3d": "进入 3D 时隐藏等高线，退出后恢复。",
   "voxymap.config.biomeLabel3dRange": "3D 群系标签范围（方块）",
-  "voxymap.config.desc.biomeLabel3dRange": "3D 视图只显示相机水平距离内的群系标签。"
+  "voxymap.config.desc.biomeLabel3dRange": "3D 视图只显示相机水平距离内的群系标签。",
+  "voxymap.config.hideHud": "隐藏游戏界面",
+  "voxymap.config.desc.hideHud": "打开地图时隐藏 HUD（快捷栏、聊天、计分板、各种叠加层），等同于按 F1。部分第三方叠加层是画在地图之上的，只能这样隐藏。",
+  "voxymap.config.section.xaero": "Xaero 兼容",
+  "voxymap.config.xaeroWaypoints": "Xaero 路径点",
+  "voxymap.config.desc.xaeroWaypoints": "在地图上（2D 与 3D）绘制 Xaero 小地图里的路径点。",
+  "voxymap.config.xaeroWaypointLabels": "路径点名称",
+  "voxymap.config.desc.xaeroWaypointLabels": "在标记旁显示路径点名称；关闭后只显示彩色圆点。",
+  "voxymap.ui.xaeroAdd": "在 Xaero 添加路径点",
+  "voxymap.ui.xaeroMissing": "未安装 Xaero 的小地图，或版本不兼容",
+  "voxymap.ui.track": "轨迹",
+  "voxymap.ui.trackStarted": "开始记录轨迹",
+  "voxymap.ui.trackCleared": "已停止并清空轨迹"
 }

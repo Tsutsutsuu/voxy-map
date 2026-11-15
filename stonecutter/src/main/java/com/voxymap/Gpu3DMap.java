@@ -2,8 +2,10 @@ package com.voxymap;
 
 import com.mojang.blaze3d.buffers.GpuBuffer;
 import com.mojang.blaze3d.buffers.GpuBufferSlice;
+import com.mojang.blaze3d.pipeline.DepthStencilState;
 import com.mojang.blaze3d.pipeline.RenderPipeline;
 import com.mojang.blaze3d.pipeline.RenderTarget;
+import com.mojang.blaze3d.platform.CompareOp;
 import com.mojang.blaze3d.systems.RenderPass;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.textures.FilterMode;
@@ -17,6 +19,7 @@ import com.mojang.blaze3d.vertex.VertexFormat;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.ProjectionMatrixBuffer;
 import net.minecraft.client.renderer.RenderPipelines;
+import net.minecraft.client.renderer.texture.AbstractTexture;
 import org.joml.Matrix4f;
 import org.joml.Vector3f;
 import org.joml.Vector4f;
@@ -57,11 +60,62 @@ public final class Gpu3DMap {
     private static final Matrix4f TEXTURE_MATRIX = new Matrix4f();
     private static final RenderPipeline PIPELINE = RenderPipelines.SOLID_BLOCK;
     private static final RenderPipeline OVERLAY_PIPELINE = overlayPipeline();
+    /**
+     * The marker tick line is drawn with depth testing disabled: it is a UI marker for the player,
+     * not terrain, so it must always be visible instead of disappearing behind the mesh it casts
+     * from. The "buried part is grey" rule is decided from the map data, not from the depth buffer.
+     */
+    private static final RenderPipeline MARKER_PIPELINE = markerPipeline();
+    /** Textured world-space pipeline for the player arrow (POSITION_TEX, no depth test). */
+    private static final RenderPipeline ARROW_PIPELINE = arrowPipeline();
     private static final int OVERLAY_SEGMENTS = 64;
-    private static GpuBuffer overlayVbo;
-    private static GpuBuffer overlayIbo;
+    /** Upper bound on the marker tick-line segments (the buffer is sized for this). */
+    private static final int MARKER_MAX_SEGMENTS = 96;
+    /**
+     * The distance ribbon + marker line + arrow are <b>rewritten every frame</b>, so they live in a
+     * 3-slot ring: overwriting the buffer a frame is still reading is a WAR hazard (undefined on
+     * Vulkan, a driver stall on GL). Before a slot is reused its fence is awaited, exactly like
+     * vanilla's {@code MappableRingBuffer}. 26.1.2 has no fence API at all, so there the ring alone
+     * provides the slack (three frames instead of one).
+     */
+    private static final int OVERLAY_SLOTS = 3;
+    private static final GpuBuffer[] overlayVbos = new GpuBuffer[OVERLAY_SLOTS];
+    private static final GpuBuffer[] overlayIbos = new GpuBuffer[OVERLAY_SLOTS];
+    /** {@code GpuFence} on 26.2, null on 26.1.2 (kept as Object so the field is version neutral). */
+    private static final Object[] overlayFences = new Object[OVERLAY_SLOTS];
+    private static int overlaySlot;
+    /** Slide index the current frame wrote into; the fence for it is created after the pass. */
+    private static int overlaySlotInUse = -1;
+    /** Ribbon indices (drawn with {@link #OVERLAY_PIPELINE}, depth-tested). */
     private static int overlayIndexCount;
-
+    /** Marker-line index range inside the same buffer (drawn with {@link #MARKER_PIPELINE}). */
+    private static int markerFirstIndex;
+    private static int markerIndexCount;
+    /** Player arrow: its own POSITION_TEX buffers (a quad + two triangles), redrawn every frame. */
+    private static final int ARROW_VERTS = 4;
+    private static final int ARROW_INDICES = 6;
+    private static final GpuBuffer[] arrowVbos = new GpuBuffer[OVERLAY_SLOTS];
+    private static final GpuBuffer[] arrowIbos = new GpuBuffer[OVERLAY_SLOTS];
+    private static int arrowIndexCount;
+    private static GpuSampler arrowSampler;
+    /**
+     * Player track overlay: its own buffers, rebuilt only when {@link TrackOverlay#version()} moves
+     * (one sampling step, i.e. every couple of blocks) instead of being re-uploaded every frame.
+     * A rebuild always allocates fresh buffers and retires the old pair through {@link #RETIRED},
+     * so a frame that is still in flight never reads a buffer that was overwritten underneath it.
+     */
+    private static GpuBuffer trackVbo;
+    private static GpuBuffer trackIbo;
+    private static int trackIndexCount;
+    private static int trackBuiltVersion = -1;
+    /** Half the ribbon width in world blocks; the track is a thin path, not a road. */
+    private static final double TRACK_HALF_WIDTH = 1.1;
+    /**
+     * Small lift above the recorded feet position so the ribbon does not z-fight with the terrain
+     * on the frame the player is standing on. It must stay small: the ribbon tracks the player's
+     * own height, not the surface.
+     */
+    private static final double TRACK_LIFT = 0.15;
     /**
      * The distance ribbon re-uses vanilla's debug-quads pipeline: position+color vertices, QUADS
      * topology (mapped to GL_TRIANGLES by the backend), translucent blending, depth testing without
@@ -70,6 +124,29 @@ public final class Gpu3DMap {
      */
     private static RenderPipeline overlayPipeline() {
         return RenderPipelines.DEBUG_QUADS;
+    }
+
+    /**
+     * Same vertex format / blending / topology as {@link #OVERLAY_PIPELINE}, but with the depth test
+     * forced to ALWAYS_PASS so the marker line draws over the terrain.
+     */
+    private static RenderPipeline markerPipeline() {
+        try {
+            return RenderPipelines.register(RenderPipeline.builder(RenderPipelines.DEBUG_FILLED_SNIPPET)
+                    .withLocation("pipeline/voxymap_marker_line")
+                    .withDepthStencilState(new DepthStencilState(CompareOp.ALWAYS_PASS, false))
+                    // Explicit: 26.2's DEBUG_FILLED_SNIPPET already sets cull(false), but 26.1.2's
+                    // snippet leaves culling on (vanilla re-disables it in DEBUG_QUADS for exactly
+                    // this reason). Without it the camera-facing marker ribbon is back-face culled
+                    // and the tick line silently disappears on 26.1.2.
+                    .withCull(false)
+                    .build());
+        } catch (Throwable t) {
+            // never let a pipeline registration problem take the whole 3D view down: the marker
+            // line then falls back to the depth-tested overlay pipeline
+            System.out.println("[voxymap] marker pipeline unavailable, using the overlay pipeline: " + t);
+            return null;
+        }
     }
     private static final Map<Long, TileGpu> TILES = new HashMap<>();
     /**
@@ -254,6 +331,7 @@ public final class Gpu3DMap {
         if (sampler != null) return;
         sampler = RenderSystem.getSamplerCache().getClampToEdge(FilterMode.NEAREST);
         lightSampler = RenderSystem.getSamplerCache().getClampToEdge(FilterMode.LINEAR);
+        arrowSampler = RenderSystem.getSamplerCache().getClampToEdge(FilterMode.NEAREST);
     }
 
     /** Upper bound for GPU tiles derived from the shared tile-texture VRAM budget. */
@@ -955,92 +1033,553 @@ public final class Gpu3DMap {
     }
 
     /**
-     * Builds the yellow render-distance ribbon on the terrain surface. Unlike the CPU rasteriser
-     * this stays a dynamic mesh: only ~500 vertices are updated per frame, no atlas rebake.
+     * Builds the per-frame world-space decorations drawn in the terrain pass: the yellow
+     * render-distance ribbon (optional) and the player marker's vertical tick line (always).
+     *
+     * <p>The tick line lives here rather than in {@link MapScreen} because it has to be real 3D
+     * geometry: each segment is coloured by whether it sits inside the terrain mesh, and world-space
+     * dashes keep the "distance to the ground" look at every zoom. Drawing it with 2D fills could
+     * not shade the buried part or keep the dash length stable.</p>
      */
-    private static boolean prepareOverlay() {
+    /** Static max sizes of the overlay staging/GPU buffers (ribbon + marker line). */
+    private static final int OVERLAY_MAX_VERTS =
+            4 * (OVERLAY_SEGMENTS + 1) * 2 + MARKER_MAX_SEGMENTS * 4;
+    private static final int OVERLAY_MAX_INDICES =
+            4 * OVERLAY_SEGMENTS * 6 + MARKER_MAX_SEGMENTS * 6;
+    /** Reused staging memory: the overlay is rebuilt every frame, so nothing may allocate here. */
+    private static ByteBuffer overlayStagingVb;
+    private static ByteBuffer overlayStagingIb;
+    private static ByteBuffer arrowStagingVb;
+    private static ByteBuffer arrowStagingIb;
+
+    /**
+     * Builds this frame's distance ribbon + marker line into the current ring slot and records the
+     * uploads into {@code encoder}. Nothing is submitted here: the copy and the draws share one
+     * encoder, so a frame keeps vanilla's submit budget, and the 3-slot ring (+ fence on 26.2) is
+     * what makes overwriting the previous frames' buffers safe.
+     */
+    private static boolean prepareOverlay(com.mojang.blaze3d.systems.CommandEncoder encoder,
+                                          MapScreen screen) {
         Minecraft mc = Minecraft.getInstance();
         MapData data = MapData.INSTANCE;
         var player = mc.player;
-        if (player == null || !data.isReady() || !data.isRenderDistanceOverlay()) return false;
-        int pb = Math.max(1, data.getPixelBlocks());
-        double vscale = VoxyMapConfig.VERTICAL_SCALE_3D.get();
-        double dist = mc.options.renderDistance().get() * 16.0;
-        double cx = player.getX();
-        double cz = player.getZ();
-        double width = Math.max(1.0, pb * 1.5);
-        int maxVerts = 4 * (OVERLAY_SEGMENTS + 1) * 2;
-        int maxIndices = 4 * OVERLAY_SEGMENTS * 6;
-        if (overlayVbo == null) {
-            overlayVbo = RenderSystem.getDevice().createBuffer(
-                    () -> "voxymap_gpu3d_overlay_v",
-                    GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_COPY_DST, maxVerts * 16);
-            overlayIbo = RenderSystem.getDevice().createBuffer(
-                    () -> "voxymap_gpu3d_overlay_i",
-                    GpuBuffer.USAGE_INDEX | GpuBuffer.USAGE_COPY_DST, maxIndices * 4);
+        boolean ribbon = player != null && data.isReady() && data.isRenderDistanceOverlay();
+        double[] marker = screen.markerGeometry3d();
+        double[] line = marker == null ? null : markerLineSpan(marker);
+        if (!ribbon && line == null) {
+            overlaySlotInUse = -1;
+            return false;
         }
-        ByteBuffer vb = ByteBuffer.allocateDirect(maxVerts * 16).order(ByteOrder.nativeOrder());
-        ByteBuffer ib = ByteBuffer.allocateDirect(maxIndices * 4).order(ByteOrder.nativeOrder());
+
+        // take the next ring slot; wait for the frame that used it three frames ago
+        int slot = overlaySlot;
+        overlaySlot = (overlaySlot + 1) % OVERLAY_SLOTS;
+        BlazeCompat.awaitAndCloseFence(overlayFences[slot]);
+        overlayFences[slot] = null;
+        if (overlayVbos[slot] == null) {
+            final int s = slot;
+            overlayVbos[slot] = RenderSystem.getDevice().createBuffer(
+                    () -> "voxymap_gpu3d_overlay_v" + s,
+                    GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_COPY_DST, OVERLAY_MAX_VERTS * 16);
+            overlayIbos[slot] = RenderSystem.getDevice().createBuffer(
+                    () -> "voxymap_gpu3d_overlay_i" + s,
+                    GpuBuffer.USAGE_INDEX | GpuBuffer.USAGE_COPY_DST, OVERLAY_MAX_INDICES * 4);
+        }
+        if (overlayStagingVb == null) {
+            overlayStagingVb = ByteBuffer.allocateDirect(OVERLAY_MAX_VERTS * 16)
+                    .order(ByteOrder.nativeOrder());
+            overlayStagingIb = ByteBuffer.allocateDirect(OVERLAY_MAX_INDICES * 4)
+                    .order(ByteOrder.nativeOrder());
+            arrowStagingVb = ByteBuffer.allocateDirect(ARROW_VERTS * 20)
+                    .order(ByteOrder.nativeOrder());
+            arrowStagingIb = ByteBuffer.allocateDirect(ARROW_INDICES * 4)
+                    .order(ByteOrder.nativeOrder());
+        }
+        ByteBuffer vb = overlayStagingVb;
+        ByteBuffer ib = overlayStagingIb;
+        vb.clear();
+        ib.clear();
         int vi = 0, ii = 0;
-        for (int side = 0; side < 4; side++) {
-            int base = vi;
-            for (int i = 0; i <= OVERLAY_SEGMENTS; i++) {
-                double t = i / (double) OVERLAY_SEGMENTS;
-                double wx, wz, nx, nz;
-                switch (side) {
-                    case 0 -> { wx = cx - dist + 2 * dist * t; wz = cz - dist; nx = 0; nz = -1; }
-                    case 1 -> { wx = cx + dist; wz = cz - dist + 2 * dist * t; nx = 1; nz = 0; }
-                    case 2 -> { wx = cx + dist - 2 * dist * t; wz = cz + dist; nx = 0; nz = 1; }
-                    default -> { wx = cx - dist; wz = cz + dist - 2 * dist * t; nx = -1; nz = 0; }
+        /** Index range of the ribbon; the marker line follows it in the same buffer. */
+        int ribbonIndexCount = 0;
+        if (ribbon) {
+            int pb = Math.max(1, data.getPixelBlocks());
+            double vscale = VoxyMapConfig.VERTICAL_SCALE_3D.get();
+            double dist = mc.options.renderDistance().get() * 16.0;
+            double cx = player.getX();
+            double cz = player.getZ();
+            double width = Math.max(1.0, pb * 1.5);
+            for (int side = 0; side < 4; side++) {
+                int base = vi;
+                for (int i = 0; i <= OVERLAY_SEGMENTS; i++) {
+                    double t = i / (double) OVERLAY_SEGMENTS;
+                    double wx, wz, nx, nz;
+                    switch (side) {
+                        case 0 -> { wx = cx - dist + 2 * dist * t; wz = cz - dist; nx = 0; nz = -1; }
+                        case 1 -> { wx = cx + dist; wz = cz - dist + 2 * dist * t; nx = 1; nz = 0; }
+                        case 2 -> { wx = cx + dist - 2 * dist * t; wz = cz + dist; nx = 0; nz = 1; }
+                        default -> { wx = cx - dist; wz = cz + dist - 2 * dist * t; nx = -1; nz = 0; }
+                    }
+                    double y = data.heightAt((int) Math.floor(wx), (int) Math.floor(wz)) * vscale + 1.05;
+                    float ax = (float) (wx + nx * width * 0.5);
+                    float az = (float) (wz + nz * width * 0.5);
+                    float bx = (float) (wx - nx * width * 0.5);
+                    float bz = (float) (wz - nz * width * 0.5);
+                    putOverlayVertex(vb, ax, (float) y, az, 0xFF, 0xFF, 0x00, 0xC0);
+                    putOverlayVertex(vb, bx, (float) y, bz, 0xFF, 0xFF, 0x00, 0xC0);
+                    vi += 2;
                 }
-                double y = data.heightAt((int) Math.floor(wx), (int) Math.floor(wz)) * vscale + 1.05;
-                float ax = (float) (wx + nx * width * 0.5);
-                float az = (float) (wz + nz * width * 0.5);
-                float bx = (float) (wx - nx * width * 0.5);
-                float bz = (float) (wz - nz * width * 0.5);
-                putOverlayVertex(vb, ax, (float) y, az);
-                putOverlayVertex(vb, bx, (float) y, bz);
-                vi += 2;
+                for (int i = 0; i < OVERLAY_SEGMENTS; i++) {
+                    int a = base + i * 2;
+                    int b = a + 1;
+                    int c = a + 2;
+                    int d = a + 3;
+                    ib.putInt(a).putInt(c).putInt(b);
+                    ib.putInt(b).putInt(c).putInt(d);
+                    ii += 6;
+                }
             }
-            for (int i = 0; i < OVERLAY_SEGMENTS; i++) {
-                int a = base + i * 2;
-                int b = a + 1;
-                int c = a + 2;
-                int d = a + 3;
-                ib.putInt(a).putInt(c).putInt(b);
-                ib.putInt(b).putInt(c).putInt(d);
-                ii += 6;
+        }
+        ribbonIndexCount = ii;
+        int markerFirst = ii;
+        int[] cursor = {vi, ii};
+        if (line != null) {
+            appendMarkerLine(screen, line, vb, ib, cursor);
+        }
+        ii = cursor[1];
+        boolean anyOverlay = ii > 0;
+        // The arrow lives in its own buffers: it is POSITION_TEX (20-byte stride) while everything
+        // else here is POSITION_COLOR (16-byte stride), and an indexed draw has no per-draw vertex
+        // stride offset, so the two cannot share one vertex buffer.
+        arrowIndexCount = 0;
+        int arrowIndices = 0;
+        if (marker != null) {
+            ByteBuffer avb = arrowStagingVb;
+            ByteBuffer aib = arrowStagingIb;
+            avb.clear();
+            aib.clear();
+            arrowIndices = appendMarkerArrow(screen, marker, avb, aib);
+            if (arrowIndices > 0) {
+                avb.flip();
+                aib.flip();
+                if (arrowVbos[slot] == null) {
+                    final int s = slot;
+                    arrowVbos[slot] = RenderSystem.getDevice().createBuffer(
+                            () -> "voxymap_marker_arrow_v" + s,
+                            GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_COPY_DST, ARROW_VERTS * 20);
+                    arrowIbos[slot] = RenderSystem.getDevice().createBuffer(
+                            () -> "voxymap_marker_arrow_i" + s,
+                            GpuBuffer.USAGE_INDEX | GpuBuffer.USAGE_COPY_DST, ARROW_INDICES * 4);
+                }
+                encoder.writeToBuffer(new GpuBufferSlice(arrowVbos[slot], 0L, avb.remaining()), avb);
+                encoder.writeToBuffer(new GpuBufferSlice(arrowIbos[slot], 0L, aib.remaining()), aib);
+                arrowIndexCount = arrowIndices;
             }
+        }
+        overlaySlotInUse = slot;
+        if (!anyOverlay) {
+            overlayIndexCount = 0;
+            markerIndexCount = 0;
+            return arrowIndexCount > 0;
         }
         vb.flip();
         ib.flip();
-        var encoder = RenderSystem.getDevice().createCommandEncoder();
-        encoder.writeToBuffer(new GpuBufferSlice(overlayVbo, 0L, vb.remaining()), vb);
-        encoder.writeToBuffer(new GpuBufferSlice(overlayIbo, 0L, ib.remaining()), ib);
-        BlazeCompat.submit(encoder);
-        overlayIndexCount = ii;
-        return ii > 0;
+        encoder.writeToBuffer(new GpuBufferSlice(overlayVbos[slot], 0L, vb.remaining()), vb);
+        encoder.writeToBuffer(new GpuBufferSlice(overlayIbos[slot], 0L, ib.remaining()), ib);
+        overlayIndexCount = ribbonIndexCount;
+        markerFirstIndex = markerFirst;
+        markerIndexCount = ii - markerFirst;
+        return true;
     }
 
-    private static void putOverlayVertex(ByteBuffer vb, float x, float y, float z) {
-        vb.putFloat(x);
-        vb.putFloat(y);
-        vb.putFloat(z);
-        vb.put((byte) 0xFF);
-        vb.put((byte) 0xFF);
-        vb.put((byte) 0x00);
-        vb.put((byte) 0xC0);
+    /**
+     * Vertical tick line under the player marker, as a camera-facing ribbon.
+     *
+     * <p>Colour rules (the line is always drawn on top, so the colour carries the information):</p>
+     * <ul>
+     *     <li>visible from the camera — white;</li>
+     *     <li>hidden behind the terrain (a ridge between the camera and the line, or the line part
+     *         that sits inside the mesh) — light grey;</li>
+     *     <li>the airborne drop between the player and the ground — dashes, in whichever of the two
+     *         colours applies (so a dashed part behind a hill is dashed <em>and</em> grey).</li>
+     * </ul>
+     *
+     * <p>Occlusion is sampled from the map data, not from the depth buffer, which is why the line
+     * can be drawn with the depth test disabled and still report what the terrain hides.</p>
+     */
+    private static int appendMarkerLine(MapScreen screen, double[] span, ByteBuffer vb, ByteBuffer ib,
+                                        int[] cursor) {
+        Map3D.Camera cam = screen.gpu3dCamera();
+        if (cam == null) return cursor[1];
+        MapData data = MapData.INSTANCE;
+        double vscale = VoxyMapConfig.VERTICAL_SCALE_3D.get();
+        double px = span[0];
+        double pz = span[1];
+        double feet = span[2];
+        double surface = span[3];
+        double surfaceTop = span[4];
+        double bottom = span[5];
+        double top = span[6];
+        boolean airborne = span[7] > 0.5;
+        double eyeX = cam.eyeX();
+        double eyeY = cam.eyeY();
+        double eyeZ = cam.eyeZ();
+
+        // billboard: offset perpendicular to the camera -> player horizontal direction
+        double vx = px - cam.eyeX();
+        double vz = pz - cam.eyeZ();
+        double vlen = Math.hypot(vx, vz);
+        if (vlen < 1.0e-3) {
+            vx = 0;
+            vz = 1;
+            vlen = 1;
+        }
+        double rx = -vz / vlen;
+        double rz = vx / vlen;
+        // Screen-constant thickness: the world size grows with the camera distance, so zooming out
+        // does not turn the line into a fat band (and zooming in does not make it vanish).
+        double halfW = cam.distance * 0.0018;
+
+        double spanLen = top - bottom;
+        if (spanLen < 0.05) return cursor[1];
+        // Dashes are uniform world-space cells measured from the TOP of the drop. That fixes three
+        // things at once: every cell is the same length (the old per-segment toggle quantised the
+        // boundaries to a step that was not a divisor of the period, so cells alternated n / n+1),
+        // the pattern no longer depends on the camera distance (which is why it slid around while
+        // zooming), and the first cell under the solid part is empty.
+        double drop = airborne ? Math.max(0.0, feet - surface) : 0.0;
+        double cell = Math.max(0.75, drop / 10.0);
+
+        // Occlusion is sampled at a dozen heights and looked up per piece: one ray per piece
+        // would be ~100 ray marches per frame for a line a few blocks tall, all of them almost
+        // the same ray. 13 samples is visually indistinguishable at this size.
+        int occSamples = 13;
+        boolean[] occluded = new boolean[occSamples];
+        for (int i = 0; i < occSamples; i++) {
+            double y = bottom + spanLen * i / (occSamples - 1);
+            occluded[i] = rayBlocked(data, vscale, eyeX, eyeY, eyeZ, px, y, pz);
+        }
+
+        int vi = cursor[0];
+        int ii = cursor[1];
+        int quads = 0;
+        // 1) solid head: from the arrow down to the player's feet (the whole line when standing)
+        double solidLow = airborne ? Math.max(feet, bottom) : bottom;
+        if (top > solidLow + 1.0e-4) {
+            double len = top - solidLow;
+            int segs = Math.max(2, Math.min(48, (int) Math.ceil(len)));
+            double step = len / segs;
+            for (int s = 0; s < segs && quads < MARKER_MAX_SEGMENTS; s++) {
+                double y1 = top - s * step;
+                double y0 = Math.max(solidLow, y1 - step);
+                double mid = (y0 + y1) * 0.5;
+                int occIndex = Math.max(0, Math.min(occSamples - 1,
+                        (int) Math.round((mid - bottom) / spanLen * (occSamples - 1))));
+                // "inside the mesh" means below the rendered surface (the mesh draws the surface at
+                // `surface`, i.e. heightAt), not below surfaceTop — that is the standing offset.
+                boolean buried = mid < surface;
+                boolean hidden = buried || occluded[occIndex];
+                // light grey: still readable over the terrain, but clearly "behind something"
+                int c = hidden ? 0xBE : 0xFF;
+                putOverlayVertex(vb, px + rx * halfW, y0, pz + rz * halfW, c, c, c, 0xFF);
+                putOverlayVertex(vb, px - rx * halfW, y0, pz - rz * halfW, c, c, c, 0xFF);
+                putOverlayVertex(vb, px + rx * halfW, y1, pz + rz * halfW, c, c, c, 0xFF);
+                putOverlayVertex(vb, px - rx * halfW, y1, pz - rz * halfW, c, c, c, 0xFF);
+                ib.putInt(vi).putInt(vi + 1).putInt(vi + 2);
+                ib.putInt(vi + 1).putInt(vi + 3).putInt(vi + 2);
+                vi += 4;
+                ii += 6;
+                quads++;
+            }
+        }
+        // 2) dashed drop: from the feet down to the ground, first cell empty
+        if (airborne && drop > 1.0e-3) {
+            int cells = (int) Math.ceil(drop / cell - 1.0e-6);
+            for (int k = 0; k < cells && quads < MARKER_MAX_SEGMENTS; k++) {
+                if ((k & 1) == 0) continue;              // the first cell (k = 0) is a gap
+                double y1 = feet - k * cell;
+                double y0 = Math.max(surface, y1 - cell);
+                if (y1 - y0 < 1.0e-3) continue;
+                double mid = (y0 + y1) * 0.5;
+                int occIndex = Math.max(0, Math.min(occSamples - 1,
+                        (int) Math.round((mid - bottom) / spanLen * (occSamples - 1))));
+                int c = occluded[occIndex] ? 0xBE : 0xFF;   // never buried: below feet, above surface
+                putOverlayVertex(vb, px + rx * halfW, y0, pz + rz * halfW, c, c, c, 0xFF);
+                putOverlayVertex(vb, px - rx * halfW, y0, pz - rz * halfW, c, c, c, 0xFF);
+                putOverlayVertex(vb, px + rx * halfW, y1, pz + rz * halfW, c, c, c, 0xFF);
+                putOverlayVertex(vb, px - rx * halfW, y1, pz - rz * halfW, c, c, c, 0xFF);
+                ib.putInt(vi).putInt(vi + 1).putInt(vi + 2);
+                ib.putInt(vi + 1).putInt(vi + 3).putInt(vi + 2);
+                vi += 4;
+                ii += 6;
+                quads++;
+            }
+        }
+        cursor[0] = vi;
+        cursor[1] = ii;
+        return ii;
+    }
+
+    /**
+     * True when the terrain mesh blocks the straight line between the camera and a point.
+     *
+     * <p>Walked against the map data ({@code heightAt}) rather than the depth buffer, so it can be
+     * evaluated for the whole marker line before it is drawn — the line itself is drawn without a
+     * depth test and only uses this to pick its colour. Samples are capped so a very distant
+     * marker cannot turn this into a per-frame hotspot.</p>
+     */
+    private static boolean rayBlocked(MapData data, double vscale, double ex, double ey, double ez,
+                                      double tx, double ty, double tz) {
+        double dx = tx - ex;
+        double dy = ty - ey;
+        double dz = tz - ez;
+        double len = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        if (len < 1.0e-3) return false;
+        int steps = (int) Math.max(10, Math.min(160, Math.round(len / 6.0)));
+        for (int i = 1; i < steps; i++) {
+            double t = i / (double) steps;
+            double x = ex + dx * t;
+            double y = ey + dy * t;
+            double z = ez + dz * t;
+            int bx = (int) Math.floor(x);
+            int bz = (int) Math.floor(z);
+            if (data.isEmptyAt(bx, bz)) continue;
+            if (y <= data.heightAt(bx, bz) * vscale) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Player arrow: a horizontal textured quad on the marker height, sampled straight from the
+     * arrow PNG by the GPU.
+     *
+     * <p>This replaced a CPU rasteriser that inverse-mapped the quad per pixel into a 128²
+     * {@code NativeImage} and uploaded it as a DynamicTexture every time the projection changed
+     * (the GUI's affine blit cannot show a tilted quad correctly). With a world-space textured
+     * pipeline the perspective correction is free and the per-frame 16k-pixel work + upload are
+     * gone.</p>
+     */
+    private static int appendMarkerArrow(MapScreen screen, double[] m, ByteBuffer vb, ByteBuffer ib) {
+        Map3D.Camera cam = screen.gpu3dCamera();
+        var player = Minecraft.getInstance().player;
+        if (cam == null || player == null) return 0;
+        double px = m[0];
+        double pz = m[1];
+        double markY = m[5];
+        double yaw = Math.toRadians(player.getYRot());
+        double fx = -Math.sin(yaw);
+        double fz = Math.cos(yaw);
+        double rx = Math.cos(yaw);
+        double rz = Math.sin(yaw);
+        double scale = Math.max(0.2, VoxyMapConfig.PLAYER_MARKER_SCALE_3D.get());
+        // Both terms are relative to the camera distance, so the arrow keeps a constant fraction
+        // of the view (no absolute block floor). The explicit GUI-scale factor is what makes the 3D
+        // arrow grow exactly like the 2D one, which is a fixed-size GUI blit: physical size =
+        // config scale * (guiScale / 4).
+        double half = Math.max(cam.distance * 0.004, cam.distance * 0.022 * scale)
+                * MapScreen.uiScaleFactor();
+        double ex = rx * half;
+        double ez = rz * half;
+        double ax = fx * half;
+        double az = fz * half;
+        // v = 0 is the tip (facing end); same UV assignment the CPU rasteriser used
+        putTexVertex(vb, px + ax - ex, markY, pz + az - ez, 0f, 0f);
+        putTexVertex(vb, px + ax + ex, markY, pz + az + ez, 1f, 0f);
+        putTexVertex(vb, px - ax + ex, markY, pz - az + ez, 1f, 1f);
+        putTexVertex(vb, px - ax - ex, markY, pz - az - ez, 0f, 1f);
+        ib.putInt(0).putInt(1).putInt(2);
+        ib.putInt(0).putInt(2).putInt(3);
+        return ARROW_INDICES;
+    }
+
+    /** POSITION_TEX vertex (3 floats + 2 floats = 20 bytes). */
+    private static void putTexVertex(ByteBuffer vb, double x, double y, double z, float u, float v) {
+        vb.putFloat((float) x);
+        vb.putFloat((float) y);
+        vb.putFloat((float) z);
+        vb.putFloat(u);
+        vb.putFloat(v);
+    }
+
+    /**
+     * Reduces the shared marker geometry ({@code {px, pz, feet, surface, surfaceTop, markY, hasModel}})
+     * to what the tick line needs: {@code {px, pz, feet, surface, surfaceTop, bottom, top, airborne}}.
+     * Without map data there is nothing to shade against, so the line stops at the player.
+     */
+    private static double[] markerLineSpan(double[] m) {
+        double px = m[0];
+        double pz = m[1];
+        double feet = m[2];
+        double surface = m[3];
+        double surfaceTop = m[4];
+        double markY = m[5];
+        boolean hasModel = m[6] > 0.5;
+        double bottom = hasModel ? Math.min(feet, surface) : feet;
+        double scale = Math.max(0.01, VoxyMapConfig.VERTICAL_SCALE_3D.get());
+        boolean airborne = hasModel && feet > surfaceTop + 0.6 * scale;
+        return new double[]{px, pz, feet, surface, surfaceTop, bottom, markY, airborne ? 1 : 0};
+    }
+
+
+    private static void putOverlayVertex(ByteBuffer vb, double x, double y, double z,
+                                         int r, int g, int b, int a) {
+        vb.putFloat((float) x);
+        vb.putFloat((float) y);
+        vb.putFloat((float) z);
+        vb.put((byte) r);
+        vb.put((byte) g);
+        vb.put((byte) b);
+        vb.put((byte) a);
+    }
+
+    /**
+     * World-space textured pipeline for the player arrow: GLOBALS + projection + Sampler0, the
+     * vanilla {@code core/position_tex} shader, POSITION_TEX vertices, translucent blending and no
+     * depth test (the arrow is a UI marker and must stay visible).
+     */
+    private static RenderPipeline arrowPipeline() {
+        try {
+            return BlazeCompat.arrowPipeline();
+        } catch (Throwable t) {
+            System.out.println("[voxymap] arrow pipeline unavailable, marker arrow disabled: " + t);
+            return null;
+        }
     }
 
     private static void drawOverlay(RenderPass pass, GpuBufferSlice transforms) {
-        if (overlayIndexCount <= 0 || overlayVbo == null) return;
+        if (overlaySlotInUse < 0) return;
+        GpuBuffer overlayVb = overlayVbos[overlaySlotInUse];
+        GpuBuffer overlayIb = overlayIbos[overlaySlotInUse];
+        if (overlayVb == null || overlayIb == null) return;
+        if (overlayIndexCount > 0) {
+            pass.setPipeline(OVERLAY_PIPELINE);
+            RenderSystem.bindDefaultUniforms(pass);
+            pass.setUniform("DynamicTransforms", transforms);
+            BlazeCompat.setVertexBuffer(pass, 0, overlayVb);
+            BlazeCompat.setIndexBuffer(pass, overlayIb);
+            BlazeCompat.drawIndexed(pass, 0, overlayIndexCount);
+        }
+        if (markerIndexCount > 0) {
+            // no depth test: the marker line is a UI annotation, not terrain. If the custom pipeline
+            // could not be registered, fall back to the depth-tested overlay pipeline so the line
+            // still shows (just occluded like everything else).
+            RenderPipeline pipeline = MARKER_PIPELINE != null ? MARKER_PIPELINE : OVERLAY_PIPELINE;
+            pass.setPipeline(pipeline);
+            RenderSystem.bindDefaultUniforms(pass);
+            pass.setUniform("DynamicTransforms", transforms);
+            BlazeCompat.setVertexBuffer(pass, 0, overlayVb);
+            BlazeCompat.setIndexBuffer(pass, overlayIb);
+            BlazeCompat.drawIndexed(pass, markerFirstIndex, markerIndexCount);
+        }
+        if (arrowIndexCount > 0 && ARROW_PIPELINE != null) {
+            GpuTextureView arrow = arrowTextureView();
+            if (arrow != null) {
+                pass.setPipeline(ARROW_PIPELINE);
+                RenderSystem.bindDefaultUniforms(pass);
+                pass.setUniform("DynamicTransforms", transforms);
+                pass.bindTexture("Sampler0", arrow, arrowSampler);
+                BlazeCompat.setVertexBuffer(pass, 0, arrowVbos[overlaySlotInUse]);
+                BlazeCompat.setIndexBuffer(pass, arrowIbos[overlaySlotInUse]);
+                BlazeCompat.drawIndexed(pass, arrowIndexCount);
+            }
+        }
+    }
+
+    /** The arrow PNG resolved to a GPU view, honouring the configured marker style. */
+    private static GpuTextureView arrowTextureView() {
+        AbstractTexture texture = Minecraft.getInstance().getTextureManager()
+                .getTexture(MapScreen.arrowTextureId());
+        return texture == null ? null : texture.getTextureView();
+    }
+
+    /**
+     * Rebuilds the recorded-track ribbon. Only runs when {@link TrackOverlay#version()} changes, so
+     * the cost is one mesh upload per sampling step rather than per frame; the vertex layout and
+     * pipeline are the same as the render-distance ribbon (POSITION_COLOR quads).
+     */
+    private static void ensureTrackMesh() {
+        int want = TrackOverlay.enabled() ? TrackOverlay.version() : 0;
+        if (want == trackBuiltVersion) return;
+        trackBuiltVersion = want;
+        retireTrackBuffers();
+        trackIndexCount = 0;
+        int n = TrackOverlay.count();
+        if (!TrackOverlay.enabled() || n < 2) return;
+        double vscale = VoxyMapConfig.VERTICAL_SCALE_3D.get();
+        int maxQuads = n - 1;
+        ByteBuffer vb = ByteBuffer.allocateDirect(maxQuads * 4 * 16).order(ByteOrder.nativeOrder());
+        ByteBuffer ib = ByteBuffer.allocateDirect(maxQuads * 6 * 4).order(ByteOrder.nativeOrder());
+        int vi = 0;
+        int ii = 0;
+        for (int i = 1; i < n; i++) {
+            if (TrackOverlay.startsSegment(i)) continue;
+            int x0 = TrackOverlay.x(i - 1);
+            int z0 = TrackOverlay.z(i - 1);
+            int x1 = TrackOverlay.x(i);
+            int z1 = TrackOverlay.z(i);
+            double dx = x1 - x0;
+            double dz = z1 - z0;
+            double len = Math.hypot(dx, dz);
+            if (len < 1.0e-3) continue;
+            double nx = -dz / len * TRACK_HALF_WIDTH;
+            double nz = dx / len * TRACK_HALF_WIDTH;
+            // the recorded player Y (not the terrain surface): flying paths float, cave paths stay
+            // down in the cave instead of being lifted onto the mountain above
+            double y0 = TrackOverlay.y(i - 1) * vscale + TRACK_LIFT;
+            double y1 = TrackOverlay.y(i) * vscale + TRACK_LIFT;
+            // only the start of the path fades in; the rest stays opaque (see TrackOverlay.alphaAt)
+            int alpha = TrackOverlay.alphaAt(i);
+            putTrackVertex(vb, x0 + nx, y0, z0 + nz, alpha);
+            putTrackVertex(vb, x0 - nx, y0, z0 - nz, alpha);
+            putTrackVertex(vb, x1 + nx, y1, z1 + nz, alpha);
+            putTrackVertex(vb, x1 - nx, y1, z1 - nz, alpha);
+            ib.putInt(vi).putInt(vi + 1).putInt(vi + 2);
+            ib.putInt(vi + 1).putInt(vi + 3).putInt(vi + 2);
+            vi += 4;
+            ii += 6;
+        }
+        if (ii == 0) return;
+        vb.flip();
+        ib.flip();
+        var encoder = RenderSystem.getDevice().createCommandEncoder();
+        trackVbo = upload(encoder, "voxymap_track_v", GpuBuffer.USAGE_VERTEX, vb);
+        trackIbo = upload(encoder, "voxymap_track_i", GpuBuffer.USAGE_INDEX, ib);
+        BlazeCompat.submit(encoder);
+        trackIndexCount = ii;
+    }
+
+    /** Track colour: red with a per-vertex alpha (the geometry carries the start fade). */
+    private static void putTrackVertex(ByteBuffer vb, double x, double y, double z, int alpha) {
+        vb.putFloat((float) x);
+        vb.putFloat((float) y);
+        vb.putFloat((float) z);
+        vb.put((byte) 0xFF);
+        vb.put((byte) 0x40);
+        vb.put((byte) 0x40);
+        vb.put((byte) alpha);
+    }
+
+    private static void drawTrack(RenderPass pass, GpuBufferSlice transforms) {
+        if (trackIndexCount <= 0 || trackVbo == null || trackIbo == null) return;
         pass.setPipeline(OVERLAY_PIPELINE);
         RenderSystem.bindDefaultUniforms(pass);
         pass.setUniform("DynamicTransforms", transforms);
-        BlazeCompat.setVertexBuffer(pass, 0, overlayVbo);
-        BlazeCompat.setIndexBuffer(pass, overlayIbo);
-        BlazeCompat.drawIndexed(pass, overlayIndexCount);
+        BlazeCompat.setVertexBuffer(pass, 0, trackVbo);
+        BlazeCompat.setIndexBuffer(pass, trackIbo);
+        BlazeCompat.drawIndexed(pass, trackIndexCount);
     }
+
+    private static void retireTrackBuffers() {
+        if (trackVbo != null) {
+            RETIRED.add(new RetiredBuffer(trackVbo, frameCounter));
+            trackVbo = null;
+        }
+        if (trackIbo != null) {
+            RETIRED.add(new RetiredBuffer(trackIbo, frameCounter));
+            trackIbo = null;
+        }
+    }
+
 
     public static void render() {
         Minecraft mc = Minecraft.getInstance();
@@ -1078,7 +1617,11 @@ public final class Gpu3DMap {
         Matrix4f viewProj = new Matrix4f(proj).mul(view);
         ensureDepth(target.width, target.height);
         overlayIndexCount = 0;
-        boolean drawOverlay = prepareOverlay();
+        // One encoder for the whole 3D frame: the overlay upload, the terrain pass and the
+        // ring fence all ride in it, so the mod does not add a submit of its own.
+        var frameEncoder = RenderSystem.getDevice().createCommandEncoder();
+        boolean drawOverlay = prepareOverlay(frameEncoder, screen);
+        ensureTrackMesh();
 
         RenderSystem.backupProjectionMatrix();
         try {
@@ -1086,8 +1629,7 @@ public final class Gpu3DMap {
                     com.mojang.blaze3d.ProjectionType.PERSPECTIVE);
             GpuBufferSlice transforms = RenderSystem.getDynamicUniforms()
                     .writeTransform(view, COLOR_MODULATOR, MODEL_OFFSET, TEXTURE_MATRIX);
-            try (RenderPass pass = BlazeCompat.beginTerrainPass(
-                    RenderSystem.getDevice().createCommandEncoder(), target, depthView)) {
+            try (RenderPass pass = BlazeCompat.beginTerrainPass(frameEncoder, target, depthView)) {
                 pass.setPipeline(PIPELINE);
                 RenderSystem.bindDefaultUniforms(pass);
                 pass.setUniform("DynamicTransforms", transforms);
@@ -1127,6 +1669,12 @@ public final class Gpu3DMap {
                     }
                 }
                 if (drawOverlay) drawOverlay(pass, transforms);
+                drawTrack(pass, transforms);
+            }
+            // The fence is taken after the draws, so the next reuse of this slot waits for them.
+            if (overlaySlotInUse >= 0) {
+                overlayFences[overlaySlotInUse] = BlazeCompat.createFence(frameEncoder);
+                overlaySlotInUse = -1;
             }
         } finally {
             RenderSystem.restoreProjectionMatrix();
@@ -1229,15 +1777,41 @@ public final class Gpu3DMap {
         lastTotal = 0;
         lastBuildNanos = 0;
         lastUploadNanos = 0;
-        if (overlayVbo != null) {
-            overlayVbo.close();
-            overlayVbo = null;
+        // overlay/arrow ring: close every slot and its fence
+        for (int slot = 0; slot < OVERLAY_SLOTS; slot++) {
+            BlazeCompat.awaitAndCloseFence(overlayFences[slot]);
+            overlayFences[slot] = null;
+            if (overlayVbos[slot] != null) {
+                overlayVbos[slot].close();
+                overlayVbos[slot] = null;
+            }
+            if (overlayIbos[slot] != null) {
+                overlayIbos[slot].close();
+                overlayIbos[slot] = null;
+            }
+            if (arrowVbos[slot] != null) {
+                arrowVbos[slot].close();
+                arrowVbos[slot] = null;
+            }
+            if (arrowIbos[slot] != null) {
+                arrowIbos[slot].close();
+                arrowIbos[slot] = null;
+            }
         }
-        if (overlayIbo != null) {
-            overlayIbo.close();
-            overlayIbo = null;
-        }
+        overlaySlot = 0;
+        overlaySlotInUse = -1;
         overlayIndexCount = 0;
+        if (trackVbo != null) {
+            trackVbo.close();
+            trackVbo = null;
+        }
+        if (trackIbo != null) {
+            trackIbo.close();
+            trackIbo = null;
+        }
+        trackIndexCount = 0;
+        trackBuiltVersion = -1;
+        arrowIndexCount = 0;
         if (projection != null) {
             projection.close();
             projection = null;

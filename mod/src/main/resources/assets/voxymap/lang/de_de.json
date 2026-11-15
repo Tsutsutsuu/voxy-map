@@ -190,5 +190,17 @@
   "voxymap.config.autoHideContours3d": "Höhenlinien in 3D ausblenden",
   "voxymap.config.desc.autoHideContours3d": "Höhenlinien ausblenden, solange die 3D-Ansicht offen ist.",
   "voxymap.config.biomeLabel3dRange": "Reichweite der 3D-Biomnamen (Blöcke)",
-  "voxymap.config.desc.biomeLabel3dRange": "In 3D werden nur Biomnamen innerhalb dieser horizontalen Entfernung angezeigt."
+  "voxymap.config.desc.biomeLabel3dRange": "In 3D werden nur Biomnamen innerhalb dieser horizontalen Entfernung angezeigt.",
+  "voxymap.config.hideHud": "Spiel-UI ausblenden",
+  "voxymap.config.desc.hideHud": "Blendet das HUD (Hotbar, Chat, Scoreboard, Overlays) aus, solange die Karte offen ist – genau wie F1. Manche Fremd-Overlays werden über der Karte gezeichnet und lassen sich nur so ausblenden.",
+  "voxymap.config.section.xaero": "Xaero-Integration",
+  "voxymap.config.xaeroWaypoints": "Xaero-Wegpunkte",
+  "voxymap.config.desc.xaeroWaypoints": "Zeichnet die Wegpunkte von Xaero's Minimap in der Karte (2D und 3D).",
+  "voxymap.config.xaeroWaypointLabels": "Wegpunktnamen",
+  "voxymap.config.desc.xaeroWaypointLabels": "Zeigt die Namen neben den Markern. Aus: nur farbige Punkte.",
+  "voxymap.ui.xaeroAdd": "Wegpunkt in Xaero anlegen",
+  "voxymap.ui.xaeroMissing": "Xaero's Minimap ist nicht installiert oder die Version wird nicht unterstützt",
+  "voxymap.ui.track": "Spur",
+  "voxymap.ui.trackStarted": "Spur wird aufgezeichnet",
+  "voxymap.ui.trackCleared": "Spur gestoppt und gelöscht"
 }

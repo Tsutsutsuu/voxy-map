@@ -190,5 +190,17 @@
   "voxymap.config.autoHideContours3d": "Ocultar curvas em 3D",
   "voxymap.config.desc.autoHideContours3d": "Ocultar as curvas de nível enquanto a visão 3D estiver aberta.",
   "voxymap.config.biomeLabel3dRange": "Alcance dos rótulos de bioma 3D (blocos)",
-  "voxymap.config.desc.biomeLabel3dRange": "Em 3D, apenas rótulos de bioma dentro dessa distância horizontal são exibidos."
+  "voxymap.config.desc.biomeLabel3dRange": "Em 3D, apenas rótulos de bioma dentro dessa distância horizontal são exibidos.",
+  "voxymap.config.hideHud": "Ocultar a interface do jogo",
+  "voxymap.config.desc.hideHud": "Oculta o HUD (barra de atalhos, chat, placar, sobreposições) enquanto o mapa está aberto, exatamente como F1. Algumas sobreposições de outros mods são desenhadas por cima do mapa e só podem ser ocultadas assim.",
+  "voxymap.config.section.xaero": "Integração com Xaero",
+  "voxymap.config.xaeroWaypoints": "Marcadores do Xaero",
+  "voxymap.config.desc.xaeroWaypoints": "Desenha os marcadores do Xaero's Minimap no mapa (2D e 3D).",
+  "voxymap.config.xaeroWaypointLabels": "Nomes dos marcadores",
+  "voxymap.config.desc.xaeroWaypointLabels": "Mostra os nomes ao lado dos marcadores. Desligado: apenas os pontos coloridos.",
+  "voxymap.ui.xaeroAdd": "Adicionar marcador no Xaero",
+  "voxymap.ui.xaeroMissing": "Xaero's Minimap não está instalado ou a versão não é compatível",
+  "voxymap.ui.track": "Rastro",
+  "voxymap.ui.trackStarted": "Gravando rastro",
+  "voxymap.ui.trackCleared": "Rastro parado e apagado"
 }

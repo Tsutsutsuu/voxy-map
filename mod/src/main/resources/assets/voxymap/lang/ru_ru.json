@@ -190,5 +190,17 @@
   "voxymap.config.autoHideContours3d": "Скрывать изолинии в 3D",
   "voxymap.config.desc.autoHideContours3d": "Скрывать изолинии, пока открыт 3D-вид.",
   "voxymap.config.biomeLabel3dRange": "Радиус подписей биомов в 3D (блоки)",
-  "voxymap.config.desc.biomeLabel3dRange": "В 3D отображаются только подписи биомов в пределах этой горизонтальной дистанции."
+  "voxymap.config.desc.biomeLabel3dRange": "В 3D отображаются только подписи биомов в пределах этой горизонтальной дистанции.",
+  "voxymap.config.hideHud": "Скрывать игровой интерфейс",
+  "voxymap.config.desc.hideHud": "Скрывает HUD (хотбар, чат, таблицу счёта, оверлеи), пока открыта карта — так же, как F1. Некоторые сторонние оверлеи рисуются поверх карты и иначе не убираются.",
+  "voxymap.config.section.xaero": "Интеграция с Xaero",
+  "voxymap.config.xaeroWaypoints": "Метки Xaero",
+  "voxymap.config.desc.xaeroWaypoints": "Рисовать метки из Xaero Minimap на карте (2D и 3D).",
+  "voxymap.config.xaeroWaypointLabels": "Названия меток",
+  "voxymap.config.desc.xaeroWaypointLabels": "Показывать названия рядом с метками. Выкл. — только цветные точки.",
+  "voxymap.ui.xaeroAdd": "Добавить метку в Xaero",
+  "voxymap.ui.xaeroMissing": "Xaero Minimap не установлен или версия не поддерживается",
+  "voxymap.ui.track": "Трек",
+  "voxymap.ui.trackStarted": "Запись трека",
+  "voxymap.ui.trackCleared": "Трек остановлен и очищен"
 }

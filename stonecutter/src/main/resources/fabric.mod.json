@@ -31,7 +31,8 @@
   },
   "suggests": {
     "voxy": "*",
-    "sodium": "*"
+    "sodium": "*",
+    "xaerominimap": "*"
   },
   "mixins": [
     "voxymap.mixins.json"

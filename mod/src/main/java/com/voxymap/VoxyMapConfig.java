@@ -47,6 +47,7 @@ public final class VoxyMapConfig {
     // ---- interface / 2D map ---------------------------------------------------------------------
     public static final Value<Boolean> SHOW_COORDINATES;
     public static final Value<Boolean> SHOW_HINT;
+    public static final Value<Boolean> HIDE_HUD;
     public static final Value<Boolean> TELEPORT_ENABLED;
     public static final Value<Double> DEFAULT_ZOOM;
     public static final Value<Boolean> REMEMBER_ZOOM;
@@ -54,6 +55,8 @@ public final class VoxyMapConfig {
     public static final Value<String> DEFAULT_STYLE;
     public static final Value<Boolean> SHOW_BIOMES;
     public static final Value<Boolean> SHOW_RENDER_DISTANCE;
+    public static final Value<Boolean> XAERO_WAYPOINTS;
+    public static final Value<Boolean> XAERO_WAYPOINT_LABELS;
     public static final Value<Integer> BIOME_LABEL_MIN_AREA;
     public static final Value<Boolean> BIOME_LABEL_BACKGROUND;
 
@@ -142,6 +145,8 @@ public final class VoxyMapConfig {
                 .define("showCoordinates", true), true);
         SHOW_HINT = new Value<>(b.comment("Show the control hint strip in the top-left corner")
                 .define("showHint", true), true);
+        HIDE_HUD = new Value<>(b.comment("Hide the game HUD (hotbar / chat / overlays) while the map is open, exactly like F1")
+                .define("hideHud", true), true);
         TELEPORT_ENABLED = new Value<>(b.comment("Offer the teleport entry in the right-click menu")
                 .define("teleportEnabled", true), true);
         DEFAULT_ZOOM = new Value<>(b.comment("Initial map zoom for new worlds (or when rememberZoom is off)")
@@ -156,6 +161,10 @@ public final class VoxyMapConfig {
                 .define("showBiomes", false), false);
         SHOW_RENDER_DISTANCE = new Value<>(b.comment("Show the player render distance as a yellow box")
                 .define("showRenderDistance", true), true);
+        XAERO_WAYPOINTS = new Value<>(b.comment("Draw Xaero's Minimap waypoints on the map (needs Xaero's Minimap)")
+                .define("xaeroWaypoints", true), true);
+        XAERO_WAYPOINT_LABELS = new Value<>(b.comment("Draw the waypoint names/initials next to the dots")
+                .define("xaeroWaypointLabels", true), true);
         BIOME_LABEL_MIN_AREA = new Value<>(b.comment("Minimum biome region area (map pixels) needed to show its name")
                 .defineInRange("biomeLabelMinArea", 600, 1, 5000), 600);
         BIOME_LABEL_BACKGROUND = new Value<>(b.comment("Draw a semi-transparent background behind biome labels")
@@ -199,7 +208,7 @@ public final class VoxyMapConfig {
         LIVE_TILES = new Value<>(b.comment("Event-driven tile updates for newly explored chunks")
                 .define("liveTiles", true), true);
         MAP_SCALE = new Value<>(b.comment("Map scale: 1 to 1/8 (blocks per pixel)")
-                .defineInRange("mapScale", 2, 1, 8), 2);
+                .defineInRange("mapScale", 1, 1, 8), 1);
         MAX_LOD_LEVEL = new Value<>(b.comment("Highest Voxy LOD level to merge (0-4)")
                 .defineInRange("maxLodLevel", 4, 0, 4), 4);
         CACHE_KEEP_COUNT = new Value<>(b.comment("How many world caches to keep")

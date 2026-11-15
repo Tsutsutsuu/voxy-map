@@ -23,6 +23,7 @@ Works best together with **Voxy SeedGen** — it pre-generates distant terrain f
 - **Smooth animation** — the map scales in and out, wheel zoom anchors on the cursor, Space eases the view onto the player, leaving 3D plays a short rotation back to the flat map, and switching between 2D and 3D is seamless.
 - **Works with your pack** — Fabric 26.2 / 26.1.2 and NeoForge 1.21.1; supports Voxy SeedGen, terrain mods and biome mods; 9 languages.
 - **Looks good and is easy to tune** — seven palettes (default: the 200-colour **Block colours** material palette), contours, hillshade, water-depth shading, biome borders and labels, a right-click menu (copy / teleport / export PNG), per-world memory, and an in-game config screen where every option is explained.
+- **Plays well with your minimap** — Xaero's Minimap waypoints are drawn on the 2D and 3D map, and the right-click menu can open Xaero's own "add waypoint" screen with the coordinate pre-filled; a session player track shows the route you walked; the game HUD is hidden while the map is open (configurable).
 
 ## Screenshots
 
@@ -83,7 +84,8 @@ Using the **Tectonic mod**'s "i use voxy btw" preset terrain, Voxy SeedGen dista
 | Pan | Hold left mouse button and drag |
 | Switch 2D ↔ 3D | Middle-click, or the **3D** button |
 | Orbit the 3D camera | Hold middle mouse button and drag |
-| Map menu | Right mouse button (copy coordinates / teleport / export PNG) |
+| Map menu | Right mouse button (copy coordinates / teleport / export PNG / add a Xaero waypoint) |
+| Toggle player track | Bottom-left **track** button |
 | Debug panel | `Q` |
 | Close | `Esc` |
 
@@ -92,6 +94,7 @@ Using the **Tectonic mod**'s "i use voxy btw" preset terrain, Voxy SeedGen dista
 - **9 languages**: English, 简体中文, 繁體中文, 日本語, Русский, Deutsch, Français, Español, Português (BR); all text is translatable, so resource packs can override or add languages.
 - **Terrain mods**: the sea level and colour range are read from the world's actual data, so custom terrain keeps the right coastline and colour spread (the screenshots use Tectonic terrain).
 - **Biome mods**: biome names and borders come from the data stored for the world, and modded biomes follow the game language.
+- **Xaero's Minimap (optional)**: waypoints are read from the minimap mod (26.6.2 for 26.2, ≥26.6.0 for 1.21.1); without it the map works exactly as before.
 - Client-side only — nothing needs to be installed on the server.
 
 ## Configuration
@@ -150,6 +153,7 @@ MIT — see [LICENSE](LICENSE). Icon and screenshots © Tsutsutsuu.
 - **动画顺滑** —— 开关图有缩放动画、滚轮以鼠标为锚点平滑缩放、空格缓动定位到玩家、退出 3D 时短暂旋转回平面地图，2D 模式和 3D 模式之间无缝切换。
 - **兼容你的整合包** —— Fabric 26.2 / 26.1.2 与 NeoForge 1.21.1 都能用；支持 Voxy SeedGen、地形模组和群系模组；9 种语言。
 - **好看也好调** —— 7 套配色（默认：**方块颜色**的 200 色材质色表）、等高线、山体阴影、水深着色、群系边界与标签、右键菜单（复制 / 传送 / 导出 PNG）、每个世界独立记忆，以及每项都有说明的游戏内配置屏。
+- **和小地图配合** —— 直接显示 Xaero's Minimap 的路径点，右键还能打开 Xaero 自己的「添加路径点」窗口（坐标已按位置预填）；本次游戏内记录走过的轨迹；开图时自动隐藏游戏 HUD（可关）。
 
 ## 截图
 
@@ -211,7 +215,8 @@ MIT — see [LICENSE](LICENSE). Icon and screenshots © Tsutsutsuu.
 | 平移 | 按住鼠标左键拖拽 |
 | 2D ↔ 3D 切换 | 中键短按，或右上角 **3D** 按钮 |
 | 3D 环绕 / 旋转 | 按住鼠标中键拖拽 |
-| 地图菜单 | 鼠标右键（复制坐标 / 传送 / 导出 PNG） |
+| 地图菜单 | 鼠标右键（复制坐标 / 传送 / 导出 PNG / 在 Xaero 添加路径点） |
+| 显示 / 隐藏轨迹 | 左下「轨迹」按钮 |
 | 调试面板 | `Q` |
 | 关闭地图 | `Esc` |
 
@@ -220,6 +225,7 @@ MIT — see [LICENSE](LICENSE). Icon and screenshots © Tsutsutsuu.
 - **9 种语言**：English、简体中文、繁體中文、日本語、Русский、Deutsch、Français、Español、Português (BR)；所有文本都可翻译，资源包可以覆盖或新增语言。
 - **地形模组**：海平面与高度色带都按世界实际数据来，自定义地形也能保持正确的海岸线和配色层次（截图使用 Tectonic 地形）。
 - **群系模组**：群系名称与边界来自世界存下的数据，模组群系会跟随游戏语言显示。
+- **Xaero's Minimap（可选）**：从 minimap 读取路径点（26.2 用 26.6.2，1.21.1 用 ≥26.6.0），不装不影响其它功能。
 - 纯客户端模组，不需要安装在服务端。
 
 ## 配置

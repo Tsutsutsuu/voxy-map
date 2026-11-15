@@ -78,6 +78,7 @@ public class MapConfigScreen extends Screen {
         section(Group.GENERAL, "voxymap.config.section.interface");
         add(Group.GENERAL, "showCoordinates", VoxyMapConfig.SHOW_COORDINATES, 0, 0, null);
         add(Group.GENERAL, "showHint", VoxyMapConfig.SHOW_HINT, 0, 0, null);
+        add(Group.GENERAL, "hideHud", VoxyMapConfig.HIDE_HUD, 0, 0, null);
         section(Group.GENERAL, "voxymap.config.section.interaction");
         add(Group.GENERAL, "teleportEnabled", VoxyMapConfig.TELEPORT_ENABLED, 0, 0, null);
         add(Group.GENERAL, "defaultZoom", VoxyMapConfig.DEFAULT_ZOOM, 0.04, 8.0, null);
@@ -106,6 +107,9 @@ public class MapConfigScreen extends Screen {
         section(Group.MAP, "voxymap.config.section.overlaysLabels");
         add(Group.MAP, "showBiomes", VoxyMapConfig.SHOW_BIOMES, 0, 0, null);
         add(Group.MAP, "showRenderDistance", VoxyMapConfig.SHOW_RENDER_DISTANCE, 0, 0, null);
+        section(Group.MAP, "voxymap.config.section.xaero");
+        add(Group.MAP, "xaeroWaypoints", VoxyMapConfig.XAERO_WAYPOINTS, 0, 0, null);
+        add(Group.MAP, "xaeroWaypointLabels", VoxyMapConfig.XAERO_WAYPOINT_LABELS, 0, 0, null);
         add(Group.MAP, "biomeLabelMinArea", VoxyMapConfig.BIOME_LABEL_MIN_AREA, 1, 5000, null);
         add(Group.MAP, "biomeLabelBackground", VoxyMapConfig.BIOME_LABEL_BACKGROUND, 0, 0, null);
 

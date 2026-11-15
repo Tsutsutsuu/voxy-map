@@ -33,14 +33,17 @@ public final class GpuTexture implements AutoCloseable {
     private final int width;
     private final int height;
     private final int usage;
+    /** False for textures owned by someone else (the arrow PNG lives in vanilla's TextureManager). */
+    private final boolean owned;
     private boolean closed;
 
-    private GpuTexture(String label, int id, int width, int height, int usage) {
+    private GpuTexture(String label, int id, int width, int height, int usage, boolean owned) {
         this.label = label;
         this.id = id;
         this.width = width;
         this.height = height;
         this.usage = usage;
+        this.owned = owned;
     }
 
     /**
@@ -61,7 +64,16 @@ public final class GpuTexture implements AutoCloseable {
         // other code passes this texture through a mipmapped render type.
         GlStateManager._texParameter(GL11.GL_TEXTURE_2D, GL12.GL_TEXTURE_MAX_LEVEL, 0);
         GlStateManager._bindTexture(0);
-        return new GpuTexture(label, id, width, height, usage);
+        return new GpuTexture(label, id, width, height, usage, true);
+    }
+
+    /**
+     * Wraps a GL texture owned by someone else so the pass can bind it with the 26.2 call shape.
+     * {@link #close()} never deletes the id - 1.21.1 keeps the arrow artwork in
+     * {@code TextureManager} and deleting it here would blank every later 2D arrow blit.
+     */
+    public static GpuTexture wrapExisting(String label, int glId, int width, int height) {
+        return new GpuTexture(label, glId, width, height, USAGE_TEXTURE_BINDING, false);
     }
 
     public GpuTextureView createView() {
@@ -113,6 +125,7 @@ public final class GpuTexture implements AutoCloseable {
     public void close() {
         if (closed) return;
         closed = true;
+        if (!owned) return;      // never delete a texture we do not own
         if (RenderSystem.isOnRenderThread()) {
             GlStateManager._deleteTexture(id);
         } else {

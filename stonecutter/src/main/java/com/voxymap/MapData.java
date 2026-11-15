@@ -133,7 +133,7 @@ public final class MapData {
     private volatile boolean biomeOverlay;
     private volatile boolean renderDistanceOverlay;
     /** Per-world map scale: 1..8 blocks per pixel (1:1 to 1:8). */
-    private volatile int mapScale = 2;
+    private volatile int mapScale = 1;
     /** Per-world zoom level, restored on reopen when rememberZoom is on. */
     private volatile double zoom = 0.5;
     /** Event-driven overlay tiles for the unified 2D map. */
@@ -2491,6 +2491,9 @@ public final class MapData {
 
     /** Called once per client tick. */
     public void tick() {
+        // the track recorder runs on every client tick regardless of the map being open: the path
+        // is supposed to cover the time the player spends *outside* the map screen
+        TrackOverlay.tick();
         Minecraft mc = Minecraft.getInstance();
         boolean active = mc.player != null && isOverworld();
         if (!active) {
@@ -4138,59 +4141,20 @@ public final class MapData {
         biomeLabelsWanted = wanted;
     }
 
+    /**
+     * Ensures the biome overlay texture for the current view.
+     *
+     * <p>The unified tile renderer is the only 2D path (see {@link #isTile2DMode()}), so this always
+     * builds the view-region texture. The legacy full-map branch was unreachable and was removed in
+     * 0.5.0 together with its per-open {@code NativeImage} + {@code DynamicTexture} registration; the
+     * shared helpers ({@code buildBiomeImage/Edges/Labels}) stay because the tile path uses them.</p>
+     */
     public void ensureBiomeTexture() {
-        if (isTile2DMode()) {
-            ensureTileBiomeTexture(0, 0, 2048, 2048);
-            return;
-        }
-        // the 3D overlay needs the edge array even when the 2D texture already exists (e.g. the map
-        // was opened before this feature was added), so do not early-out on the texture alone
-        if (biomeTextureId != null && biomeEdgePx != null && biomeEdgeVersion == BIOME_EDGE_VERSION) return;
-        Snapshot s = snap;
-        if (s == null) return;
-        if (!buildingBiome.compareAndSet(false, true)) return;
-        final int biomainEpoch = worldEpoch;
-        final boolean needTexture = biomeTextureId == null;
-        loader.submit(() -> {
-            try {
-                NativeImage bimg = needTexture ? buildBiomeImage(s) : null;
-                int[] edges = buildBiomeEdges(s);
-                int[] labels = (biomeLabelsFlat.length > 0 && biomeLabelsSnapshot == s)
-                        ? biomeLabelsFlat : buildBiomeLabels(s);
-                Minecraft.getInstance().execute(() -> {
-                    try {
-                        if (biomainEpoch != worldEpoch) {
-                            if (bimg != null) bimg.close();
-                            return;
-                        }
-                        biomeEdgePx = edges;
-                        biomeEdgeVersion = BIOME_EDGE_VERSION;
-                        biomeLabelsFlat = labels;
-                        biomeLabelsSnapshot = s;
-                        if (bimg != null) {
-                            biomeImage = bimg;
-                            DynamicTexture btex = new DynamicTexture(() -> "voxymap_bimg", bimg);
-                            Identifier bid = Identifier.fromNamespaceAndPath("voxymap", "map_biomes");
-                            Minecraft.getInstance().getTextureManager().register(bid, btex);
-                            biomeTextureId = bid;
-                        }
-                    } finally {
-                        buildingBiome.set(false);
-                    }
-                });
-            } catch (Throwable t) {
-                buildingBiome.set(false);
-                t.printStackTrace();
-            }
-        });
+        ensureTileBiomeTexture(0, 0, 2048, 2048);
     }
 
     public void ensureBiomeTexture(int centerPxX, int centerPzX, int halfW, int halfH) {
-        if (isTile2DMode()) {
-            ensureTileBiomeTexture(centerPxX, centerPzX, halfW, halfH);
-            return;
-        }
-        ensureBiomeTexture();
+        ensureTileBiomeTexture(centerPxX, centerPzX, halfW, halfH);
     }
 
     /** Builds the biome border texture/labels from the loaded tiles, without a global snapshot. */
@@ -5543,6 +5507,16 @@ public final class MapData {
     private static float shadeAt(TerrainCache tc, String style, int idx, int x, int z, boolean water) {
         final int fw = tc.width;
         final int fh = tc.height;
+        final boolean nautical = "nautical".equals(style);
+        // The material ("blocks") style carries no height ramp, so relief has to come from the
+        // shading alone: it uses a wider amplitude, a shorter slope ramp and wider clamp bounds
+        // than the six height palettes. The other styles keep their tuned numbers.
+        final boolean material = "blocks".equals(style);
+        final float gate = material ? 0.06f : 0.08f;
+        final float ramp = material ? 0.50f : 0.60f;
+        final float landStrength = nautical ? 0.06f : (material ? 0.26f : 0.18f);
+        final float clampLo = material ? 0.74f : 0.78f;
+        final float clampHi = material ? 1.16f : 1.08f;
         float shade = 1f;
         if (VoxyMapConfig.DRAW_HILLSHADE.get() && x > 0 && z > 0 && x < fw - 1 && z < fh - 1) {
             int nb0, nb1, nb2, nb3;
@@ -5565,19 +5539,18 @@ public final class MapData {
                 float dzdx = (nb1 - nb0) / step;
                 float dzdy = (nb3 - nb2) / step;
                 float slope = (float) Math.sqrt(dzdx * dzdx + dzdy * dzdy);
-                if (slope > 0.08f) {
+                if (slope > gate) {
                     float nx = -dzdx, ny = 1f, nz = -dzdy;
                     float nl = (float) Math.sqrt(nx * nx + ny * ny + nz * nz);
                     float d = (nx * lx + ny * ly + nz * lz) / (nl * ll);
-                    float strength = Math.min(1f, (slope - 0.08f) / 0.6f);
-                    float landStrength = "nautical".equals(style) ? 0.06f : 0.18f;
+                    float strength = Math.min(1f, (slope - gate) / ramp);
                     shade = 1f + (water ? 0.10f : landStrength) * d * strength;
                 }
             }
         }
-        shade = Math.max(0.78f, Math.min(1.08f, shade));
+        shade = Math.max(clampLo, Math.min(clampHi, shade));
         if (!water) {
-            if (tc.contour[idx]) shade *= "nautical".equals(style) ? 0.62f : 0.70f;
+            if (tc.contour[idx]) shade *= nautical ? 0.62f : 0.70f;
             boolean coast = (x < fw - 1 && tc.isWaterPix[idx + 1]) || (z < fh - 1 && tc.isWaterPix[idx + fw])
                     || (x > 0 && tc.isWaterPix[idx - 1]) || (z > 0 && tc.isWaterPix[idx - fw]);
             if (coast) shade *= 0.70f;

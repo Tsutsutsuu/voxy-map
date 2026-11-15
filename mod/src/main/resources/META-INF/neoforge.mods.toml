@@ -70,6 +70,14 @@ versionRange = "[0.4.0,)"
 ordering = "AFTER"
 side = "CLIENT"
 
+# Xaero's Minimap is optional: waypoints are read through reflection, and the mod works without it
+[[dependencies.voxymap]]
+modId = "xaerominimap"
+type = "optional"
+versionRange = "[26.6.0,)"
+ordering = "AFTER"
+side = "CLIENT"
+
 # skips the world render pass while the fullscreen map is open (see GameRendererMixin)
 [[mixins]]
 config = "voxymap.mixins.json"

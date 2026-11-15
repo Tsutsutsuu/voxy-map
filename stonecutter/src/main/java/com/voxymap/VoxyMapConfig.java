@@ -61,7 +61,7 @@ public final class VoxyMapConfig {
     @Deprecated
     public static final Value<Integer> INITIAL_REFRESH_DELAY_MINUTES = new Value<>("initialRefreshDelayMinutes", 3);
     public static final Value<String> DEFAULT_STYLE = new Value<>("defaultStyle", "blocks");
-    public static final Value<Integer> MAP_SCALE = new Value<>("mapScale", 2);
+    public static final Value<Integer> MAP_SCALE = new Value<>("mapScale", 1);
     public static final Value<Integer> MAX_LOD_LEVEL = new Value<>("maxLodLevel", 4);
     public static final Value<Boolean> AUTO_SEA_LEVEL = new Value<>("autoSeaLevel", true);
     public static final Value<Integer> SEA_LEVEL_OVERRIDE = new Value<>("seaLevelOverride", 63);
@@ -118,6 +118,8 @@ public final class VoxyMapConfig {
     public static final Value<Double> DEFAULT_ZOOM = new Value<>("defaultZoom", 0.5);
     public static final Value<Boolean> REMEMBER_ZOOM = new Value<>("rememberZoom", true);
     public static final Value<Boolean> SHOW_HINT = new Value<>("showHint", true);
+    /** Hide the game HUD (hotbar / chat / overlays) while the map is open, exactly like F1. */
+    public static final Value<Boolean> HIDE_HUD = new Value<>("hideHud", true);
 
     // ---- 3D map view ----
     public static final Value<Double> VERTICAL_SCALE_3D = new Value<>("verticalScale3d", 1.0);
@@ -148,6 +150,10 @@ public final class VoxyMapConfig {
     public static final Value<Integer> MAX_MAP_PIXELS = new Value<>("maxMapPixels", 120_000_000);
     /** horizontal range (blocks) within which 3D biome labels are drawn */
     public static final Value<Integer> BIOME_LABEL_3D_RANGE = new Value<>("biomeLabel3dRange", 3000);
+    /** Draw Xaero's waypoints on the map (both views). Off = no bridge reads at all. */
+    public static final Value<Boolean> XAERO_WAYPOINTS = new Value<>("xaeroWaypoints", true);
+    /** Draw the waypoint names next to the markers (off = only the coloured dots). */
+    public static final Value<Boolean> XAERO_WAYPOINT_LABELS = new Value<>("xaeroWaypointLabels", true);
 
     private VoxyMapConfig() {
     }

@@ -1,13 +1,11 @@
 package com.voxymap;
 
-import com.mojang.blaze3d.platform.NativeImage;
 import org.joml.Matrix4f;
 import org.joml.Vector3f;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.renderer.RenderPipelines;
 import net.minecraft.client.renderer.rendertype.RenderType;
-import net.minecraft.client.renderer.texture.DynamicTexture;
 import net.minecraft.client.input.KeyEvent;
 import net.minecraft.client.input.MouseButtonEvent;
 import net.minecraft.client.gui.screens.Screen;
@@ -168,6 +166,15 @@ public class MapScreen extends Screen {
     private final Map<String, Float> hoverStates = new HashMap<>();
     private float styleMenuT;
     private float contextMenuT;
+    /** Xaero waypoints, re-read at most a few times per second (reflection is not free). */
+    private List<XaeroWaypoints.Wp> xaeroWpCache;
+    private long xaeroWpCacheAtMs;
+    /** HUD hidden-state we changed for this screen (null = we did not touch it). */
+    private Boolean hudHiddenByMap;
+
+    /** Current notification text and the moment it was posted (see drawNotification). */
+    private Component notifyText;
+    private long notifyAtMs;
     /** Screen-space UI panels; biome labels overlapping these are culled (x0,y0,x1,y1). */
     private final List<int[]> labelBlockers = new ArrayList<>();
     private static final Identifier ARROW_CLEAN = Identifier.fromNamespaceAndPath("voxymap", "textures/gui/arrow_clean.png");
@@ -180,6 +187,10 @@ public class MapScreen extends Screen {
     private static Boolean classicArrowAvailable;
 
     /** Falls back to the clean marker when the classic texture is missing instead of a purple cube. */
+    public static Identifier arrowTextureId() {
+        return arrowTex();
+    }
+
     private static Identifier arrowTex() {
         if ("classic".equals(VoxyMapConfig.ARROW_STYLE.get())) {
             if (classicArrowAvailable == null) {
@@ -228,8 +239,7 @@ public class MapScreen extends Screen {
     // ---- theme: one accent colour, three interaction states ----
 
     /** normal buttons/panels: 75% */
-    private static final int COL_PANEL = 0xC014171C;
-    /** disabled: same 75%, darker colour */
+    private static final int COL_PANEL = 0xC014171C;    /** disabled: same 75%, darker colour */
     private static final int COL_PANEL_OFF = 0xC0101216;
     /** modal dialog: 90% */
     private static final int COL_PANEL_DIALOG = 0xE614171C;
@@ -238,8 +248,18 @@ public class MapScreen extends Screen {
     private static final int COL_ACCENT = 0xFF4F9BC4;
     /** Selected / enabled tint: the same deep translucent blue as the dropdown selection. */
     private static final int COL_SELECTED = 0xC02A3A50;
-    /** Row hover behind the cursor inside menus. */
-    private static final int COL_ROW_HOVER = 0x504F9BC4;
+    /** Track overlay: red, and the per-frame fill budget for its 2D polyline rasteriser.
+     *  Counted in device pixels, so it scales with the GUI scale (~3 screen widths of line). */
+    private static final int TRACK_RGB = 0xFF4040;
+    /** Polyline thickness in device pixels (the 2D overlay draws in device space). */
+    private static final int TRACK_LINE_PX = 2;
+    private static final int TRACK_FILL_BUDGET = 12000;
+    /** Waypoints farther than this from the 3D camera are not projected at all. */
+    private static final double XAERO_WAYPOINT_3D_RANGE = 3000.0;
+    /** Notification band: below the top control row (scale slider y=8, style/3D row y=32). */
+    private static final int NOTIFY_Y = 56;
+    private static final long NOTIFY_MS = 2600L;
+    /** Row hover behind the cursor inside menus. */    private static final int COL_ROW_HOVER = 0x504F9BC4;
     private static final int COL_TEXT = 0xFFE8EAED;
     private static final int COL_TEXT_DIM = 0xFF8C949E;
     private static final int COL_TEXT_OFF = 0xFF5A6068;
@@ -321,6 +341,7 @@ public class MapScreen extends Screen {
 
     @Override
     protected void init() {
+        hideHudForMap();
         // init() also runs when this screen is resumed from the config screen. The 3D camera and
         // the GPU terrain survive that round trip (removed() only restores the process-wide
         // overrides), so only the transition state is reset here.
@@ -418,13 +439,13 @@ public class MapScreen extends Screen {
 
     private double screenToWorldX(double sx) {
         MapData d = MapData.INSTANCE;
-        double px = centerPx() + (sx - width / 2.0) / zoom;
+        double px = centerPx() + (sx - width / 2.0) / mapZoomGui();
         return d.getMinWX() + px * d.getPixelBlocks();
     }
 
     private double screenToWorldZ(double sy) {
         MapData d = MapData.INSTANCE;
-        double pz = centerPz() + (sy - height / 2.0) / zoom;
+        double pz = centerPz() + (sy - height / 2.0) / mapZoomGui();
         return d.getMinWZ() + pz * d.getPixelBlocks();
     }
 
@@ -501,16 +522,21 @@ public class MapScreen extends Screen {
             }
             pump3DTiles(data);
             Gpu3DMap.tick(data, cam3d);
-            drawPlayerMarker3d(g);
+            // The player marker (arrow + tick line) is GPU geometry built inside Gpu3DMap's
+            // prepareOverlay from markerGeometry3d(): the arrow is a textured world-space quad and
+            // the line is a coloured ribbon, so nothing is drawn here any more.
             // The 3D render-distance overlay is not drawn here: Gpu3DMap's overlay pass builds the
             // yellow terrain ribbon with the same camera/projection as the GPU terrain itself.
             // the label blockers (buttons, plates) are the same controls in 3D; without this the
             // 3D labels could be drawn on top of them because the 2D branch never ran
             collectLabelBlockers(mouseX, mouseY);
             drawBiomeLabels3d(g);
+            drawXaeroWaypoints3d(g);
         } else {
             drawMap(g, data, uiScale);
             drawMapOverlays(g, data);
+            drawTrack2d(g, data);
+            drawXaeroWaypoints(g, data, uiScale);
         }
         // GuiGraphicsExtractor batches text independently of fills, and endBatch() draws the batches in
         // RenderType order rather than call order, so text can survive a later fill. While the
@@ -522,7 +548,7 @@ public class MapScreen extends Screen {
             drawDebugPanel(g, data, mouseX, mouseY);
         } else if (!lodWarning) {
             // labels only when the map is at or above point-to-point, otherwise they cost more than they show
-            if (!view3d && data.isBiomeOverlay() && zoom * uiScale >= 1.0) {
+            if (!view3d && data.isBiomeOverlay() && mapZoomDevice() >= 1.0) {
                 collectLabelBlockers(mouseX, mouseY);
                 drawBiomeLabels(g);
             }
@@ -534,6 +560,7 @@ public class MapScreen extends Screen {
             drawReadouts(g, mouseX, mouseY);
             drawButtons(g, data, mouseX, mouseY);
             drawHintStrip(g);
+            drawNotification(g);
             if (contextMenuT > 0.02f) {
                 drawContextMenu(g, mouseX, mouseY);
             }
@@ -568,13 +595,239 @@ public class MapScreen extends Screen {
         }
     }
 
+    /**
+     * Layer 2b: Xaero's waypoints, read-only.
+     *
+     * <p>Re-read a few times a second at most: the values come through reflection, so reading them
+     * once per frame for every waypoint would cost more than the drawing itself. Xaero already
+     * localizes the names and resolves the palette colour, so this is a straight projection.</p>
+     */
+    // ---- Xaero waypoint markers: one appearance and one label progression in 2D and 3D ----
+
+    /** Waypoint text appears at the same zoom as the biome labels (device px per map pixel). */
+    private static final double WAYPOINT_TEXT_ZOOM = 1.0;
+    /** From here on the full name is used instead of the initials. */
+    private static final double WAYPOINT_FULL_NAME_ZOOM = 2.0;
+
+    /**
+     * The waypoint dot: a dark halo with the waypoint colour inside. Both views call this, so the
+     * marker looks identical in 2D and 3D (both draw in GUI units, so the physical size matches).
+     */
+    /**
+     * Label text size, shared by the biome labels and the waypoint labels so they always agree:
+     * half size only on very large GUI scales (4x and above). The 2D labels additionally require a
+     * zoomed-out map (the 3D ones gate on the camera-derived zoom instead), hence the flag.
+     */
+    private float labelTextScale(boolean requireZoomedOut) {
+        if (guiScale() < REFERENCE_GUI_SCALE) return 1.0f;
+        return (!requireZoomedOut || zoom < 1.0) ? 0.5f : 1.0f;
+    }
+
+    /**
+     * Waypoint text next to its dot: starts just to the right of the marker and is centred on it
+     * vertically, at every label scale. Scaling happens about the text's top-left, so the placement
+     * has to be computed from the *scaled* size — otherwise the half-size text drifts upwards off
+     * the dot. Flips to the left only when it would run off the right edge.
+     *
+     * @param checkBlockers skip the label when a button/menu covers it (3D only: the 2D call runs
+     *                      before the blocker list is collected for the frame)
+     */
+    private void drawWaypointText(GuiGraphicsExtractor g, String text, double ix, double iy, int argb,
+                                  float scale, boolean checkBlockers) {
+        int w = (int) Math.ceil(font.width(text) * scale);
+        int gap = Math.max(3, Math.round(4 * scale));
+        double tx = ix + gap;
+        if (tx + w > width - 2) tx = Math.max(2, ix - gap - w);
+        int th = (int) Math.ceil(font.lineHeight * scale);
+        double ty = iy - th / 2.0;
+        int bx = (int) Math.round(tx);
+        int by = (int) Math.round(ty);
+        if (checkBlockers && labelBlocked(bx, by - 1, bx + w, by + th + 1)) return;
+        // Same as the dot: keep the fractional offset instead of snapping the label to a gui pixel.
+        g.pose().pushMatrix();
+        g.pose().translate((float) tx, (float) ty);
+        g.pose().scale(scale, scale);
+        g.text(font, Component.literal(text), 0, 0, argb, true);
+        g.pose().popMatrix();
+    }
+
+    private void drawWaypointDot(GuiGraphicsExtractor g, double x, double y, int rgb) {
+        // Fractional position, exactly like the biome labels: round()ing to a whole GUI pixel made
+        // the dot step 1 gui-pixel (4 device pixels at s=4) at a time, so panning looked jumpy.
+        g.pose().pushMatrix();
+        g.pose().translate((float) (x - 2.0), (float) (y - 2.0));
+        // fill() end coordinates are exclusive: [0,5) is 5 px, [1,4) is the centred 3 px core
+        g.fill(0, 0, 5, 5, 0x90000000);
+        g.fill(1, 1, 4, 4, 0xFF000000 | rgb);
+        g.pose().popMatrix();
+    }
+
+    /**
+     * Three states keyed on the same "device pixels per map pixel" measure the biome labels use:
+     * {@code null} = dot only, then initials, then the full name.
+     */
+    private static String waypointLabel(XaeroWaypoints.Wp wp, double zoomEq) {
+        if (zoomEq < WAYPOINT_TEXT_ZOOM) return null;
+        String text = zoomEq >= WAYPOINT_FULL_NAME_ZOOM ? wp.name : wp.initials;
+        if (text == null || text.isEmpty()) text = wp.name;
+        return text == null || text.isEmpty() ? null : text;
+    }
+
+    /** 3D equivalent of the 2D device zoom, the same value the biome labels gate on. */
+    private double zoomEq3d() {
+        int fbHeight = Math.max(1, Minecraft.getInstance().getWindow().getHeight());
+        double tanHalf = Math.tan(Math.toRadians(fov3d * 0.5));
+        double distance = Math.max(1.0, cam3d == null ? 0.0 : cam3d.distance);
+        return MapData.INSTANCE.getPixelBlocks() * fbHeight
+                / (2.0 * distance * Math.max(1e-4, tanHalf));
+    }
+
+    private void drawXaeroWaypoints(GuiGraphicsExtractor g, MapData data, double uiScale) {
+        List<XaeroWaypoints.Wp> waypoints = xaeroWpSnapshot();
+        if (waypoints.isEmpty()) return;
+        int pb = Math.max(1, data.getPixelBlocks());
+        double cx = centerPx();
+        double cz = centerPz();
+        // text batches are drawn after every fill, so a menu/dialog would not cover them: skip the
+        // labels (but keep the dots) whenever such a layer is up
+        boolean textOk = VoxyMapConfig.XAERO_WAYPOINT_LABELS.get()
+                && contextMenuT <= 0.02f && styleMenuT <= 0.02f && !debugPanel && !lodWarning;
+        double labelZoom = mapZoomDevice();
+        for (XaeroWaypoints.Wp wp : waypoints) {
+            double sx = width / 2.0 + (wp.x / (double) pb - cx) * mapZoomGui();
+            double sy = height / 2.0 + (wp.z / (double) pb - cz) * mapZoomGui();
+            if (sx < -160 || sx > width + 160 || sy < -12 || sy > height + 12) continue;
+            drawWaypointDot(g, sx, sy, wp.rgb);
+            if (!textOk) continue;
+            String text = waypointLabel(wp, labelZoom);
+            if (text == null) continue;
+            drawWaypointText(g, text, sx, sy, 0xFF000000 | wp.rgb, labelTextScale(true), false);
+        }
+    }
+
+    /**
+     * Xaero's waypoints in the 3D view: projected to screen space at their own height when Xaero
+     * carries one (fly-throughs and cave waypoints then sit where the player put them), otherwise
+     * on the terrain surface. Same occlusion test as the biome labels, and the same label blocker
+     * list so a waypoint name never floats over a button.
+     */
+    private void drawXaeroWaypoints3d(GuiGraphicsExtractor g) {
+        List<XaeroWaypoints.Wp> waypoints = xaeroWpSnapshot();
+        if (waypoints.isEmpty() || cam3d == null) return;
+        double eyeX = cam3d.eyeX();
+        double eyeY = cam3d.eyeY();
+        double eyeZ = cam3d.eyeZ();
+        double range = XAERO_WAYPOINT_3D_RANGE;
+        org.joml.Matrix4f vp = cam3d.viewProjection((float) width / Math.max(1f, (float) height), fov3d);
+        boolean labels = VoxyMapConfig.XAERO_WAYPOINT_LABELS.get();
+        // Same measure the biome labels gate on, so dot / initials / full name switch at the same
+        // zoom in both views.
+        double zoomEq = zoomEq3d();
+        for (XaeroWaypoints.Wp wp : waypoints) {
+            double dxh = wp.x - eyeX;
+            double dzh = wp.z - eyeZ;
+            if (dxh * dxh + dzh * dzh > range * range) continue;
+            double wy = wp.hasY ? wp.y * meshScale() : groundMeshY(wp.x, wp.z) + 1.0;
+            org.joml.Vector3f p = cam3d.worldToScreen(wp.x, wy, wp.z, vp, width, height);
+            if (p == null) continue;
+            double sx = p.x;
+            double sy = p.y;
+            if (sx < -96 || sx > width + 96 || sy < -40 || sy > height + 40) continue;
+            if (isOccluded3d(eyeX, eyeY, eyeZ, wp.x, wy, wp.z)) continue;
+            drawWaypointDot(g, sx, sy, wp.rgb);
+            if (!labels) continue;
+            String text = waypointLabel(wp, zoomEq);
+            if (text == null) continue;
+            drawWaypointText(g, text, sx, sy, 0xFF000000 | wp.rgb, labelTextScale(false), true);
+        }
+    }
+
+    /**
+     * Layer 2a: the recorded track as a connected red polyline in 2D.
+     *
+     * <p>Drawn in device pixels (see {@link #pushPixelSpace}): the GUI extractor only offers rects
+     * and axis-aligned lines, so each segment is rasterised with a DDA into 1-pixel fills. Two
+     * cheap optimisations keep it bounded: samples closer than 2 device pixels are skipped (the
+     * line is drawn from the last *drawn* point, so it stays continuous) and the per-frame fill
+     * budget stops very long trails from costing a frame.</p>
+     */
+    private void drawTrack2d(GuiGraphicsExtractor g, MapData data) {
+        if (!TrackOverlay.enabled()) return;
+        int n = TrackOverlay.count();
+        if (n < 2) return;
+        // device pixels (see pushPixelSpace): the polyline is rasterised at 1 physical pixel per
+        // step instead of snapping to the GUI grid
+        double scale = guiScale();
+        double w = width * scale;
+        double h = height * scale;
+        double zoomPx = mapZoomDevice();  // already in device pixels
+        int pb = Math.max(1, data.getPixelBlocks());
+        double cx = centerPx();
+        double cz = centerPz();
+        pushPixelSpace(g);
+        int budget = TRACK_FILL_BUDGET;
+        int prevX = Integer.MIN_VALUE;
+        int prevY = Integer.MIN_VALUE;
+        for (int i = 0; i < n && budget > 0; i++) {
+            double sx = w / 2.0 + (TrackOverlay.x(i) / (double) pb - cx) * zoomPx;
+            double sy = h / 2.0 + (TrackOverlay.z(i) / (double) pb - cz) * zoomPx;
+            boolean inView = sx > -8 && sx < w + 8 && sy > -8 && sy < h + 8;
+            if (!inView || TrackOverlay.startsSegment(i)) {
+                prevX = Integer.MIN_VALUE;
+                if (!inView) continue;
+            }
+            int ix = (int) Math.round(sx);
+            int iy = (int) Math.round(sy);
+            if (prevX != Integer.MIN_VALUE
+                    && Math.abs(ix - prevX) < 2 && Math.abs(iy - prevY) < 2) {
+                continue;
+            }
+            int argb = (TrackOverlay.alphaAt(i) << 24) | TRACK_RGB;
+            if (prevX != Integer.MIN_VALUE) {
+                budget -= drawTrackSegment(g, prevX, prevY, ix, iy, argb);
+            }
+            prevX = ix;
+            prevY = iy;
+        }
+        popPixelSpace(g);
+    }
+
+    /** Rasterises one screen segment as a 2-device-pixel thick run of fills; returns the fills spent. */
+    private static int drawTrackSegment(GuiGraphicsExtractor g, int x0, int y0, int x1, int y1, int argb) {
+        int steps = Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0));
+        if (steps <= 0) return 0;
+        int spent = 0;
+        for (int s = 0; s <= steps; s++) {
+            int x = x0 + Math.round((x1 - x0) * s / (float) steps);
+            int y = y0 + Math.round((y1 - y0) * s / (float) steps);
+            g.fill(x, y, x + TRACK_LINE_PX, y + TRACK_LINE_PX, argb);
+            spent++;
+        }
+        return spent;
+    }
+
+    /**
+     * Xaero's waypoints for this frame, from the shared 500 ms cache. Both views use the same list,
+     * so a colour/name change in Xaero shows up in 2D and 3D at the same moment.
+     */
+    private List<XaeroWaypoints.Wp> xaeroWpSnapshot() {
+        if (!VoxyMapConfig.XAERO_WAYPOINTS.get() || !XaeroWaypoints.available()) return List.of();
+        long now = System.currentTimeMillis();
+        if (xaeroWpCache == null || now - xaeroWpCacheAtMs > 500L) {
+            xaeroWpCache = XaeroWaypoints.snapshot();
+            xaeroWpCacheAtMs = now;
+        }
+        List<XaeroWaypoints.Wp> list = xaeroWpCache;
+        return list == null ? List.of() : list;
+    }
+
     private void drawUnifiedTiles(GuiGraphicsExtractor g, MapData data, double uiScale) {
         LiveTileStore live = data.getLiveTiles();
         if (live == null) return;
         MapPerf.INSTANCE.beginFrame2d();
         live.beginFrame();
         int pb = Math.max(1, data.getPixelBlocks());
-        double worldPerScreenPx = pb / Math.max(1.0e-6, zoom);
+        double worldPerScreenPx = pb / Math.max(1.0e-6, mapZoomGui());
         double left = centerX - (width / 2.0) * worldPerScreenPx;
         double right = centerX + (width / 2.0) * worldPerScreenPx;
         double top = centerZ - (height / 2.0) * worldPerScreenPx;
@@ -620,20 +873,84 @@ public class MapScreen extends Screen {
         Identifier tex = live.textureFor(tile, style, sea, data.getColorEpoch());
         if (tex == null) return;
         MapPerf.INSTANCE.tileDrawn();
-        double sx = width / 2.0 + (tile.minWX - centerX) * zoom / pb;
-        double sy = height / 2.0 + (tile.minWZ - centerZ) * zoom / pb;
-        double sw = LiveTileStore.TILE_PIXELS * zoom;
-        double sh = LiveTileStore.TILE_PIXELS * zoom;
+        double sx = width / 2.0 + (tile.minWX - centerX) * mapZoomGui() / pb;
+        double sy = height / 2.0 + (tile.minWZ - centerZ) * mapZoomGui() / pb;
+        double sw = LiveTileStore.TILE_PIXELS * mapZoomGui();
+        double sh = LiveTileStore.TILE_PIXELS * mapZoomGui();
         if (sx + sw < 0 || sy + sh < 0 || sx > width || sy > height) return;
         var pose = g.pose();
         pose.pushMatrix();
         pose.translate((float) sx, (float) sy);
-        pose.scale((float) zoom, (float) zoom);
+        pose.scale((float) mapZoomGui(), (float) mapZoomGui());
         g.blit(RenderPipelines.GUI_TEXTURED_PREMULTIPLIED_ALPHA, tex,
                 0, 0, 0f, 0f, LiveTileStore.TILE_PIXELS, LiveTileStore.TILE_PIXELS,
                 LiveTileStore.TILE_PIXELS, LiveTileStore.TILE_PIXELS,
                 LiveTileStore.TILE_PIXELS, LiveTileStore.TILE_PIXELS);
         pose.popMatrix();
+    }
+
+    // ---- physical-pixel drawing ----
+
+    /**
+     * The GUI extractor's fills are expressed in GUI-scaled units, so at {@code guiScale = 4} one
+     * unit covers 4×4 device pixels — a "1 px" line is a 4 px block and reads as a staircase.
+     *
+     * <p>Pushing a {@code 1/scale} pose turns the coordinate system into device pixels: pass
+     * {@code width * scale} / {@code height * scale} bounds and one-unit fills become exactly one
+     * device pixel. Used by the 2D track polyline and the render-distance box, which are the two
+     * thin-line overlays; everything else stays in GUI units on purpose (text, buttons, plates).</p>
+     */
+    private void pushPixelSpace(GuiGraphicsExtractor g) {
+        double scale = guiScale();
+        g.pose().pushMatrix();
+        g.pose().scale((float) (1.0 / scale), (float) (1.0 / scale));
+    }
+
+    private void popPixelSpace(GuiGraphicsExtractor g) {
+        g.pose().popMatrix();
+    }
+
+    private static double guiScale() {
+        return Math.max(1.0, Minecraft.getInstance().getWindow().getGuiScale());
+    }
+
+    // ---- UI scale must not change anything except UI size and label text ----
+    //
+    // The GUI scale multiplies every GUI-space length, so anything expressed in "screen pixels"
+    // used to change behaviour with it (3D orbit/pan speed, the 3D camera distance, the marker
+    // size, the middle-click drag threshold, ...). The project is tuned at guiScale 4, which is
+    // therefore the reference: zoom values, sensitivities and thresholds are expressed in
+    // "GUI units at scale 4" and converted at the point of use.
+
+    /** The GUI scale every tuned constant refers to. */
+    private static final double REFERENCE_GUI_SCALE = 4.0;
+
+    /**
+     * Device pixels per map pixel. Independent of the GUI scale, i.e. the map always covers the
+     * same part of the world: {@code zoom} is stored in "GUI units at scale 4", so this is
+     * {@code zoom * 4} and equals what the project looked like at guiScale 4.
+     */
+    private double mapZoomDevice() {
+        return zoom * REFERENCE_GUI_SCALE;
+    }
+
+    /** GUI units per map pixel at the current scale (the value the GUI actually draws with). */
+    private double mapZoomGui() {
+        return mapZoomDevice() / guiScale();
+    }
+
+    /** Mouse deltas are GUI units: convert them to "the s=4 equivalent" for tuned sensitivities. */
+    private static double dragUnits(double guiDelta) {
+        return guiDelta * guiScale() / REFERENCE_GUI_SCALE;
+    }
+
+    /**
+     * How much bigger everything drawn in GUI space is compared to the s=4 tuning (1.0 at s=4).
+     * The 2D player arrow is a fixed-size GUI blit, so it inherently grows with the GUI scale;
+     * the 3D arrow multiplies its world size by this factor to stay visually consistent with it.
+     */
+    public static double uiScaleFactor() {
+        return guiScale() / REFERENCE_GUI_SCALE;
     }
 
     /** Layer 2: things drawn on top of the map - player marker, render-distance box. */
@@ -651,8 +968,8 @@ public class MapScreen extends Screen {
         var player = Minecraft.getInstance().player;
         MapData data = MapData.INSTANCE;
         if (player == null) return;
-        float cx = (float) (width / 2.0 + (player.getX() - centerX) * zoom / data.getPixelBlocks());
-        float cy = (float) (height / 2.0 + (player.getZ() - centerZ) * zoom / data.getPixelBlocks());
+        float cx = (float) (width / 2.0 + (player.getX() - centerX) * mapZoomGui() / data.getPixelBlocks());
+        float cy = (float) (height / 2.0 + (player.getZ() - centerZ) * mapZoomGui() / data.getPixelBlocks());
         Identifier arrow = arrowTex();
         // image centre sits on the player position, image top points north
         float angle = player.getYRot() + 180.0f;
@@ -670,14 +987,14 @@ public class MapScreen extends Screen {
         List<String> secondary = new ArrayList<>(MapPerf.INSTANCE.lines(data));
         Minecraft mc = Minecraft.getInstance();
         double uiScale = mc.getWindow().getGuiScale();
-        secondary.add(String.format(Locale.ROOT, "view: zoom=%.3f ui=%d fps=%d",
-                zoom, (int) uiScale, mc.getFps()));
+        secondary.add(String.format(Locale.ROOT, "view: zoom=%.3f (dev=%.2f) ui=%d fps=%d",
+                zoom, mapZoomDevice(), (int) uiScale, mc.getFps()));
         double wx = screenToWorldX(mouseX);
         double wz = screenToWorldZ(mouseY);
         secondary.add(String.format(Locale.ROOT, "hover: %.0f %.0f h=%d b=%d",
                 wx, wz, data.heightAt((int) Math.round(wx), (int) Math.round(wz)),
                 data.biomeAt((int) Math.round(wx), (int) Math.round(wz))));
-        secondary.add("labels: " + labelPanelState(data, zoom * uiScale) + " / "
+        secondary.add("labels: " + labelPanelState(data, mapZoomDevice()) + " / "
                 + (data.getBiomeLabelsFlat().length / 3) + " total");
         if (view3d) {
             primary.addAll(Gpu3DMap.debugLines());
@@ -805,10 +1122,13 @@ public class MapScreen extends Screen {
             cam3d.setTarget(focusX, groundMeshY(focusX, focusZ), focusZ);
             double pb = data.getPixelBlocks();
             double tanHalf = Math.tan(Math.toRadians(fov3d * 0.5));
-            // 2D: world units per screen pixel = pb / zoom. 3D: the view covers
+            // 2D: world units per DEVICE pixel = pb / mapZoomDevice(); 3D: the view covers
             // 2 * distance * tan(fov/2) world units vertically. Matching the two gives the distance
             // below, so entering 3D looks like the same top-down map (modulo the -89 deg pitch).
-            double dist = pb * height / (2.0 * Math.max(0.05, zoom) * Math.max(1e-4, tanHalf));
+            // Framebuffer height (not GUI height) keeps this independent of the GUI scale: the map
+            // covers a fixed part of the world, so the matched camera distance has to as well.
+            int fbHeight = Math.max(1, Minecraft.getInstance().getWindow().getHeight());
+            double dist = pb * fbHeight / (2.0 * Math.max(0.05, mapZoomDevice()) * Math.max(1e-4, tanHalf));
             dist = Math.max(minDistance3d(), Math.min(maxDistance3d(), dist));
             cam3d.distance = (float) dist;
             // The distance may have been clamped (2D zoomed further out than MAX_DISTANCE_3D), so
@@ -842,8 +1162,11 @@ public class MapScreen extends Screen {
                 // invert the enter formula so the 2D scale matches the 3D view
                 double pb = data.getPixelBlocks();
                 double tanHalf = Math.tan(Math.toRadians(fov3d * 0.5));
-                double z = pb * height / (2.0 * Math.max(1.0, cam3d.distance) * Math.max(1e-4, tanHalf));
-                zoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, z));
+                int fbHeight = Math.max(1, Minecraft.getInstance().getWindow().getHeight());
+                double z = pb * fbHeight
+                        / (2.0 * Math.max(1.0, cam3d.distance) * Math.max(1e-4, tanHalf));
+                // z is device pixels per map pixel; zoom is stored in reference (s=4 GUI) units
+                zoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, z / REFERENCE_GUI_SCALE));
             }
         }
         zoomAt3dEnter = -1.0;
@@ -963,10 +1286,100 @@ public class MapScreen extends Screen {
         g.centeredText(font, text, width / 2, y, color);
     }
 
+    // ---- transient notification layer ----
+
+    /**
+     * Top-of-screen notification for control feedback ("recording track", "track cleared", ...).
+     *
+     * <p>Its own layer instead of the control-hint strip: the hint strip is a marquee the player
+     * reads on purpose, while a notification is short-lived feedback that must survive the hint
+     * being switched off and must not disturb its scroll position. The form matches the other
+     * readouts (faint plate + shadowed text, same palette), so it reads as part of the map UI
+     * rather than as a dialog.</p>
+     */
+    private void showNotification(Component text) {
+        notifyText = text;
+        notifyAtMs = System.currentTimeMillis();
+    }
+
+    /**
+     * Hides the vanilla HUD while the map is open, exactly like pressing F1: same state
+     * ({@code Hud.isHidden}), so anything that respects F1 (hotbar, chat, scoreboard, toasts,
+     * name tags, and third-party overlays that check {@code isHudHidden}) disappears too. Some
+     * overlays draw above the screen and cannot be covered by it — this is the only way to get
+     * them out of the way.
+     *
+     * <p>Only toggles when we have to: a HUD the player had already hidden with F1 stays hidden,
+     * and if the player presses F1 while the map is open the restore leaves it visible.</p>
+     */
+    private void hideHudForMap() {
+        if (!VoxyMapConfig.HIDE_HUD.get() || hudHiddenByMap != null) return;
+        hudHiddenByMap = BlazeCompat.isHudHidden();
+        if (!BlazeCompat.isHudHidden()) BlazeCompat.toggleHud();
+    }
+
+    private void restoreHudAfterMap() {
+        if (hudHiddenByMap == null) return;
+        boolean wasHidden = hudHiddenByMap;
+        hudHiddenByMap = null;
+        if (!wasHidden && BlazeCompat.isHudHidden()) BlazeCompat.toggleHud();
+    }
+
+    private void drawNotification(GuiGraphicsExtractor g) {
+        if (notifyText == null) return;
+        long age = System.currentTimeMillis() - notifyAtMs;
+        if (age > NOTIFY_MS) {
+            notifyText = null;
+            return;
+        }
+        float alpha = Math.min(1f, age / 120f);
+        if (age > NOTIFY_MS - 400L) {
+            alpha = Math.min(alpha, Math.max(0f, (NOTIFY_MS - age) / 400f));
+        }
+        int tw = font.width(notifyText);
+        int tx = width / 2 - tw / 2;
+        int ty = NOTIFY_Y;
+        g.fill(tx - 5, ty - 3, tx + tw + 5, ty + font.lineHeight + 3, withAlpha(0x6614171C, alpha));
+        g.text(font, notifyText, tx, ty, withAlpha(COL_TEXT, alpha), true);
+    }
+
     // ---- shared layout/text helpers (drawing and label culling must agree) ----
 
     private int configWidth() {
         return font.width(Component.translatable("voxymap.ui.config")) + 12;
+    }
+
+    // ---- right-click menu geometry (shared by the draw, hit-test and label-blocker paths) ------
+
+    /**
+     * True when the "add waypoint in Xaero" row is offered. Shown whenever Xaero is installed, even
+     * if the bridge could not resolve: a missing row looks like a broken feature, whereas a click
+     * that reports "not installed or incompatible" tells the player (and the log) what happened.
+     */
+    private boolean xaeroMenuRow() {
+        return XaeroWaypoints.installed();
+    }
+
+    private int contextMenuExportRow() {
+        return VoxyMapConfig.TELEPORT_ENABLED.get() ? 2 : 1;
+    }
+
+    private int contextMenuXaeroRow() {
+        return contextMenuExportRow() + 1;
+    }
+
+    private int contextMenuRows() {
+        return (VoxyMapConfig.TELEPORT_ENABLED.get() ? 3 : 2) + (xaeroMenuRow() ? 1 : 0);
+    }
+
+    private int contextMenuWidth() {
+        int w = Math.max(font.width(Component.translatable("voxymap.ui.copy")),
+                Math.max(font.width(Component.translatable("voxymap.ui.teleport")),
+                        font.width(Component.translatable("voxymap.ui.export"))));
+        if (xaeroMenuRow()) {
+            w = Math.max(w, font.width(Component.translatable("voxymap.ui.xaeroAdd")));
+        }
+        return w + 24;
     }
 
     private int biomesWidth() {
@@ -975,6 +1388,10 @@ public class MapScreen extends Screen {
 
     private int distanceWidth() {
         return font.width(Component.translatable("voxymap.ui.renderDistance")) + 12;
+    }
+
+    private int trackWidth() {
+        return font.width(Component.translatable("voxymap.ui.track")) + 12;
     }
 
     private int styleSelWidth() {
@@ -1318,8 +1735,8 @@ public class MapScreen extends Screen {
         // Pin the world point that was under the cursor when the wheel moved: the map zooms around
         // the cursor instead of drifting away from it.
         double pb = MapData.INSTANCE.getPixelBlocks();
-        centerX = zoomAnchorWorldX - (zoomAnchorScreenX - width / 2.0) * pb / zoom;
-        centerZ = zoomAnchorWorldZ - (zoomAnchorScreenY - height / 2.0) * pb / zoom;
+        centerX = zoomAnchorWorldX - (zoomAnchorScreenX - width / 2.0) * pb / mapZoomGui();
+        centerZ = zoomAnchorWorldZ - (zoomAnchorScreenY - height / 2.0) * pb / mapZoomGui();
     }
 
     /** Stops the zoom easing at its current value (manual pan/centre/view switch wins). */
@@ -1441,6 +1858,13 @@ public class MapScreen extends Screen {
         drawToggle(g, "distance", bx, ry2, rdw, rdText, distanceOn,
                 mouseX >= bx && mouseX <= bx + rdw && mouseY >= ry2 && mouseY <= ry2 + 20, !busy);
 
+        // track overlay toggle, above the two above (session state: switching it off clears the path)
+        Component trText = Component.translatable("voxymap.ui.track");
+        int trw = font.width(trText) + 12;
+        int trY = by - 48;
+        drawToggle(g, "track", bx, trY, trw, trText, TrackOverlay.enabled(),
+                mouseX >= bx && mouseX <= bx + trw && mouseY >= trY && mouseY <= trY + 20, !busy);
+
         // refresh button bottom-right
         boolean refreshing = data.isLoading();
         Component refresh = refreshing
@@ -1471,15 +1895,24 @@ public class MapScreen extends Screen {
         double px = player.getX();
         double pz = player.getZ();
         double pb = Math.max(1, data.getPixelBlocks());
-        int x0 = (int) Math.round(width / 2.0 + (px - dist - centerX) * zoom / pb);
-        int x1 = (int) Math.round(width / 2.0 + (px + dist - centerX) * zoom / pb);
-        int z0 = (int) Math.round(height / 2.0 + (pz - dist - centerZ) * zoom / pb);
-        int z1 = (int) Math.round(height / 2.0 + (pz + dist - centerZ) * zoom / pb);
+        // device pixels: a 1-unit fill is one physical pixel, so the outline is no longer a
+        // guiScale-sized block
+        double scale = guiScale();
+        double w = width * scale;
+        double h = height * scale;
+        double zoomPx = mapZoomDevice();  // already in device pixels
+        int x0 = (int) Math.round(w / 2.0 + (px - dist - centerX) * zoomPx / pb);
+        int x1 = (int) Math.round(w / 2.0 + (px + dist - centerX) * zoomPx / pb);
+        int z0 = (int) Math.round(h / 2.0 + (pz - dist - centerZ) * zoomPx / pb);
+        int z1 = (int) Math.round(h / 2.0 + (pz + dist - centerZ) * zoomPx / pb);
         int yellow = 0xE0FFFF00;
-        g.fill(x0, z0, x0 + 1, z1 + 1, yellow);
-        g.fill(x1, z0, x1 + 1, z1 + 1, yellow);
-        g.fill(x0, z0, x1 + 1, z0 + 1, yellow);
-        g.fill(x0, z1, x1 + 1, z1 + 1, yellow);
+        int lw = 2;   // device pixels, same as the track line: independent of the GUI scale
+        pushPixelSpace(g);
+        g.fill(x0, z0, x0 + lw, z1 + lw, yellow);
+        g.fill(x1, z0, x1 + lw, z1 + lw, yellow);
+        g.fill(x0, z0, x1 + lw, z0 + lw, yellow);
+        g.fill(x0, z1, x1 + lw, z1 + lw, yellow);
+        popPixelSpace(g);
     }
 
     // The 3D render-distance overlay is drawn by Gpu3DMap's overlay pass (Gpu3DMap.prepareOverlay):
@@ -1569,174 +2002,43 @@ public class MapScreen extends Screen {
     }
 
     /**
-     * Player marker: a small arrow drawn as a horizontal plane at the player's position, floating
-     * above the terrain, with a vertical white line down to the ground.
+     * Geometry of the 3D player marker in mesh space, shared by the arrow (drawn here in 2D) and
+     * the vertical tick line (drawn as 3D geometry by {@link Gpu3DMap}, so the terrain pass can
+     * shade the part the mesh covers).
+     *
+     * <p>Only two inputs are consulted: the player's own position and the map mesh. No game-world
+     * data (heightmap, block states, onGround) — the mesh is an LOD approximation of the world and
+     * the two disagree by design. The mesh draws the surface at {@code heightAt} (the top block's
+     * Y), while a player standing on that block is one block higher, hence {@code surfaceTop}.</p>
+     *
+     * @return {@code {px, pz, feet, surface, surfaceTop, markY, hasModel?1:0}}, or null
      */
-    private void drawPlayerMarker3d(GuiGraphicsExtractor g) {
+    public double[] markerGeometry3d() {
         var player = Minecraft.getInstance().player;
-        if (player == null || cam3d == null) return;
+        if (player == null || cam3d == null) return null;
         MapData data = MapData.INSTANCE;
-        if (!data.isReady()) return;
+        if (!data.isReady()) return null;
         double px = player.getX();
         double pz = player.getZ();
         int bx = (int) Math.floor(px);
         int bz = (int) Math.floor(pz);
-        double ground = groundMeshY(bx, bz);
-        double markY = ground + Math.max(0.0, VoxyMapConfig.PLAYER_MARKER_HEIGHT_3D.get());
-        org.joml.Matrix4f vp = cam3d.viewProjection((float) width / Math.max(1f, (float) height), fov3d);
-        org.joml.Vector3f top = cam3d.worldToScreen(px, markY, pz, vp, width, height);
-        org.joml.Vector3f base = cam3d.worldToScreen(px, ground, pz, vp, width, height);
-        if (top == null || base == null) return;
-        // vertical line from the marker down to the terrain (clipped to the screen: an extreme
-        // camera angle can project this line tens of thousands of pixels tall)
-        int lineX = Math.round(top.x);
-        int y0 = Math.min(Math.round(top.y), Math.round(base.y));
-        int y1 = Math.max(Math.round(top.y), Math.round(base.y));
-        if (y1 >= 0 && y0 <= height) {
-            g.fill(lineX, Math.max(0, y0), lineX + 1, Math.min(height, y1 + 1), 0xFFFFFFFF);
-        }
-        // arrow: a HORIZONTAL quad (normal = world +Y) textured with the 2D arrow artwork.
-        // v=0 is the TIP, so it sits at the player's facing end; the quad is subdivided so the
-        // affine per-cell mapping stays within a pixel of the true perspective mapping.
-        double yawRad = Math.toRadians(player.getYRot());
-        double fx = -Math.sin(yawRad);
-        double fz = Math.cos(yawRad);
-        double rx = Math.cos(yawRad);
-        double rz = Math.sin(yawRad);
-        double scale = Math.max(0.2, VoxyMapConfig.PLAYER_MARKER_SCALE_3D.get());
-        double half = Math.max(4.0, cam3d.distance * 0.022 * scale);
-        double ex = rx * half;
-        double ez = rz * half;
-        double ax = fx * half;
-        double az = fz * half;
-        // tip end (v = 0) in the facing direction, tail end (v = 1) behind the player
-        org.joml.Vector3f c00 = cam3d.worldToScreen(px + ax - ex, markY, pz + az - ez, vp, width, height);
-        org.joml.Vector3f c10 = cam3d.worldToScreen(px + ax + ex, markY, pz + az + ez, vp, width, height);
-        org.joml.Vector3f c11 = cam3d.worldToScreen(px - ax + ex, markY, pz - az + ez, vp, width, height);
-        org.joml.Vector3f c01 = cam3d.worldToScreen(px - ax - ex, markY, pz - az - ez, vp, width, height);
-        if (c00 != null && c10 != null && c11 != null && c01 != null) {
-            drawArrowImage(g, c00, c10, c11, c01);
-        }
+        boolean hasModel = !data.isEmptyAt(bx, bz);
+        double scale = meshScale();
+        double surface = groundMeshY(bx, bz);
+        double surfaceTop = surface + scale;
+        double feet = player.getY() * scale;
+        double anchor = Math.max(feet, surfaceTop);
+        // Fixed height in blocks: the marker line is a world-space annotation, so its length must
+        // not change with the camera distance (zoom), the view angle or the GUI scale.
+        double markY = anchor + Math.max(0.0, VoxyMapConfig.PLAYER_MARKER_HEIGHT_3D.get());
+        return new double[]{px, pz, feet, surface, surfaceTop, markY, hasModel ? 1 : 0};
     }
 
-    // ---- CPU-rasterised 3D arrow: exact perspective sampling instead of GUI blit scanlines ----
-    private NativeImage arrowImg;
-    private Identifier arrowImgId;
-    private NativeImage sourceArrow;
-    private static final int ARROW_IMG = 128;
-    private String arrowCacheKey = "";
-
-    private void ensureArrowImage() {
-        if (arrowImg != null) return;
-        arrowImg = new NativeImage(ARROW_IMG, ARROW_IMG, false);
-        arrowImgId = Identifier.fromNamespaceAndPath("voxymap", "arrow3d");
-        Minecraft mc = Minecraft.getInstance();
-        DynamicTexture tex = new DynamicTexture(() -> "voxymap_arrow3d", arrowImg);
-        mc.getTextureManager().register(arrowImgId, tex);
-        try {
-            var res = mc.getResourceManager().getResource(arrowTex());
-            if (res.isPresent()) {
-                try (var stream = res.get().open()) {
-                    sourceArrow = NativeImage.read(stream);
-                }
-            }
-        } catch (Throwable ignored) {
-        }
-        if (sourceArrow == null) {
-            sourceArrow = new NativeImage(32, 32, false);
-            for (int y = 0; y < 32; y++) {
-                for (int x = 0; x < 32; x++) {
-                    sourceArrow.setPixelABGR(x, y, 0xFFFFFFFF);
-                }
-            }
-        }
-    }
-
-    /** Rasterises the arrow quad on the CPU (per-pixel inverse mapping), then blits the texture. */
-    private void drawArrowImage(GuiGraphicsExtractor g,
-                                org.joml.Vector3f c00, org.joml.Vector3f c10,
-                                org.joml.Vector3f c11, org.joml.Vector3f c01) {
-        ensureArrowImage();
-        float minX = Math.min(Math.min(c00.x, c10.x), Math.min(c11.x, c01.x));
-        float maxX = Math.max(Math.max(c00.x, c10.x), Math.max(c11.x, c01.x));
-        float minY = Math.min(Math.min(c00.y, c10.y), Math.min(c11.y, c01.y));
-        float maxY = Math.max(Math.max(c00.y, c10.y), Math.max(c11.y, c01.y));
-        int bx0 = (int) Math.floor(minX) - 1;
-        int by0 = (int) Math.floor(minY) - 1;
-        int bx1 = (int) Math.ceil(maxX) + 1;
-        int by1 = (int) Math.ceil(maxY) + 1;
-        int pw = bx1 - bx0;
-        int ph = by1 - by0;
-        if (pw <= 0 || ph <= 0 || pw > 512 || ph > 512) return;
-        String key = bx0 + "," + by0 + "," + pw + "," + ph + "," + c00.x + "," + c00.y
-                + "," + c10.x + "," + c10.y + "," + c11.x + "," + c11.y
-                + "," + c01.x + "," + c01.y;
-        if (key.equals(arrowCacheKey)) {
-            // nothing moved: reuse the already uploaded texture
-            g.blit(RenderPipelines.GUI_TEXTURED, arrowImgId, bx0, by0, 0f, 0f, pw, ph,
-                    ARROW_IMG, ARROW_IMG, ARROW_IMG, ARROW_IMG);
-            return;
-        }
-        arrowCacheKey = key;
-        int iw = sourceArrow.getWidth();
-        int ih = sourceArrow.getHeight();
-        for (int py = 0; py < ARROW_IMG; py++) {
-            for (int px = 0; px < ARROW_IMG; px++) {
-                arrowImg.setPixelABGR(px, py, 0);
-            }
-        }
-        float[][] pts = {
-                {c00.x, c00.y, 0f, 0f},
-                {c10.x, c10.y, 1f, 0f},
-                {c11.x, c11.y, 1f, 1f},
-                {c01.x, c01.y, 0f, 1f}
-        };
-        for (int py = 0; py < ARROW_IMG; py++) {
-            float sy = by0 + (py + 0.5f) * ph / (float) ARROW_IMG;
-            for (int px = 0; px < ARROW_IMG; px++) {
-                float sx = bx0 + (px + 0.5f) * pw / (float) ARROW_IMG;
-                float[] uv = inverseBilinear(pts, sx, sy);
-                if (uv == null) continue;
-                float u = uv[0];
-                float v = uv[1];
-                if (u < 0f || u > 1f || v < 0f || v > 1f) continue;
-                int tx = Math.max(0, Math.min(iw - 1, (int) (u * iw)));
-                int ty = Math.max(0, Math.min(ih - 1, (int) (v * ih)));
-                int c = sourceArrow.getPixel(tx, ty);
-                int a = (c >>> 24) & 0xFF;
-                if (a < 8) continue;
-                arrowImg.setPixelABGR(px, py, c);
-            }
-        }
-        Minecraft mc = Minecraft.getInstance();
-        var tex = mc.getTextureManager().getTexture(arrowImgId);
-        if (tex instanceof DynamicTexture dt) {
-            dt.upload();
-        }
-        g.blit(RenderPipelines.GUI_TEXTURED, arrowImgId, bx0, by0, 0f, 0f, pw, ph,
-                ARROW_IMG, ARROW_IMG, ARROW_IMG, ARROW_IMG);
-    }
-
-    /** Screen point -> (u,v) inside the two-triangle quad; null when outside. */
-    private static float[] inverseBilinear(float[][] p, float x, float y) {
-        for (int tri = 0; tri < 2; tri++) {
-            int a = 0;
-            int b = tri == 0 ? 1 : 2;
-            int c = tri == 0 ? 2 : 3;
-            float ax = p[a][0], ay = p[a][1], au = p[a][2], av = p[a][3];
-            float bx = p[b][0], by = p[b][1], bu = p[b][2], bv = p[b][3];
-            float cx = p[c][0], cy = p[c][1], cu = p[c][2], cv = p[c][3];
-            float d = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy);
-            if (Math.abs(d) < 1e-6f) continue;
-            float w0 = ((by - cy) * (x - cx) + (cx - bx) * (y - cy)) / d;
-            float w1 = ((cy - ay) * (x - cx) + (ax - cx) * (y - cy)) / d;
-            float w2 = 1f - w0 - w1;
-            if (w0 < -1e-4f || w1 < -1e-4f || w2 < -1e-4f) continue;
-            return new float[]{w0 * au + w1 * bu + w2 * cu, w0 * av + w1 * bv + w2 * cv};
-        }
-        return null;
-    }
-
+    /**
+     * Player marker: a small arrow drawn as a horizontal plane at the player's position. The
+     * vertical tick line under it is 3D geometry built by {@link Gpu3DMap#prepareOverlay} from
+     * {@link #markerGeometry3d()}.
+     */
     private void drawLodWarning(GuiGraphicsExtractor g, int mouseX, int mouseY) {
         DialogBox box = dialogBox();
         g.fill(0, 0, width, height, 0x99000000);
@@ -1796,6 +2098,8 @@ public class MapScreen extends Screen {
         // biome / distance toggles (bottom-left)
         labelBlockers.add(new int[]{6, height - 32, 8 + biomesWidth() + 2, height - 8});
         labelBlockers.add(new int[]{6, height - 56, 8 + distanceWidth() + 2, height - 32});
+        // track overlay toggle (above them)
+        labelBlockers.add(new int[]{6, height - 80, 8 + trackWidth() + 2, height - 56});
         // refresh (bottom-right)
         Component refresh = refreshComponent();
         int rw = font.width(refresh) + 12;
@@ -1803,10 +2107,8 @@ public class MapScreen extends Screen {
         // right-click menu
         if (contextMenuT > 0.02f) {
             int rowH = 20;
-            int menuW = Math.max(font.width(Component.translatable("voxymap.ui.copy")),
-                    Math.max(font.width(Component.translatable("voxymap.ui.teleport")),
-                            font.width(Component.translatable("voxymap.ui.export")))) + 24;
-            int rows = VoxyMapConfig.TELEPORT_ENABLED.get() ? 3 : 2;
+            int menuW = contextMenuWidth();
+            int rows = contextMenuRows();
             int menuH = rowH * rows + 4;
             int x = Math.min(menuX, width - menuW - 4);
             int y = Math.min(menuY, height - menuH - 4);
@@ -1836,8 +2138,7 @@ public class MapScreen extends Screen {
         MapData data = MapData.INSTANCE;
         if (!data.isTile2DMode() && data.getMapWidth() <= 0) return;
         // two discrete label sizes only on very large GUI scales (4x+); otherwise default size
-        double guiScale = Minecraft.getInstance().getWindow().getGuiScale();
-        float labelScale = (guiScale >= 4.0 && zoom < 1.0) ? 0.5f : 1.0f;
+        float labelScale = labelTextScale(true);
         int[] labels = data.getBiomeLabelsFlat();
         double cx = centerPx();
         double cz = centerPz();
@@ -1845,8 +2146,8 @@ public class MapScreen extends Screen {
         labels3dTotal = labels.length / 3;
         labels3dDrawn = 0;
         for (int i = 0; i + 2 < labels.length; i += 3) {
-            double sx = width / 2.0 + (labels[i] - cx) * zoom;
-            double sy = height / 2.0 + (labels[i + 1] - cz) * zoom;
+            double sx = width / 2.0 + (labels[i] - cx) * mapZoomGui();
+            double sy = height / 2.0 + (labels[i + 1] - cz) * mapZoomGui();
             // cheap reject before touching the font: most of the labels are far outside the window
             if (sx < -96 || sx > width + 96 || sy < -halfLine - 6 || sy > height + halfLine + 6) continue;
             LabelInfo info = labelInfo(data, labels[i + 2]);
@@ -1891,19 +2192,16 @@ public class MapScreen extends Screen {
         double eyeY = cam3d.eyeY();
         double eyeZ = cam3d.eyeZ();
         double range = Math.max(200.0, VoxyMapConfig.BIOME_LABEL_3D_RANGE.get());
-        // same visibility rule as the 2D labels: hide when the effective zoom is too small.
-        // The 3D camera distance maps back to a 2D-equivalent zoom:
-        //   zoomEq = pixelBlocks * screenHeight / (2 * distance * tan(fov/2))
-        double tanHalf = Math.tan(Math.toRadians(fov3d * 0.5));
-        double zoomEq = data.getPixelBlocks() * height
-                / (2.0 * Math.max(1.0, cam3d.distance) * Math.max(1e-4, tanHalf));
-        double uiScaleNow = Minecraft.getInstance().getWindow().getGuiScale();
-        if (zoomEq * uiScaleNow < 1.0) return;
+        // Same visibility rule as the 2D labels: hide when the effective zoom is too small.
+        // The 3D camera distance maps back to a 2D-equivalent zoom, measured in DEVICE pixels per
+        // map pixel so the GUI scale cannot change when labels appear:
+        //   zoomEq = pixelBlocks * framebufferHeight / (2 * distance * tan(fov/2))
+        double zoomEq = zoomEq3d();
+        if (zoomEq < 1.0) return;
         org.joml.Matrix4f vp = cam3d.viewProjection(
                 (float) width / Math.max(1f, (float) height), fov3d);
-        // same rule as the 2D labels: half-size text on very large GUI scales
-        double guiScale = Minecraft.getInstance().getWindow().getGuiScale();
-        float labelScale = guiScale >= 4.0 ? 0.5f : 1.0f;
+        // same rule as the 2D labels; the 3D gate is the camera distance, not the 2D zoom
+        float labelScale = labelTextScale(false);
         double halfLine = font.lineHeight * labelScale / 2.0 + 2;
         for (int i = 0; i + 2 < labels.length; i += 3) {
             double wx = minWX + (double) labels[i] * pb;
@@ -1987,7 +2285,7 @@ public class MapScreen extends Screen {
      */
     private String labelPanelState(MapData data, double labelZoom) {
         if (labelZoom < 1.0) {
-            return String.format(Locale.ROOT, "not drawn (zoom*uiScale=%.2f < 1.0)", labelZoom);
+            return String.format(Locale.ROOT, "not drawn (device zoom=%.2f < 1.0)", labelZoom);
         }
         return countVisibleLabels(data) + " in view";
     }
@@ -1997,13 +2295,12 @@ public class MapScreen extends Screen {
         int[] labels = data.getBiomeLabelsFlat();
         double cx = centerPx();
         double cz = centerPz();
-        double guiScale = Minecraft.getInstance().getWindow().getGuiScale();
-        float labelScale = (guiScale >= 4.0 && zoom < 1.0) ? 0.5f : 1.0f;
+        float labelScale = labelTextScale(true);
         double halfLine = font.lineHeight * labelScale / 2.0 + 2;
         int count = 0;
         for (int i = 0; i + 2 < labels.length; i += 3) {
-            double sx = width / 2.0 + (labels[i] - cx) * zoom;
-            double sy = height / 2.0 + (labels[i + 1] - cz) * zoom;
+            double sx = width / 2.0 + (labels[i] - cx) * mapZoomGui();
+            double sy = height / 2.0 + (labels[i + 1] - cz) * mapZoomGui();
             if (sx < -96 || sx > width + 96 || sy < -halfLine - 6 || sy > height + halfLine + 6) continue;
             LabelInfo info = labelInfo(data, labels[i + 2]);
             if (info == null) continue;
@@ -2016,12 +2313,14 @@ public class MapScreen extends Screen {
 
     private void drawContextMenu(GuiGraphicsExtractor g, int mouseX, int mouseY) {
         boolean teleport = VoxyMapConfig.TELEPORT_ENABLED.get();
+        boolean xaero = xaeroMenuRow();
         Component copy = Component.translatable("voxymap.ui.copy");
         Component tp = Component.translatable("voxymap.ui.teleport");
         Component exp = Component.translatable("voxymap.ui.export");
+        Component xa = Component.translatable("voxymap.ui.xaeroAdd");
         int rowH = 20;
-        int w = Math.max(font.width(copy), Math.max(font.width(tp), font.width(exp))) + 24;
-        int rows = teleport ? 3 : 2;
+        int w = contextMenuWidth();
+        int rows = contextMenuRows();
         int h = rowH * rows + 4;
         int x = Math.min(menuX, width - w - 4);
         int y = Math.min(menuY, height - h - 4);
@@ -2035,7 +2334,12 @@ public class MapScreen extends Screen {
         }
         drawMenuRow(g, x, y + 2 + rowH * (teleport ? 2 : 1), w, rowH, exp, mouseX, mouseY,
                 rowAlpha(t, teleport ? 2 : 1));
+        if (xaero) {
+            drawMenuRow(g, x, y + 2 + rowH * contextMenuXaeroRow(), w, rowH, xa, mouseX, mouseY,
+                    rowAlpha(t, contextMenuXaeroRow()));
+        }
     }
+
 
     /** Staggered fade-in for menu rows. */
     private static float rowAlpha(float t, int index) {
@@ -2074,14 +2378,9 @@ public class MapScreen extends Screen {
     }
 
     private boolean inMenu(int mx, int my, int row) {
-        boolean teleport = VoxyMapConfig.TELEPORT_ENABLED.get();
-        Component copy = Component.translatable("voxymap.ui.copy");
-        Component tp = Component.translatable("voxymap.ui.teleport");
-        Component exp = Component.translatable("voxymap.ui.export");
         int rowH = 20;
-        int w = Math.max(font.width(copy), Math.max(font.width(tp), font.width(exp))) + 24;
-        int rows = teleport ? 3 : 2;
-        int h = rowH * rows + 4;
+        int w = contextMenuWidth();
+        int h = rowH * contextMenuRows() + 4;
         int x = Math.min(menuX, width - w - 4);
         int y = Math.min(menuY, height - h - 4);
         return mx >= x && mx <= x + w && my >= y + row * rowH && my <= y + (row + 1) * rowH;
@@ -2143,8 +2442,8 @@ public class MapScreen extends Screen {
         // replacing screen, so restore them here (idempotent); init() re-applies them when the map
         // comes back while `view3d` is still on.
         restore3dOverrides();
+        restoreHudAfterMap();
         MapData.INSTANCE.onMapClosed();
-        releaseArrowTexture();
         // Gpu3DMap is intentionally NOT cleared here: a 3D -> config screen -> map round trip must
         // keep the built terrain. finishClose() always releases it on a real close (regardless of
         // keep3dTilesIn2d) and MapData clears it when the world changes.
@@ -2152,18 +2451,6 @@ public class MapScreen extends Screen {
     }
 
     /** Releases the 3D arrow texture and the source image it samples from. */
-    private void releaseArrowTexture() {
-        if (arrowImgId != null) {
-            Minecraft.getInstance().getTextureManager().release(arrowImgId);
-            arrowImgId = null;
-        }
-        arrowImg = null;
-        arrowCacheKey = "";
-        if (sourceArrow != null) {
-            sourceArrow.close();
-            sourceArrow = null;
-        }
-    }
 
     @Override
     public boolean keyPressed(KeyEvent e) {
@@ -2251,10 +2538,14 @@ public class MapScreen extends Screen {
                 menuOpen = false;
                 return true;
             }
-            int exportRow = VoxyMapConfig.TELEPORT_ENABLED.get() ? 2 : 1;
+            int exportRow = contextMenuExportRow();
             if (inMenu((int) mx, (int) my, exportRow)) {
                 exportMap();
                 menuOpen = false;
+                return true;
+            }
+            if (xaeroMenuRow() && inMenu((int) mx, (int) my, contextMenuXaeroRow())) {
+                openXaeroAddWaypoint();
                 return true;
             }
             menuOpen = false;
@@ -2322,6 +2613,16 @@ public class MapScreen extends Screen {
             if (!data.isLoading() && !data.isStyleChanging()) {
                 data.setRenderDistanceOverlay(!data.isRenderDistanceOverlay());
             }
+            return true;
+        }
+        Component trText = Component.translatable("voxymap.ui.track");
+        int trw = font.width(trText) + 12;
+        int trY = by - 48;
+        if (button == 0 && mx >= bx && mx <= bx + trw && my >= trY && my <= trY + 20) {
+            // session-only: enabling starts a fresh path, disabling stops sampling and clears it
+            TrackOverlay.toggle();
+            showNotification(Component.translatable(TrackOverlay.enabled()
+                    ? "voxymap.ui.trackStarted" : "voxymap.ui.trackCleared"));
             return true;
         }
         Component refresh = data.isLoading()
@@ -2402,6 +2703,21 @@ public class MapScreen extends Screen {
         Minecraft.getInstance().keyboardHandler.setClipboard(text);
     }
 
+    /**
+     * Hands the right-clicked coordinates to Xaero's own "add waypoint" dialog. The user picks the
+     * name / colour / set there and Xaero persists it itself — voxy-map never writes Xaero's files,
+     * and the runtime-only third-party API (which would not survive a restart) is not involved.
+     */
+    private void openXaeroAddWaypoint() {
+        menuOpen = false;
+        if (!XaeroWaypoints.openAddDialog(this, menuWorldX, menuWorldY, menuWorldZ)) {
+            var player = Minecraft.getInstance().player;
+            if (player != null) {
+                player.sendSystemMessage(Component.translatable("voxymap.ui.xaeroMissing"));
+            }
+        }
+    }
+
     private void teleport() {
         var conn = Minecraft.getInstance().getConnection();
         if (conn != null) {
@@ -2432,28 +2748,32 @@ public class MapScreen extends Screen {
                 cancelCenterAnim();
                 // left drag: pan along the camera's screen axes (motion matches the cursor)
                 double scale = cam3d.distance * 0.0015 * VoxyMapConfig.PAN_SENS_3D.get();
+                // mouse deltas are GUI units; normalise to the s=4 tuning so panning feels the same
+                double pdx = dragUnits(dx);
+                double pdy = dragUnits(dy);
                 double yaw = cam3d.yaw;
                 double rightX = Math.cos(yaw);
                 double rightZ = -Math.sin(yaw);
                 double fwdX = -Math.sin(yaw);
                 double fwdZ = -Math.cos(yaw);
-                cam3d.targetX -= rightX * dx * scale - fwdX * dy * scale;
-                cam3d.targetZ -= rightZ * dx * scale - fwdZ * dy * scale;
+                cam3d.targetX -= rightX * pdx * scale - fwdX * pdy * scale;
+                cam3d.targetZ -= rightZ * pdx * scale - fwdZ * pdy * scale;
             } else if (e.button() == 2) {
                 // Middle: a press that moves is an orbit; a short press without movement is a
                 // click that switches back to 2D (decided in mouseReleased).
                 if (middlePress3d
-                        && (Math.abs(mx - middlePressX) > MIDDLE_CLICK_SLOP_PX
-                        || Math.abs(my - middlePressY) > MIDDLE_CLICK_SLOP_PX)) {
+                        && (Math.abs(dragUnits(mx - middlePressX)) > MIDDLE_CLICK_SLOP_PX
+                        || Math.abs(dragUnits(my - middlePressY)) > MIDDLE_CLICK_SLOP_PX)) {
                     middleDragged3d = true;
                 }
                 cancelCenterAnim();
-                // middle drag: orbit around the target
+                // middle drag: orbit around the target. Same normalisation as panning: a physical
+                // drag rotates the same amount at every GUI scale
                 double sens = 0.006 * VoxyMapConfig.ROTATE_SENS_3D.get();
-                cam3d.yaw -= (float) (dx * sens);
+                cam3d.yaw -= (float) (dragUnits(dx) * sens);
                 float minPitch = (float) Math.toRadians(-5);
                 cam3d.pitch = Math.max(PITCH_STRAIGHT_DOWN,
-                        Math.min(minPitch, cam3d.pitch - (float) (dy * sens * 0.66)));
+                        Math.min(minPitch, cam3d.pitch - (float) (dragUnits(dy) * sens * 0.66)));
             } else {
                 // right button: no camera action
                 return true;
@@ -2462,8 +2782,8 @@ public class MapScreen extends Screen {
         }
         if (dragging) {
             cancelCenterAnim();
-            centerX -= dx * MapData.INSTANCE.getPixelBlocks() / zoom;
-            centerZ -= dy * MapData.INSTANCE.getPixelBlocks() / zoom;
+            centerX -= dx * MapData.INSTANCE.getPixelBlocks() / mapZoomGui();
+            centerZ -= dy * MapData.INSTANCE.getPixelBlocks() / mapZoomGui();
             return true;
         }
         return super.mouseDragged(e, dx, dy);
@@ -2481,8 +2801,8 @@ public class MapScreen extends Screen {
             // or any movement is an orbit gesture and must NOT switch (input must never feel like
             // it "stole" a drag).
             boolean click = !middleDragged3d
-                    && Math.abs(mx - middlePressX) <= MIDDLE_CLICK_SLOP_PX
-                    && Math.abs(my - middlePressY) <= MIDDLE_CLICK_SLOP_PX
+                    && Math.abs(dragUnits(mx - middlePressX)) <= MIDDLE_CLICK_SLOP_PX
+                    && Math.abs(dragUnits(my - middlePressY)) <= MIDDLE_CLICK_SLOP_PX
                     && System.currentTimeMillis() - middlePressAtMs <= MIDDLE_CLICK_MAX_MS;
             middlePress3d = false;
             middleDragged3d = false;
@@ -2495,8 +2815,8 @@ public class MapScreen extends Screen {
         if (e.button() == 2 && middlePress2d) {
             // symmetric: a short middle click in 2D enters the 3D view
             boolean click = !view3d
-                    && Math.abs(mx - middlePress2dX) <= MIDDLE_CLICK_SLOP_PX
-                    && Math.abs(my - middlePress2dY) <= MIDDLE_CLICK_SLOP_PX
+                    && Math.abs(dragUnits(mx - middlePress2dX)) <= MIDDLE_CLICK_SLOP_PX
+                    && Math.abs(dragUnits(my - middlePress2dY)) <= MIDDLE_CLICK_SLOP_PX
                     && System.currentTimeMillis() - middlePress2dAtMs <= MIDDLE_CLICK_MAX_MS;
             middlePress2d = false;
             if (click && !view3d && exit3dT < 0f) {

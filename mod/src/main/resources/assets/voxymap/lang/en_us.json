@@ -190,5 +190,17 @@
   "voxymap.config.autoHideContours3d": "Hide contours in 3D",
   "voxymap.config.desc.autoHideContours3d": "Hide contour lines while the 3D view is open.",
   "voxymap.config.biomeLabel3dRange": "3D biome label range (blocks)",
-  "voxymap.config.desc.biomeLabel3dRange": "Only biome labels within this horizontal distance are shown in 3D."
+  "voxymap.config.desc.biomeLabel3dRange": "Only biome labels within this horizontal distance are shown in 3D.",
+  "voxymap.config.hideHud": "Hide game UI",
+  "voxymap.config.desc.hideHud": "Hides the HUD (hotbar, chat, scoreboard, overlays) while the map is open, exactly like F1. Some third-party overlays are drawn above the map and can only be hidden this way.",
+  "voxymap.config.section.xaero": "Xaero integration",
+  "voxymap.config.xaeroWaypoints": "Xaero waypoints",
+  "voxymap.config.desc.xaeroWaypoints": "Draw the waypoints of Xaero's Minimap on the map, in 2D and 3D.",
+  "voxymap.config.xaeroWaypointLabels": "Waypoint names",
+  "voxymap.config.desc.xaeroWaypointLabels": "Show the waypoint names next to their markers. Off keeps only the coloured dots.",
+  "voxymap.ui.xaeroAdd": "Add waypoint in Xaero",
+  "voxymap.ui.xaeroMissing": "Xaero's Minimap is not installed or its version is not supported",
+  "voxymap.ui.track": "Track",
+  "voxymap.ui.trackStarted": "Recording track",
+  "voxymap.ui.trackCleared": "Track stopped and cleared"
 }

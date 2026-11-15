@@ -79,13 +79,24 @@ public final class RenderPass implements AutoCloseable {
 
     /** Draws {@code indexCount} int indices from the bound vertex/index buffers. */
     public void drawIndexed(int indexCount) {
+        drawIndexed(0, indexCount);
+    }
+
+    /**
+     * Draws the sub-range starting at {@code firstIndex}: one buffer holds several pieces (distance
+     * ribbon, marker line, track), exactly like 26.2's {@code drawIndexed(indexCount, 1, firstIndex,
+     * 0, 0)}. 1.21.1's {@code RenderSystem} has no offset variant, so the offset is handed straight
+     * to GL (indices are 32-bit).
+     */
+    public void drawIndexed(int firstIndex, int indexCount) {
         if (shader == null || vertexBuffer == null || indexBuffer == null || indexCount <= 0) return;
         if (textureId >= 0) {
             GlStateManager._activeTexture(GL13.GL_TEXTURE0);
             GlStateManager._bindTexture(textureId);
         }
         vertexBuffer.bindForDraw(indexBuffer);
-        RenderSystem.drawElements(pipeline.mode().asGLMode, indexCount, GL11.GL_UNSIGNED_INT);
+        GL11.glDrawElements(pipeline.mode().asGLMode, indexCount, GL11.GL_UNSIGNED_INT,
+                (long) firstIndex * 4L);
     }
 
     private void applyFixedState(RenderPipeline p) {
