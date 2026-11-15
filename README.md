@@ -23,7 +23,6 @@ Works best together with **Voxy SeedGen** — it pre-generates distant terrain f
 - **Smooth animation** — the map scales in and out, wheel zoom anchors on the cursor, Space eases the view onto the player, leaving 3D plays a short rotation back to the flat map, and switching between 2D and 3D is seamless.
 - **Works with your pack** — Fabric 26.2 / 26.1.2 and NeoForge 1.21.1; supports Voxy SeedGen, terrain mods and biome mods; 9 languages.
 - **Looks good and is easy to tune** — seven palettes (default: the 200-colour **Block colours** material palette), contours, hillshade, water-depth shading, biome borders and labels, a right-click menu (copy / teleport / export PNG), per-world memory, and an in-game config screen where every option is explained.
-- **Plays well with your minimap** — Xaero's Minimap waypoints are drawn on the 2D and 3D map, and the right-click menu can open Xaero's own "add waypoint" screen with the coordinate pre-filled; a session player track shows the route you walked; the game HUD is hidden while the map is open (configurable).
 
 ## Screenshots
 
@@ -153,7 +152,6 @@ MIT — see [LICENSE](LICENSE). Icon and screenshots © Tsutsutsuu.
 - **动画顺滑** —— 开关图有缩放动画、滚轮以鼠标为锚点平滑缩放、空格缓动定位到玩家、退出 3D 时短暂旋转回平面地图，2D 模式和 3D 模式之间无缝切换。
 - **兼容你的整合包** —— Fabric 26.2 / 26.1.2 与 NeoForge 1.21.1 都能用；支持 Voxy SeedGen、地形模组和群系模组；9 种语言。
 - **好看也好调** —— 7 套配色（默认：**方块颜色**的 200 色材质色表）、等高线、山体阴影、水深着色、群系边界与标签、右键菜单（复制 / 传送 / 导出 PNG）、每个世界独立记忆，以及每项都有说明的游戏内配置屏。
-- **和小地图配合** —— 直接显示 Xaero's Minimap 的路径点，右键还能打开 Xaero 自己的「添加路径点」窗口（坐标已按位置预填）；本次游戏内记录走过的轨迹；开图时自动隐藏游戏 HUD（可关）。
 
 ## 截图
 
