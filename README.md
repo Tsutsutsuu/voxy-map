@@ -93,7 +93,7 @@ Using the **Tectonic mod**'s "i use voxy btw" preset terrain, Voxy SeedGen dista
 - **9 languages**: English, 简体中文, 繁體中文, 日本語, Русский, Deutsch, Français, Español, Português (BR); all text is translatable, so resource packs can override or add languages.
 - **Terrain mods**: the sea level and colour range are read from the world's actual data, so custom terrain keeps the right coastline and colour spread (the screenshots use Tectonic terrain).
 - **Biome mods**: biome names and borders come from the data stored for the world, and modded biomes follow the game language.
-- **Xaero's Minimap (optional)**: waypoints are read from the minimap mod (26.6.2 for 26.2, ≥26.6.0 for 1.21.1); without it the map works exactly as before.
+- **Xaero's Minimap (optional)**: reads waypoints from Minimap, and lets you add one from Voxy Map's right-click menu.
 - Client-side only — nothing needs to be installed on the server.
 
 ## Configuration
@@ -223,7 +223,7 @@ MIT — see [LICENSE](LICENSE). Icon and screenshots © Tsutsutsuu.
 - **9 种语言**：English、简体中文、繁體中文、日本語、Русский、Deutsch、Français、Español、Português (BR)；所有文本都可翻译，资源包可以覆盖或新增语言。
 - **地形模组**：海平面与高度色带都按世界实际数据来，自定义地形也能保持正确的海岸线和配色层次（截图使用 Tectonic 地形）。
 - **群系模组**：群系名称与边界来自世界存下的数据，模组群系会跟随游戏语言显示。
-- **Xaero's Minimap（可选）**：从 minimap 读取路径点（26.2 用 26.6.2，1.21.1 用 ≥26.6.0），不装不影响其它功能。
+- **Xaero's Minimap（可选）**：从 Minimap 读取路径点，在 Voxy Map 中右键添加路径点。
 - 纯客户端模组，不需要安装在服务端。
 
 ## 配置
