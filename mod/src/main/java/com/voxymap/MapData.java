@@ -28,6 +28,7 @@ import java.util.Map;
 import java.util.List;
 import java.util.Properties;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -148,6 +149,13 @@ public final class MapData {
     private volatile long tileResyncAtMs;
     /** a live section arrived after the last rescan: the source index is known to be stale */
     private volatile boolean tileRescanNeeded;
+    /**
+     * Tiles touched while the map was closed (or before the mapping table was ready). Only tile
+     * keys are stored; the voxels are not copied. Bounded because a long session must not grow.
+     */
+    private static final int MAX_PENDING_DIRTY_TILES = 8_192;
+    private final Set<Long> pendingDirtyTiles = ConcurrentHashMap.newKeySet();
+    private volatile boolean pendingDirtyOverflow;
     private volatile long lastTileRescanMs;
     private long lastTileCacheSaveMs;
     private volatile long lastLiveSectionMs;
@@ -1327,20 +1335,15 @@ public final class MapData {
         if (isTile2DMode()) {
             // The 2D map has no global refresh lane. A manual refresh drops the in-memory tiles;
             // they are rebuilt from the per-tile cache / Voxy storage on the next frame.
-            ensureWaterIdsAsync();
-            LiveTileStore store = ensure2DStore();
+            ensure2DStore();
             if (forceReload) {
-                // A manual refresh must not alternate between an old .vxt cache and freshly
-                // decoded storage: clear the cache and rebuild only from the authoritative DB.
-                store.dropAllTiles(false);
-                store.clearCacheFiles();
-                // invalidateSourceIndex() also reopens the read-only DB handle, otherwise the
-                // rescan below would only ever see the data that existed when the map opened.
-                store.invalidateSourceIndex();
-                // SeedGen may keep writing after the refresh: keep the periodic rescan alive.
-                tileRescanNeeded = true;
-                lastTileRescanMs = System.currentTimeMillis();
-                tileResyncAtMs = System.currentTimeMillis() + 4_000L;
+                // Voxy may have appended id_mappings after the map first opened. Reload the table
+                // first; the completion callback then drops the stale tiles/caches and schedules
+                // the rescan. Dropping them here would rebuild with the same stale table and leave
+                // the grey FALLBACK pixels in place.
+                ensureWaterIdsAsync(true, true);
+            } else {
+                ensureWaterIdsAsync();
             }
             return;
         }
@@ -2299,8 +2302,11 @@ public final class MapData {
         cancelActiveRefresh();
         if (isTile2DMode()) {
             // the unified 2D path never waits for a global snapshot/colour build
-            ensureWaterIdsAsync();
             ensure2DStore();
+            // Reload mappings first; the completion callback refreshes the recorded dirty tiles
+            // through the source path, so no live section is decoded with a stale table.
+            ensureWaterIdsAsync(true, false);
+            if (waterIdsLoaded) processPendingDirtyTiles();
             return;
         }
         if (needsWorldReload()) dropSnapshotForWorldChange();
@@ -2534,6 +2540,16 @@ public final class MapData {
             ensureWaterIdsAsync();
             LiveTileStore store = ensure2DStore();
             long now = System.currentTimeMillis();
+            if (tileRescanNeeded) {
+                // A live section only marks the index dirty; do not let a previous long scan-cost
+                // backoff (up to 60 s) postpone the rescan that would actually show the new data.
+                // Pace it from the last scan cost, but cap the wait so the map feels live.
+                long scanMs = store.sourceIndexScanMs();
+                long delay = Math.max(3_000L, Math.min(15_000L, scanMs * 2L));
+                if (tileResyncAtMs == 0L || tileResyncAtMs > now + delay) {
+                    tileResyncAtMs = now + delay;
+                }
+            }
             if (tileResyncAtMs > 0 && now >= tileResyncAtMs) {
                 // The source index is a snapshot of a read-only RocksDB handle and does not see
                 // sections written after it was opened. Rescanning therefore reopens the handle
@@ -3822,10 +3838,24 @@ public final class MapData {
 
     /** Loads the Voxy liquid id set without building the global Snapshot (needed by live tiles). */
     public void ensureWaterIdsAsync() {
-        if (waterIdsLoaded || waterIdsLoading) return;
+        ensureWaterIdsAsync(false, false);
+    }
+
+    /**
+     * @param force re-read {@code id_mappings} even when it was loaded before. Voxy appends mappings
+     *              for block states it meets after the map first opened; a refresh has to pick those
+     *              up, otherwise columns decoded with the old table keep slot 0 (FALLBACK grey).
+     * @param dropAll discard every tile/cache after the scan (manual refresh); when false the old
+     *                tiles stay visible and only the recorded dirty tiles are re-queried.
+     */
+    private void ensureWaterIdsAsync(boolean force, boolean dropAll) {
+        if (waterIdsLoading) return;
+        if (waterIdsLoaded && !force) return;
+        if (force) waterIdsLoaded = false;
         Path storage = findStorage();
         if (storage == null) return;
         waterIdsLoading = true;
+        final boolean drop = dropAll;
         loader.submit(() -> {
             List<Object> handles = new ArrayList<>();
             Object db = null;
@@ -3847,14 +3877,20 @@ public final class MapData {
                         Minecraft.getInstance().execute(() -> {
                             LiveTileStore store = liveTiles;
                             if (store != null) {
-                                if (!hadWater) {
-                                    // In-memory tiles created before the liquid ids were known are dry;
-                                    // drop them, but keep the .vxt files: any cached file was written
-                                    // after cacheReady=true, so it already has correct water data.
+                                if (drop || !hadWater) {
+                                    // In-memory tiles created before the liquid ids/mapping were
+                                    // known are dry and/or grey; drop them. For a manual refresh
+                                    // also discard .vxt files and the source index, since both were
+                                    // decoded with the stale table.
                                     store.dropAllTiles(false);
+                                    if (drop) {
+                                        store.clearCacheFiles();
+                                        store.invalidateSourceIndex();
+                                    }
                                 }
                                 store.setCacheReady(true);
                             }
+                            if (mapOpen) processPendingDirtyTiles();
                         });
                     }
                 }
@@ -3865,6 +3901,66 @@ public final class MapData {
                 RocksBridge.close(db);
                 waterIdsLoading = false;
             }
+        });
+    }
+
+    /** True once the mapping/biome scan has completed and live sections can be decoded safely. */
+    public boolean isLiveDecodeReady() {
+        return waterIdsLoaded;
+    }
+
+    /**
+     * Records a changed section as dirty tiles. Called from Voxy's worker while the map is closed or
+     * before the mapping scan finished; only tile keys are kept, never voxel data.
+     */
+    public void noteDirtySection(long key) {
+        if (pendingDirtyOverflow) return;
+        int lvl = (int) ((key >>> 60) & 0xF);
+        int scale = 1 << lvl;
+        int sx = (int) ((key << 36) >> 40);
+        int sz = (int) ((key << 12) >> 40);
+        int pb = effectivePixelBlocks();
+        long wx0 = (long) sx * 32 * scale;
+        long wz0 = (long) sz * 32 * scale;
+        int px0 = (int) Math.floorDiv(wx0, pb);
+        int pz0 = (int) Math.floorDiv(wz0, pb);
+        int px1 = (int) Math.floorDiv(wx0 + 32L * scale - 1, pb);
+        int pz1 = (int) Math.floorDiv(wz0 + 32L * scale - 1, pb);
+        int tx0 = Math.floorDiv(px0, LiveTileStore.TILE_PIXELS);
+        int tz0 = Math.floorDiv(pz0, LiveTileStore.TILE_PIXELS);
+        int tx1 = Math.floorDiv(px1, LiveTileStore.TILE_PIXELS);
+        int tz1 = Math.floorDiv(pz1, LiveTileStore.TILE_PIXELS);
+        for (int tz = tz0; tz <= tz1; tz++) {
+            for (int tx = tx0; tx <= tx1; tx++) {
+                if (pendingDirtyTiles.size() >= MAX_PENDING_DIRTY_TILES) {
+                    pendingDirtyOverflow = true;
+                    pendingDirtyTiles.clear();
+                    return;
+                }
+                pendingDirtyTiles.add(((long) tx << 32) | (tz & 0xFFFFFFFFL));
+            }
+        }
+    }
+
+    private void processPendingDirtyTiles() {
+        if (!mapOpen || !isTile2DMode() || !waterIdsLoaded) return;
+        if (pendingDirtyTiles.isEmpty() && !pendingDirtyOverflow) return;
+        LiveTileStore store = ensure2DStore();
+        loader.submit(() -> {
+            if (!mapOpen || liveTiles != store) return;
+            boolean overflow = pendingDirtyOverflow;
+            pendingDirtyOverflow = false;
+            Long[] tiles = pendingDirtyTiles.toArray(new Long[0]);
+            pendingDirtyTiles.clear();
+            if (tiles.length == 0 && !overflow) return;
+            store.invalidateSourceIndex();
+            if (overflow) {
+                store.markAllSourceUnfilled();
+            } else {
+                store.markTilesForSourceRefresh(tiles);
+            }
+            tileRescanNeeded = true;
+            tileResyncAtMs = 0L;
         });
     }
 
@@ -3904,6 +4000,8 @@ public final class MapData {
         lastTileRescanMs = 0L;
         waterIdsLoaded = false;
         waterIdsCache = Set.of();
+        pendingDirtyTiles.clear();
+        pendingDirtyOverflow = false;
         if (current != null) current.dispose();
     }
     /** Build the 1-bit biome boundary mask + labels on the loader thread (overlay only). */

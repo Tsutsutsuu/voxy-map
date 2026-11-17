@@ -55,8 +55,11 @@ public final class LiveTileStore {
      * so cached pixel slots from v13 point at the wrong colours.
      * 15: palette v8 adds the dry-foliage tint class (leaf litter) and fixes surface-biome
      * attribution, so cached pixels from v14 would still show the wrong biome/leaf colour.
+     * 16: a tile could be decoded while {@code id_mappings} did not yet contain a newly discovered
+     * block state; its slot stayed 0 (FALLBACK grey) forever. Mappings are re-read on refresh, and
+     * the old .vxt files must not be reused.
      */
-    private static final int CACHE_VERSION = 16;
+    private static final int CACHE_VERSION = 17;
     private static final ExecutorService CACHE_IO = Executors.newFixedThreadPool(2, r -> {
         Thread t = new Thread(r, "voxymap-tile-cache");
         t.setDaemon(true);
@@ -85,6 +88,14 @@ public final class LiveTileStore {
         volatile int seedEpoch = -1;
         /** true once the whole tile has been filled from cache/Voxy storage (not just live sections) */
         volatile boolean sourceFilled;
+        /**
+         * The source index was rebuilt after this tile was filled. The tile keeps its current pixels
+         * and texture (so it never turns black), but the next visible pass re-queries storage and
+         * lets {@link #fillMissing} replace coarser pixels with finer ones.
+         */
+        volatile boolean sourceStale;
+        /** Source refresh requested for this tile (closed-map/live dirty): equal-LOD fills may win. */
+        volatile boolean forceSourceReplace;
         /** true when this tile came from the complete .vxt cache (skip resync source scans) */
         volatile boolean fromCache;
         /** true when the on-disk .vxt file no longer reflects this tile's pixels */
@@ -759,12 +770,27 @@ public final class LiveTileStore {
         // have them now, so negative results must be re-probed instead of freezing the map edge.
         sourceEmpty.clear();
         for (LiveTile tile : tiles.values()) {
-            // Cached tiles are already complete; re-reading Voxy storage for them defeats the
-            // purpose of the .vxt cache. Manual refresh still forces a full source rebuild.
-            // Tiles that already have a colour/texture also keep it while the new index is
-            // scanned: invalidating them here made every resync cancel the in-flight colour queue
-            // and temporarily showed black tile rectangles during loading.
-            if (!tile.fromCache && tile.rgb == null) tile.sourceFilled = false;
+            if (tile.fromCache) continue;
+            // Keep sourceFilled and the current rgb/texture: a tile that is already on screen must
+            // stay drawable while the new index is scanned. sourceStale makes the next visible pass
+            // re-query storage, so a coarse tile refined by the new index is replaced in place
+            // instead of staying coarse until a manual refresh.
+            tile.sourceStale = true;
+            if (tile.rgb == null) tile.sourceFilled = false;
+        }
+    }
+
+    /**
+     * Marks only the given tiles for a source re-query. Used by the closed-map dirty set: unlike
+     * {@link #markAllSourceUnfilled()} this does not touch unrelated tiles or the .vxt cache.
+     */
+    public void markTilesForSourceRefresh(Long[] tileKeys) {
+        for (Long tileKey : tileKeys) {
+            if (tileKey == null) continue;
+            LiveTile tile = tiles.get(tileKey);
+            if (tile == null) continue; // not resident yet: the next source request uses the new index
+            tile.sourceStale = true;
+            tile.forceSourceReplace = true;
         }
     }
 
@@ -822,13 +848,21 @@ public final class LiveTileStore {
      */
     private void requestSourceFill(int tx, int tz, LiveTile tile) {
         VoxyTileSource src = source;
-        if (tile.sourceFilled) return;
+        if (tile.sourceFilled && !tile.sourceStale) return;
         if (src == null) {
             tile.sourceFilled = true;
+            tile.sourceStale = false;
             return;
         }
         long key = key(tx, tz);
-        if (sourcePending.contains(key) || sourceEmpty.contains(key)) return;
+        if (sourcePending.contains(key)) return;
+        if (sourceEmpty.contains(key)) {
+            // The current index proved this tile empty; retrying every visible frame would be pure
+            // overhead. The next rescan clears sourceEmpty and a live event marks it stale again.
+            tile.sourceStale = false;
+            tile.forceSourceReplace = false;
+            return;
+        }
         if (sourceFillRequestsThisFrame.get() >= 48) return;
         sourceFillRequestsThisFrame.incrementAndGet();
         sourcePending.add(key);
@@ -866,7 +900,11 @@ public final class LiveTileStore {
                 return;
             }
             current.sourceFilled = true;
-            if (pixels == null) return;
+            current.sourceStale = false;
+            if (pixels == null) {
+                current.forceSourceReplace = false;
+                return;
+            }
             fillMissing(current, pixels);
             scheduleSave(current);
         });
@@ -874,18 +912,22 @@ public final class LiveTileStore {
 
     private void fillMissing(LiveTile tile, long[] pixels) {
         boolean changed = false;
+        boolean force = tile.forceSourceReplace;
         for (int i = 0; i < tile.pixels.length; i++) {
             long old = tile.pixels[i];
             long src = pixels[i];
             if (src == VoxyMerge.LONG_EMPTY) continue;
-            if (old == VoxyMerge.LONG_EMPTY || detailLevel(src) < detailLevel(old)) {
+            if (old == VoxyMerge.LONG_EMPTY || detailLevel(src) < detailLevel(old)
+                    || (force && detailLevel(src) == detailLevel(old))) {
                 // Replace, not just fill: a live event may have created the pixel from a coarse
                 // LOD, and leaving it would keep a rectangular coarse-height step even though the
-                // storage tile has a much finer sample for the same column.
+                // storage tile has a much finer sample for the same column. For a dirty tile the
+                // source is authoritative even at the same LOD.
                 tile.pixels[i] = src;
                 changed = true;
             }
         }
+        tile.forceSourceReplace = false;
         if (changed) {
             tile.liveDirty = true;
             tile.version++;
@@ -1022,7 +1064,7 @@ public final class LiveTileStore {
         LiveTile existing = tiles.get(key(tx, tz));
         if (existing != null) {
             existing.lastAccessFrame = textureFrame;
-            if (!existing.sourceFilled) requestSourceFill(tx, tz, existing);
+            if (!existing.sourceFilled || existing.sourceStale) requestSourceFill(tx, tz, existing);
             if (existing.seedEpoch < 0 && seedPixels != null && seedRgb != null
                     && seedCreatesThisFrame.get() < 32) {
                 seedCreatesThisFrame.incrementAndGet();

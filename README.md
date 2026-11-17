@@ -94,6 +94,7 @@ Using the **Tectonic mod**'s "i use voxy btw" preset terrain, Voxy SeedGen dista
 - **Terrain mods**: the sea level and colour range are read from the world's actual data, so custom terrain keeps the right coastline and colour spread (the screenshots use Tectonic terrain).
 - **Biome mods**: biome names and borders come from the data stored for the world, and modded biomes follow the game language.
 - **Xaero's Minimap (optional)**: reads waypoints from Minimap, and lets you add one from Voxy Map's right-click menu.
+- **NeoForge 1.21.1 + Roxy**: use **Voxy SeedGen 0.3.0**, not 0.3.1. SeedGen 0.3.1 targets native Voxy 0.6.0; under Roxy's translated Voxy 0.2.16 its mixins read `sectionRenderDistance` as `int` (Roxy exposes `float`) and expect different `saveSection`/`Logger` signatures, so loading terrain crashes. SeedGen 0.3.0 works with Roxy + Voxy 0.2.16.
 - Client-side only — nothing needs to be installed on the server.
 
 ## Configuration
@@ -105,6 +106,7 @@ The complete option list is in **[TECHNICAL.md](TECHNICAL.md#config-reference)**
 ## FAQ
 
 - **The map only covers part of the world / the edges are black?** Voxy is missing (NeoForge also needs Roxy), or SeedGen is not installed and the map only covers what Voxy actually stored. Black edges mean "no data", not a rendering error.
+- **Stuck on "loading terrain" on NeoForge 1.21.1?** If Voxy SeedGen 0.3.1 is installed alongside Roxy, replace it with **Voxy SeedGen 0.3.0**: 0.3.1 targets native Voxy 0.6.0 and crashes under Roxy's translated Voxy 0.2.16. Also make sure Voxy, Roxy and Sodium are all present.
 - **The map looks wrong right after opening?** It corrects itself once loading finishes; if it still looks wrong, click **Refresh** in the bottom-right corner.
 - **Frame rate feels low?** Keep `skipWorldRender` on (it is by default); turning off the biome overlay or using a coarser map scale also helps.
 - **Only part of the map's tiles show up?** This is most likely the VRAM budget; adjust it in the config screen to match your GPU's memory.
@@ -224,6 +226,7 @@ MIT — see [LICENSE](LICENSE). Icon and screenshots © Tsutsutsuu.
 - **地形模组**：海平面与高度色带都按世界实际数据来，自定义地形也能保持正确的海岸线和配色层次（截图使用 Tectonic 地形）。
 - **群系模组**：群系名称与边界来自世界存下的数据，模组群系会跟随游戏语言显示。
 - **Xaero's Minimap（可选）**：从 Minimap 读取路径点，在 Voxy Map 中右键添加路径点。
+- **NeoForge 1.21.1 + Roxy**：请使用 **Voxy SeedGen 0.3.0**，不要用 0.3.1。0.3.1 面向原生 Voxy 0.6.0；在 Roxy 翻译的 Voxy 0.2.16 下，它的 mixin 按 `int` 读取 `sectionRenderDistance`（Roxy 为 `float`），且 `saveSection`/`Logger` 签名也不同，加载地形会崩溃。0.3.0 与 Roxy + Voxy 0.2.16 可用。
 - 纯客户端模组，不需要安装在服务端。
 
 ## 配置
@@ -235,6 +238,7 @@ MIT — see [LICENSE](LICENSE). Icon and screenshots © Tsutsutsuu.
 ## 常见问题
 
 - **地图只覆盖了一部分 / 边缘是黑的？** 没装 Voxy（NeoForge 还需要 Roxy），或者没装 SeedGen，地图只覆盖 Voxy 已存下的数据——黑边是「没有数据」，不是渲染错误。
+- **NeoForge 1.21.1 卡在「加载地形」？** 如果同时装了 Roxy 和 Voxy SeedGen 0.3.1，请把 SeedGen 换成 **0.3.0**：0.3.1 面向原生 Voxy 0.6.0，在 Roxy 翻译的 Voxy 0.2.16 下会崩溃。也确认 Voxy、Roxy、Sodium 都已安装。
 - **刚打开地图地图有错误？某些区块加载不出来？** 等加载完之后会自动修正，如果还是没修正，点右下角刷新就好。
 - **帧率偏低？** 保持 `skipWorldRender` 开启（默认就是开）；关闭群系叠加、把地图比例调粗也能减负。
 - **只能显示一部分地图瓦片？** 大概率是显存预算的限制原因，可以根据自己显存容量在配置界面调整。

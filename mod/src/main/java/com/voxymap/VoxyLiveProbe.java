@@ -311,11 +311,19 @@ public final class VoxyLiveProbe {
         if (engine == null) return;
         SectionConsumer sink = consumer;
         boolean debug = VoxyMapConfig.DEBUG_VOXY_EVENTS.get() || RefreshDebug.enabled();
+        boolean mapOpen = MapData.INSTANCE.isMapOpen();
         boolean live = sink != null && VoxyMapConfig.LIVE_TILES.get()
-                && MapData.INSTANCE.hasLiveStore() && MapData.INSTANCE.isMapOpen();
-        if (!debug && !live) {
-            MapPerf.INSTANCE.liveClosedSkipped.increment();
-            return; // map closed: drain the coalesced queue without copying sections
+                && MapData.INSTANCE.hasLiveStore() && mapOpen;
+        if (!mapOpen || (live && !MapData.INSTANCE.isLiveDecodeReady())) {
+            // Record the tile, not the 256 KB voxel payload. The map later refreshes those tiles
+            // through the same source path as a manual refresh, with a complete mapping table.
+            if (sink != null && VoxyMapConfig.LIVE_TILES.get()) {
+                MapData.INSTANCE.noteDirtySection(key);
+            }
+            if (!debug) {
+                MapPerf.INSTANCE.liveClosedSkipped.increment();
+                return;
+            }
         }
         Object section = null;
         long t0 = System.nanoTime();
