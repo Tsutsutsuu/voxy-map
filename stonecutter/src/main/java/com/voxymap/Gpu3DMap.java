@@ -108,6 +108,18 @@ public final class Gpu3DMap {
     private static GpuBuffer trackIbo;
     private static int trackIndexCount;
     private static int trackBuiltVersion = -1;
+    /**
+     * Rebuild throttle: TrackOverlay's version advances every sample (2 blocks / 4 s), and rebuilding
+     * the whole 20k-point ribbon that often is pure waste. Rebuild after 8 new samples or 1 s,
+     * whichever comes first; a clear (count drop) or a toggle always rebuilds immediately.
+     */
+    private static int trackBuiltCount;
+    private static long trackBuiltMs;
+    private static final int TRACK_REBUILD_POINTS = 8;
+    private static final long TRACK_REBUILD_MS = 1000L;
+    /** Reused staging memory; sized once for MAX_POINTS and never allocated per rebuild. */
+    private static ByteBuffer trackStagingVb;
+    private static ByteBuffer trackStagingIb;
     /** Half the ribbon width in world blocks; the track is a thin path, not a road. */
     private static final double TRACK_HALF_WIDTH = 1.1;
     /**
@@ -1500,15 +1512,32 @@ public final class Gpu3DMap {
     private static void ensureTrackMesh() {
         int want = TrackOverlay.enabled() ? TrackOverlay.version() : 0;
         if (want == trackBuiltVersion) return;
+        int n = TrackOverlay.count();
+        long now = System.currentTimeMillis();
+        boolean cleared = !TrackOverlay.enabled() || n < trackBuiltCount;
+        if (!cleared && trackIndexCount > 0 && n - trackBuiltCount < TRACK_REBUILD_POINTS
+                && now - trackBuiltMs < TRACK_REBUILD_MS) {
+            // Keep the previous geometry until the next threshold instead of rebuilding for every
+            // single 2-block sample.
+            return;
+        }
         trackBuiltVersion = want;
+        trackBuiltCount = n;
+        trackBuiltMs = now;
         retireTrackBuffers();
         trackIndexCount = 0;
-        int n = TrackOverlay.count();
         if (!TrackOverlay.enabled() || n < 2) return;
         double vscale = VoxyMapConfig.VERTICAL_SCALE_3D.get();
-        int maxQuads = n - 1;
-        ByteBuffer vb = ByteBuffer.allocateDirect(maxQuads * 4 * 16).order(ByteOrder.nativeOrder());
-        ByteBuffer ib = ByteBuffer.allocateDirect(maxQuads * 6 * 4).order(ByteOrder.nativeOrder());
+        if (trackStagingVb == null) {
+            trackStagingVb = ByteBuffer.allocateDirect(TrackOverlay.MAX_POINTS * 4 * 16)
+                    .order(ByteOrder.nativeOrder());
+            trackStagingIb = ByteBuffer.allocateDirect(TrackOverlay.MAX_POINTS * 6 * 4)
+                    .order(ByteOrder.nativeOrder());
+        }
+        ByteBuffer vb = trackStagingVb;
+        ByteBuffer ib = trackStagingIb;
+        vb.clear();
+        ib.clear();
         int vi = 0;
         int ii = 0;
         for (int i = 1; i < n; i++) {
@@ -1811,6 +1840,10 @@ public final class Gpu3DMap {
         }
         trackIndexCount = 0;
         trackBuiltVersion = -1;
+        trackBuiltCount = 0;
+        trackBuiltMs = 0L;
+        trackStagingVb = null;
+        trackStagingIb = null;
         arrowIndexCount = 0;
         if (projection != null) {
             projection.close();

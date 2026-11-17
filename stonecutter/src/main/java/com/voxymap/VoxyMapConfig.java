@@ -120,6 +120,8 @@ public final class VoxyMapConfig {
     public static final Value<Boolean> SHOW_HINT = new Value<>("showHint", true);
     /** Hide the game HUD (hotbar / chat / overlays) while the map is open, exactly like F1. */
     public static final Value<Boolean> HIDE_HUD = new Value<>("hideHud", true);
+    /** Show the early-development / feedback notice when the map opens. */
+    public static final Value<Boolean> SHOW_START_NOTICE = new Value<>("showStartNotice", true);
 
     // ---- 3D map view ----
     public static final Value<Double> VERTICAL_SCALE_3D = new Value<>("verticalScale3d", 1.0);

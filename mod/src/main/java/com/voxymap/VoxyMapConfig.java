@@ -48,6 +48,7 @@ public final class VoxyMapConfig {
     public static final Value<Boolean> SHOW_COORDINATES;
     public static final Value<Boolean> SHOW_HINT;
     public static final Value<Boolean> HIDE_HUD;
+    public static final Value<Boolean> SHOW_START_NOTICE;
     public static final Value<Boolean> TELEPORT_ENABLED;
     public static final Value<Double> DEFAULT_ZOOM;
     public static final Value<Boolean> REMEMBER_ZOOM;
@@ -147,6 +148,8 @@ public final class VoxyMapConfig {
                 .define("showHint", true), true);
         HIDE_HUD = new Value<>(b.comment("Hide the game HUD (hotbar / chat / overlays) while the map is open, exactly like F1")
                 .define("hideHud", true), true);
+        SHOW_START_NOTICE = new Value<>(b.comment("Show the early-development / feedback notice when the map opens")
+                .define("showStartNotice", true), true);
         TELEPORT_ENABLED = new Value<>(b.comment("Offer the teleport entry in the right-click menu")
                 .define("teleportEnabled", true), true);
         DEFAULT_ZOOM = new Value<>(b.comment("Initial map zoom for new worlds (or when rememberZoom is off)")

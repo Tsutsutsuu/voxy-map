@@ -35,6 +35,14 @@ public final class GuiGraphicsExtractor {
         return graphics;
     }
 
+    /**
+     * Flushes every pending GUI batch. 1.21.1 batches fills and text separately and flushes them in
+     * render-type order, so a modal drawn later can otherwise end up underneath earlier text.
+     */
+    public void flush() {
+        graphics.flush();
+    }
+
     public Pose2D pose() {
         return pose;
     }
@@ -52,6 +60,7 @@ public final class GuiGraphicsExtractor {
     }
 
     public void text(Font font, String str, int x, int y, int color, boolean dropShadow) {
+        color = clampTextAlpha(color);
         if (str == null || alpha(color) == 0) return;
         graphics.drawString(font, str, x, y, color, dropShadow);
     }
@@ -61,6 +70,7 @@ public final class GuiGraphicsExtractor {
     }
 
     public void text(Font font, Component str, int x, int y, int color, boolean dropShadow) {
+        color = clampTextAlpha(color);
         if (str == null || alpha(color) == 0) return;
         graphics.drawString(font, str, x, y, color, dropShadow);
     }
@@ -70,23 +80,40 @@ public final class GuiGraphicsExtractor {
     }
 
     public void text(Font font, FormattedCharSequence str, int x, int y, int color, boolean dropShadow) {
+        color = clampTextAlpha(color);
         if (str == null || alpha(color) == 0) return;
         graphics.drawString(font, str, x, y, color, dropShadow);
     }
 
     public void centeredText(Font font, String str, int x, int y, int color) {
+        color = clampTextAlpha(color);
         if (str == null || alpha(color) == 0) return;
         graphics.drawCenteredString(font, str, x, y, color);
     }
 
     public void centeredText(Font font, Component text, int x, int y, int color) {
+        color = clampTextAlpha(color);
         if (text == null || alpha(color) == 0) return;
         graphics.drawCenteredString(font, text, x, y, color);
     }
 
     public void centeredText(Font font, FormattedCharSequence text, int x, int y, int color) {
+        color = clampTextAlpha(color);
         if (text == null || alpha(color) == 0) return;
         graphics.drawCenteredString(font, text, x, y, color);
+    }
+
+    /**
+     * 1.21.1's {@code Font} forces any text color with an alpha below 4 to fully opaque
+     * ({@code adjustColor}: {@code (color & 0xFC000000) == 0 ? color | 0xFF000000 : color}). During a
+     * fade-in this makes the text flash at full brightness for one frame. 26.2 has no such rewrite,
+     * which is why the flicker only showed up on the NeoForge build. Clamp to the smallest alpha the
+     * renderer keeps, so the fade stays smooth.
+     */
+    private static int clampTextAlpha(int color) {
+        int a = alpha(color);
+        if (a == 0 || a >= 4) return color;
+        return (color & 0x00FFFFFF) | 0x04000000;
     }
 
     // ---------------------------------------------------------------- blit

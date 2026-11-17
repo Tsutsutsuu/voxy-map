@@ -137,6 +137,10 @@ public class MapScreen extends Screen {
     private long lastAnimNs;
     private float frameDt = 0.016f;
     private boolean lodWarning;
+    /** Early-development notice shown below the map on each open until "don't show again". */
+    private boolean startNotice;
+    /** "OK" only silences the notice for this game session; it comes back after a restart. */
+    private static boolean startNoticeDismissedThisSession;
     private boolean debugPanel;
     /** Map-scale slider: dragging only previews, the rebuild starts on mouse release. */
     private boolean sliderDragging;
@@ -358,6 +362,7 @@ public class MapScreen extends Screen {
             // the map only knows the overworld LOD storage: nothing to load here
             return;
         }
+        startNotice = VoxyMapConfig.SHOW_START_NOTICE.get() && !startNoticeDismissedThisSession;
         // A world created minutes ago is still being filled by SeedGen: show the dialog and wait
         // instead of building a nearly empty map. Either the initial delay expires (MapData.tick)
         // or the dialog's "refresh now" button starts the build.
@@ -429,6 +434,16 @@ public class MapScreen extends Screen {
     public void renderBackground(GuiGraphics gg, int mouseX, int mouseY, float partialTick) {
         // 3D 视图下背景由 GPU pass 自己清屏，不画 vanilla 背景（与 26.2 跳过 extractBackground 等价）
         if (!view3d) super.renderBackground(gg, mouseX, mouseY, partialTick);
+    }
+
+    /**
+     * True while a modal dialog owns the screen. The map's text/button layers must not be drawn
+     * underneath it: 1.21.1 batches text after fills, so a later dialog fill does not guarantee that
+     * earlier text stays below it. Keep this the single predicate used by every "skip the upper
+     * layers" check, so a new modal cannot be forgotten.
+     */
+    private boolean modalOpen() {
+        return lodWarning || startNotice || MapData.INSTANCE.oversizePixels > 0;
     }
 
     @Override
@@ -522,11 +537,11 @@ public class MapScreen extends Screen {
         // RenderType order rather than call order, so text can survive a later fill. While the
         // modal dialog is open, skip every textual/interactive layer above the map: that is the
         // only way to guarantee the dialog covers them.
-        if (!lodWarning && debugPanel) {
+        if (!modalOpen() && debugPanel) {
             // the debug panel is a modal layer of its own: skip the text/button layers for the same
             // batch-ordering reason as the dialog
             drawDebugPanel(g, data, mouseX, mouseY);
-        } else if (!lodWarning) {
+        } else if (!modalOpen()) {
             // labels only when the map is at or above point-to-point, otherwise they cost more than they show
             if (!view3d && data.isBiomeOverlay() && mapZoomDevice() >= 1.0) {
                 collectLabelBlockers(mouseX, mouseY);
@@ -549,6 +564,8 @@ public class MapScreen extends Screen {
             drawLodWarning(g, mouseX, mouseY);
         } else if (MapData.INSTANCE.oversizePixels > 0) {
             drawOversizeWarning(g, mouseX, mouseY);
+        } else if (startNotice) {
+            drawStartNotice(g, mouseX, mouseY);
         }
         drawNotification(g);
         g.pose().popMatrix();
@@ -1524,16 +1541,27 @@ public class MapScreen extends Screen {
     }
 
     private DialogBox dialogBox() {
-        Component title = Component.translatable("voxymap.ui.lodWarning.title");
-        Component message = Component.translatable("voxymap.ui.lodWarning.message");
-        Component refreshLabel = Component.translatable("voxymap.ui.lodWarning.refreshNow");
-        Component waitLabel = Component.translatable("voxymap.ui.lodWarning.wait");
+        return dialogBox(Component.translatable("voxymap.ui.lodWarning.title"),
+                Component.translatable("voxymap.ui.lodWarning.message"),
+                Component.translatable("voxymap.ui.lodWarning.refreshNow"),
+                Component.translatable("voxymap.ui.lodWarning.wait"));
+    }
+
+    private DialogBox startNoticeBox() {
+        return dialogBox(Component.translatable("voxymap.ui.startNotice.title"),
+                Component.translatable("voxymap.ui.startNotice.message"),
+                Component.translatable("voxymap.ui.startNotice.dontShow"),
+                Component.translatable("voxymap.ui.startNotice.ok"));
+    }
+
+    /** Shared layout for the two-button modal dialogs. */
+    private DialogBox dialogBox(Component title, Component message, Component firstLabel, Component secondLabel) {
         int maxText = Math.max(160, Math.min(width - 80, 640));
         List<FormattedCharSequence> lines = font.split(message, maxText);
         int content = font.width(title);
         for (FormattedCharSequence line : lines) content = Math.max(content, font.width(line));
         int gap = 20;
-        int btnW = Math.max(170, Math.max(font.width(refreshLabel), font.width(waitLabel)) + 20);
+        int btnW = Math.max(120, Math.max(font.width(firstLabel), font.width(secondLabel)) + 20);
         int minWidth = btnW * 2 + gap + 24;
         int w = Math.min(width - 24, Math.max(420, Math.max(content + 48, minWidth)));
         btnW = Math.max(80, Math.min(btnW, (w - 24 - gap) / 2));
@@ -1708,6 +1736,39 @@ public class MapScreen extends Screen {
                 Component.translatable("voxymap.ui.lodWarning.refreshNow"), COL_WARN, mouseX, mouseY);
         drawDialogButton(g, box.secondBtnX(), box.btnY(), box.btnW(), box.btnH(),
                 Component.translatable("voxymap.ui.lodWarning.wait"), COL_ACCENT, mouseX, mouseY);
+    }
+
+    /** Early-development notice with a permanent "don't show again" option. */
+    private void drawStartNotice(GuiGraphicsExtractor g, int mouseX, int mouseY) {
+        DialogBox box = startNoticeBox();
+        g.fill(0, 0, width, height, 0x99000000);
+        g.fill(box.x(), box.y(), box.x() + box.w(), box.y() + box.h(), COL_PANEL_DIALOG);
+        g.fill(box.x(), box.y(), box.x() + box.w(), box.y() + 1, COL_BORDER);
+        g.centeredText(font, Component.translatable("voxymap.ui.startNotice.title"),
+                width / 2, box.y() + 10, COL_ACCENT);
+        int ty = box.y() + 10 + font.lineHeight + 8;
+        for (FormattedCharSequence line : box.lines()) {
+            g.text(font, line, width / 2 - font.width(line) / 2, ty, COL_TEXT);
+            ty += font.lineHeight;
+        }
+        drawDialogButton(g, box.firstBtnX(), box.btnY(), box.btnW(), box.btnH(),
+                Component.translatable("voxymap.ui.startNotice.dontShow"), COL_ACCENT, mouseX, mouseY);
+        drawDialogButton(g, box.secondBtnX(), box.btnY(), box.btnW(), box.btnH(),
+                Component.translatable("voxymap.ui.startNotice.ok"), COL_ACCENT, mouseX, mouseY);
+    }
+
+    private void dismissStartNotice(boolean neverShow) {
+        startNotice = false;
+        startNoticeDismissedThisSession = true;
+        if (neverShow) {
+            VoxyMapConfig.SHOW_START_NOTICE.set(false);
+            VoxyMapConfig.save();
+        }
+    }
+
+    /** Lets the config screen re-arm the notice in the same session after it is switched back on. */
+    public static void resetStartNoticeSession() {
+        startNoticeDismissedThisSession = false;
     }
 
     /** Dialog button: same panel language as the HUD buttons, with a coloured top edge. */
@@ -2192,7 +2253,7 @@ public class MapScreen extends Screen {
         // text batches are drawn after every fill, so a menu/dialog would not cover them: skip the
         // labels (but keep the dots) whenever such a layer is up
         boolean textOk = VoxyMapConfig.XAERO_WAYPOINT_LABELS.get()
-                && contextMenuT <= 0.02f && styleMenuT <= 0.02f && !debugPanel && !lodWarning;
+                && contextMenuT <= 0.02f && styleMenuT <= 0.02f && !debugPanel && !modalOpen();
         double labelZoom = mapZoomDevice();
         for (XaeroWaypoints.Wp wp : waypoints) {
             double sx = width / 2.0 + (wp.x / (double) pb - cx) * mapZoomGui();
@@ -2284,26 +2345,35 @@ public class MapScreen extends Screen {
         int budget = TRACK_FILL_BUDGET;
         int prevX = Integer.MIN_VALUE;
         int prevY = Integer.MIN_VALUE;
-        for (int i = 0; i < n && budget > 0; i++) {
+        int prevIndex = -1;
+        // Newest first: a very long path must never spend the whole fill budget on the oldest part
+        // and leave the player's current position without a trail. Segment starts belong to the
+        // sample they mark, so the pair (i, i+1) is skipped only when i+1 starts a segment.
+        for (int i = n - 1; i >= 0 && budget > 0; i--) {
             double sx = w / 2.0 + (TrackOverlay.x(i) / (double) pb - cx) * zoomPx;
             double sy = h / 2.0 + (TrackOverlay.z(i) / (double) pb - cz) * zoomPx;
             boolean inView = sx > -8 && sx < w + 8 && sy > -8 && sy < h + 8;
-            if (!inView || TrackOverlay.startsSegment(i)) {
+            if (!inView) {
                 prevX = Integer.MIN_VALUE;
-                if (!inView) continue;
+                prevY = Integer.MIN_VALUE;
+                prevIndex = -1;
+                continue;
             }
+            boolean starts = TrackOverlay.startsSegment(i);
+            boolean connect = prevIndex >= 0 && !TrackOverlay.startsSegment(prevIndex);
             int ix = (int) Math.round(sx);
             int iy = (int) Math.round(sy);
-            if (prevX != Integer.MIN_VALUE
+            if (!starts && prevIndex >= 0
                     && Math.abs(ix - prevX) < 2 && Math.abs(iy - prevY) < 2) {
                 continue;
             }
             int argb = (TrackOverlay.alphaAt(i) << 24) | TRACK_RGB;
-            if (prevX != Integer.MIN_VALUE) {
-                budget -= drawTrackSegment(g, prevX, prevY, ix, iy, argb);
+            if (connect) {
+                budget -= drawTrackSegment(g, ix, iy, prevX, prevY, argb);
             }
             prevX = ix;
             prevY = iy;
+            prevIndex = i;
         }
         popPixelSpace(g);
     }
@@ -2430,11 +2500,16 @@ public class MapScreen extends Screen {
     @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
         // 1.21.1: 26.2's KeyEvent is unwrapped into the (keyCode, scanCode, modifiers) parameters.
+        if (startNotice && keyCode == GLFW.GLFW_KEY_ESCAPE) {
+            dismissStartNotice(false);
+            return true;
+        }
         if (keyCode == GLFW.GLFW_KEY_ESCAPE
                 || (VoxyMapMod.openKey != null && VoxyMapMod.openKey.matches(keyCode, scanCode))) {
             onClose();
             return true;
         }
+        if (startNotice) return true;
         if (VoxyMapMod.centerKey != null && VoxyMapMod.centerKey.matches(keyCode, scanCode)) {
             var p = Minecraft.getInstance().player;
             if (p != null) {
@@ -2489,6 +2564,20 @@ public class MapScreen extends Screen {
                 // cancel: close the map screen
                 lodWarning = false;
                 onClose();
+                return true;
+            }
+            return true;
+        }
+        if (startNotice && button == 0) {
+            DialogBox box = startNoticeBox();
+            if (mx >= box.firstBtnX() && mx <= box.firstBtnX() + box.btnW()
+                    && my >= box.btnY() && my <= box.btnY() + box.btnH()) {
+                dismissStartNotice(true);
+                return true;
+            }
+            if (mx >= box.secondBtnX() && mx <= box.secondBtnX() + box.btnW()
+                    && my >= box.btnY() && my <= box.btnY() + box.btnH()) {
+                dismissStartNotice(false);
                 return true;
             }
             return true;
@@ -2687,6 +2776,7 @@ public class MapScreen extends Screen {
     @Override
     public boolean mouseDragged(double mx, double my, int button, double dx, double dy) {
         // 1.21.1: 26.2's MouseButtonEvent is unwrapped into the (mouseX, mouseY, button) parameters.
+        if (startNotice) return true;
         if (pending3dOrbit && !view3d) {
             // continue the same drag as a 3D orbit (seamless: scale matched, looking straight down)
             cancelCenterAnim();
@@ -2804,6 +2894,7 @@ public class MapScreen extends Screen {
     @Override
     public boolean mouseScrolled(double mx, double my, double scrollX, double scrollY) {
         if (!MapData.INSTANCE.isOverworld()) return true;
+        if (startNotice) return true;
         if (scrollY == 0) return false;
         if (view3d && cam3d != null) {
             // the exit animation owns the camera until it finishes

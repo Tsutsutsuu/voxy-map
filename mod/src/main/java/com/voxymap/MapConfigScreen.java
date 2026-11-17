@@ -2,11 +2,18 @@ package com.voxymap;
 
 import net.minecraft.client.Minecraft;
 import com.voxymap.compat.GuiGraphicsExtractor;
+import com.voxymap.compat.GuiPipelines;
+import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
+import net.minecraft.client.gui.components.MultiLineEditBox;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.Util;
+import net.minecraft.util.FormattedCharSequence;
 import org.lwjgl.glfw.GLFW;
 
+import java.net.URI;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -55,9 +62,44 @@ public class MapConfigScreen extends Screen {
     private static final int COL_TEXT = 0xFFE8EAED;
     private static final int COL_DIM = 0xFF8C949E;
 
+    private static final int TAB_GAP = 4;
+    private static final int ABOUT_ICON_SIZE = 48;
+    private static final int ABOUT_AVATAR_SIZE = 24;
+    private static final int ABOUT_LINK_H = 36;
+    private static final int ABOUT_LINK_GAP = 8;
+
+    private static final ResourceLocation TEX_ABOUT_ICON = ResourceLocation.fromNamespaceAndPath("voxymap", "textures/gui/about_icon.png");
+    private static final ResourceLocation TEX_ABOUT_AUTHOR = ResourceLocation.fromNamespaceAndPath("voxymap", "textures/gui/about_author.png");
+    private static final ResourceLocation TEX_PLATFORM_GITHUB = ResourceLocation.fromNamespaceAndPath("voxymap", "textures/gui/platform_github.png");
+    private static final ResourceLocation TEX_PLATFORM_MODRINTH = ResourceLocation.fromNamespaceAndPath("voxymap", "textures/gui/platform_modrinth.png");
+    private static final ResourceLocation TEX_PLATFORM_CURSEFORGE = ResourceLocation.fromNamespaceAndPath("voxymap", "textures/gui/platform_curseforge.png");
+    private static final ResourceLocation TEX_ABOUT_BUG = ResourceLocation.fromNamespaceAndPath("voxymap", "textures/gui/about_bug.png");
+
+    private static final String URL_GITHUB = "https://github.com/Tsutsutsuu/voxy-map";
+    private static final String URL_MODRINTH = "https://modrinth.com/mod/voxy-map";
+    private static final String URL_CURSEFORGE = "https://www.curseforge.com/minecraft/mc-mods/voxy-map";
+    private static final String URL_ISSUES = "https://github.com/Tsutsutsuu/voxy-map/issues";
+    private static final String[] ABOUT_LINK_URLS = {URL_GITHUB, URL_MODRINTH, URL_CURSEFORGE, URL_ISSUES};
+    private static final String[] ABOUT_LINK_KEYS = {
+            "voxymap.about.github", "voxymap.about.modrinth", "voxymap.about.curseforge", "voxymap.about.issues"
+    };
+    private static final ResourceLocation[] ABOUT_LINK_ICONS = {
+            TEX_PLATFORM_GITHUB, TEX_PLATFORM_MODRINTH, TEX_PLATFORM_CURSEFORGE, TEX_PLATFORM_GITHUB
+    };
+
+    /** 1.21.1's MultiLineEditBox always paints its own white border; our panel draws the frame. */
+    private static final class BorderlessEditBox extends MultiLineEditBox {
+        BorderlessEditBox(Font font, int x, int y, int w, int h, Component placeholder, Component narration) {
+            super(font, x, y, w, h, placeholder, narration);
+        }
+
+        @Override
+        protected void renderBackground(GuiGraphics graphics) {
+        }
+    }
+
     private final Screen parent;
-    private final List<Item> items = new ArrayList<>();
-    private final Map<Item, Object> draft = new HashMap<>();
+    private final List<Item> items = new ArrayList<>();    private final Map<Item, Object> draft = new HashMap<>();
     private Group group = Group.GENERAL;
     private int scroll;
     private Item dragging;
@@ -67,10 +109,33 @@ public class MapConfigScreen extends Screen {
     private float lastDt = 0.016f;
     /** real-time stamp of the current tab, so row fades never depend on the tab fade counter */
     private long tabSwitchNs = -1L;
+    /** shared clock for the description marquee; set on the first rendered frame */
+    private long descClockNs;
+    /** overlong help text scrolls at this speed (GUI px/s) with a gap between loops */
+    private static final float DESC_SPEED_PX_S = 60f;
+    private static final int DESC_GAP_PX = 32;
     private float appearT;
     private float tabT;
     private long lastNs;
     private boolean closing;
+    /** seventh pseudo-tab: the About page is not a config group */
+    private boolean aboutTab;
+    private int tabScroll;
+    private int aboutScroll;
+    private int aboutContentHeight = 1;
+    private final int[] aboutLinkY = new int[4];
+    private final int[] aboutLinkX = new int[4];
+    private final int[] aboutLinkW = new int[4];
+    private int feedbackButtonY;
+    /** In-game feedback editor state (opens from the About tab). */
+    private boolean feedbackOpen;
+    private final StringBuilder feedbackText = new StringBuilder();
+    private MultiLineEditBox feedbackInput;
+    private boolean feedbackAttachLog;
+    private boolean feedbackAttachMods = true;
+    private boolean feedbackSending;
+    private String feedbackStatus = "";
+    private static final int FEEDBACK_MAX_CHARS = 1_200;
 
     public MapConfigScreen(Screen parent) {
         super(Component.translatable("voxymap.ui.config"));
@@ -79,6 +144,7 @@ public class MapConfigScreen extends Screen {
         add(Group.GENERAL, "showCoordinates", VoxyMapConfig.SHOW_COORDINATES, 0, 0, null);
         add(Group.GENERAL, "showHint", VoxyMapConfig.SHOW_HINT, 0, 0, null);
         add(Group.GENERAL, "hideHud", VoxyMapConfig.HIDE_HUD, 0, 0, null);
+        add(Group.GENERAL, "showStartNotice", VoxyMapConfig.SHOW_START_NOTICE, 0, 0, null);
         section(Group.GENERAL, "voxymap.config.section.interaction");
         add(Group.GENERAL, "teleportEnabled", VoxyMapConfig.TELEPORT_ENABLED, 0, 0, null);
         add(Group.GENERAL, "defaultZoom", VoxyMapConfig.DEFAULT_ZOOM, 0.04, 8.0, null);
@@ -172,6 +238,40 @@ public class MapConfigScreen extends Screen {
         add(Group.DEBUG, "debugTileTrace", VoxyMapConfig.DEBUG_TILE_TRACE, 0, 0, null);
     }
 
+    @Override
+    protected void init() {
+        super.init();
+        String previous = feedbackInput != null ? feedbackInput.getValue() : "";
+        createFeedbackInput(previous);
+    }
+
+    private void createFeedbackInput(String previous) {
+        FeedbackBox box = feedbackBox();
+        feedbackInput = new BorderlessEditBox(font, box.textX() + 4, box.textY() + 3,
+                box.textW() - 8, box.textH() - 6,
+                Component.translatable("voxymap.feedback.placeholder"),
+                Component.translatable("voxymap.feedback.title"));
+        if (previous != null && !previous.isEmpty()) feedbackInput.setValue(previous);
+        if (feedbackOpen) {
+            feedbackInput.setFocused(true);
+            setFocused(feedbackInput);
+        }
+    }
+
+    private boolean windowWasActive = true;
+
+    @Override
+    public void tick() {
+        super.tick();
+        boolean active = Minecraft.getInstance().isWindowActive();
+        if (active && !windowWasActive && feedbackOpen) {
+            // 1.21.1 can leave the IME attached to a stale edit box after alt-tab; rebuild it with
+            // the same text so composition starts from a clean widget.
+            createFeedbackInput(feedbackInput != null ? feedbackInput.getValue() : "");
+        }
+        windowWasActive = active;
+    }
+
     private void add(Group g, String name, VoxyMapConfig.Value<?> value, double min, double max, String[] options) {
         items.add(new Item(g, name, "voxymap.config.desc." + name, value, min, max, options, false));
     }
@@ -223,11 +323,16 @@ public class MapConfigScreen extends Screen {
 
     private void applyDraft() {
         int oldLodCap = VoxyMapConfig.MAX_LOD_LEVEL.get();
+        boolean oldStartNotice = VoxyMapConfig.SHOW_START_NOTICE.get();
         for (Item it : items) {
             if (it.header()) continue;
             ((VoxyMapConfig.Value<Object>) it.value()).set(draft.get(it));
         }
         VoxyMapConfig.save();
+        if (!oldStartNotice && VoxyMapConfig.SHOW_START_NOTICE.get()) {
+            // re-enabled after a session-level "OK": allow the notice to appear again this session
+            MapScreen.resetStartNoticeSession();
+        }
         Gpu3DMap.reconfigureBuildThreads();
         // Rendering changes must re-colour existing tiles; otherwise the ramp toggle only
         // affects tiles loaded after the config screen closes.
@@ -298,7 +403,18 @@ public class MapConfigScreen extends Screen {
     @Override
     public boolean mouseScrolled(double mx, double my, double scrollX, double scrollY) {
         if (closing) return true;
+        if (feedbackOpen) return true;
         if (scrollY != 0) {
+            int shiftY = (int) Math.round((1f - appearT) * 8f);
+            if (my >= 26 + shiftY && my <= 26 + shiftY + TAB_H && tabMaxScroll() > 0) {
+                tabScroll = clamp(tabScroll - (int) Math.signum(scrollY) * 24, 0, tabMaxScroll());
+                return true;
+            }
+            if (aboutTab) {
+                aboutScroll = clamp(aboutScroll - (int) Math.signum(scrollY) * 24,
+                        0, aboutMaxScroll());
+                return true;
+            }
             scroll = Math.max(0, Math.min(maxScroll(), scroll - (int) Math.signum(scrollY)));
             return true;
         }
@@ -311,6 +427,11 @@ public class MapConfigScreen extends Screen {
         // parameters. 1.21.1 has no double-click flag on this callback, and the 26.2 body never
         // read `doubleClick`; every control here reacts to a plain click regardless of the button.
         if (closing) return true;
+        if (feedbackOpen) {
+            if (feedbackInput != null && feedbackInput.mouseClicked(mx, my, button)) return true;
+            handleFeedbackClick((int) mx, (int) my);
+            return true;
+        }
         int shiftY = (int) Math.round((1f - appearT) * 8f);
 
         // bottom buttons
@@ -343,21 +464,40 @@ public class MapConfigScreen extends Screen {
             }
         }
 
-        int tx = PAD;
-        for (Group g : Group.values()) {
-            int tw = tabWidth(g);
-            if (my >= 26 + shiftY && my < 26 + shiftY + TAB_H && mx >= tx && mx < tx + tw) {
-                if (group != g) {
-                    tabT = 0f;
-                    tabSwitchNs = -1L;
+        if (aboutTab) {
+            boolean inContent = my >= listTop() + shiftY && my < listBottom();
+            if (inContent && feedbackButtonY > 0
+                    && my >= feedbackButtonY && my < feedbackButtonY + 24) {
+                feedbackOpen = true;
+                feedbackStatus = "";
+                if (feedbackInput != null) {
+                    feedbackInput.setFocused(true);
+                    setFocused(feedbackInput);
                 }
-                group = g;
-                scroll = 0;
-                editing = null;
                 return true;
             }
-            tx += tw + 4;
+            for (int i = 0; inContent && i < ABOUT_LINK_URLS.length; i++) {
+                int ly = aboutLinkY[i];
+                if (ly > 0 && my >= ly && my < ly + ABOUT_LINK_H - 2
+                        && mx >= aboutLinkX[i] - 4 && mx <= aboutLinkX[i] + aboutLinkW[i]) {
+                    openLink(ABOUT_LINK_URLS[i]);
+                    return true;
+                }
+            }
         }
+
+        for (int i = 0; i < tabCount(); i++) {
+            int tx = tabX(i);
+            int tw = tabWidth(i);
+            if (my >= 26 + shiftY && my < 26 + shiftY + TAB_H
+                    && mx >= Math.max(PAD, tx) && mx < Math.min(width - PAD, tx + tw)) {
+                selectTab(i);
+                return true;
+            }
+        }
+
+        if (aboutTab) return true; // the About page has no config rows under the links
+
         List<Item> vis = visible();
         int y = listTop() + shiftY;
         for (int i = scroll; i < Math.min(vis.size(), scroll + visibleRows()); i++) {
@@ -391,6 +531,10 @@ public class MapConfigScreen extends Screen {
     @Override
     public boolean mouseDragged(double mx, double my, int button, double dx, double dy) {
         // 1.21.1: 26.2's MouseButtonEvent is unwrapped into the (mouseX, mouseY, button) parameters.
+        if (feedbackOpen) {
+            if (feedbackInput != null) feedbackInput.mouseDragged(mx, my, button, dx, dy);
+            return true;
+        }
         if (dragging != null) {
             applySlider(dragging, mx);
             return true;
@@ -406,6 +550,10 @@ public class MapConfigScreen extends Screen {
 
     @Override
     public boolean charTyped(char codePoint, int modifiers) {
+        if (feedbackOpen) {
+            if (feedbackInput != null) feedbackInput.charTyped(codePoint, modifiers);
+            return true;
+        }
         // 1.21.1: 26.2's CharacterEvent is unwrapped into (codePoint, modifiers). 26.2 read the first
         // char of codepointAsString(); vanilla's keyboard handler passes the code point cast to char,
         // which is the same value for every character this numeric editor accepts.
@@ -421,6 +569,16 @@ public class MapConfigScreen extends Screen {
 
     @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
+        if (feedbackOpen) {
+            if (keyCode == GLFW.GLFW_KEY_ESCAPE) {
+                feedbackOpen = false;
+                setFocused(null);
+                if (feedbackInput != null) feedbackInput.setFocused(false);
+                return true;
+            }
+            if (feedbackInput != null) feedbackInput.keyPressed(keyCode, scanCode, modifiers);
+            return true;
+        }
         // 1.21.1: 26.2's KeyEvent is unwrapped into the (keyCode, scanCode, modifiers) parameters.
         if (editing != null) {
             int k = keyCode;
@@ -461,8 +619,99 @@ public class MapConfigScreen extends Screen {
         }
     }
 
-    private int tabWidth(Group g) {
-        return font.width(Component.translatable(g.labelKey)) + 20;
+    private int tabCount() {
+        return Group.values().length + 1;
+    }
+
+    private boolean isAboutTab(int index) {
+        return index == Group.values().length;
+    }
+
+    private Component tabLabel(int index) {
+        return isAboutTab(index)
+                ? Component.translatable("voxymap.configuration.about")
+                : Component.translatable(Group.values()[index].labelKey);
+    }
+
+    private int tabWidth(int index) {
+        return font.width(tabLabel(index)) + 20;
+    }
+
+    private int tabTotalWidth() {
+        int total = 0;
+        for (int i = 0; i < tabCount(); i++) {
+            total += tabWidth(i);
+            if (i > 0) total += TAB_GAP;
+        }
+        return total;
+    }
+
+    private int tabMaxScroll() {
+        return Math.max(0, tabTotalWidth() - (width - PAD * 2));
+    }
+
+    private int tabX(int index) {
+        int x = PAD - tabScroll;
+        for (int i = 0; i < index; i++) x += tabWidth(i) + TAB_GAP;
+        return x;
+    }
+
+    private boolean tabActive(int index) {
+        return isAboutTab(index) ? aboutTab : (!aboutTab && Group.values()[index] == group);
+    }
+
+    private void selectTab(int index) {
+        if (isAboutTab(index)) {
+            if (!aboutTab) {
+                tabT = 0f;
+                tabSwitchNs = -1L;
+            }
+            aboutTab = true;
+            aboutScroll = 0;
+            for (int i = 0; i < aboutLinkY.length; i++) aboutLinkY[i] = 0;
+        } else {
+            Group next = Group.values()[index];
+            if (aboutTab || group != next) {
+                tabT = 0f;
+                tabSwitchNs = -1L;
+            }
+            aboutTab = false;
+            group = next;
+            scroll = 0;
+        }
+        editing = null;
+        ensureTabVisible(index);
+    }
+
+    /** Scrolls the tab strip just enough to keep the selected tab fully visible. */
+    private void ensureTabVisible(int index) {
+        int max = tabMaxScroll();
+        int left = tabX(index);
+        int right = left + tabWidth(index);
+        if (left < PAD) tabScroll -= PAD - left;
+        else if (right > width - PAD) tabScroll += right - (width - PAD);
+        tabScroll = clamp(tabScroll, 0, max);
+    }
+
+    private static int clamp(int value, int min, int max) {
+        return Math.max(min, Math.min(max, value));
+    }
+
+    private void openLink(String url) {
+        try {
+            Util.getPlatform().openUri(URI.create(url));
+        } catch (Throwable ignored) {
+            // opening a browser is best-effort; never let it break the screen
+        }
+    }
+
+    private int aboutMaxScroll() {
+        return Math.max(0, aboutContentHeight - (listBottom() - listTop()));
+    }
+
+    /** Staggered fade-in for the About sections, same 0.16 s ramp as the config rows. */
+    private static float stagger(float fade, float tabAge, float delay) {
+        return fade * Math.min(1f, Math.max(0f, (tabAge - delay) / 0.16f));
     }
 
     private void cycle(Item it) {
@@ -518,64 +767,52 @@ public class MapConfigScreen extends Screen {
         g.text(font, getTitle().copy().append(Component.literal("  ·  Voxy Map")),
                 PAD, 8 + dy, withAlpha(COL_ACCENT, fade));
 
-        int tx = PAD;
-        for (Group gr : Group.values()) {
-            int tw = tabWidth(gr);
-            boolean active = gr == group;
-            boolean tabHover = mouseX >= tx && mouseX <= tx + tw
-                    && mouseY >= 26 + dy && mouseY <= 26 + dy + TAB_H;
-            float th = hover("tab:" + gr.name(), tabHover, lastDt);
-            g.fill(tx, 26 + dy, tx + tw, 26 + dy + TAB_H,
-                    withAlpha(active ? COL_SELECTED : COL_PANEL_OFF, fade));
-            if (th > 0.01f) {
-                g.fill(tx, 26 + dy, tx + tw, 26 + dy + TAB_H, withAlpha(COL_ROW_HOVER, fade * th * 0.6f));
-            }
-            if (active) g.fill(tx, 26 + dy, tx + tw, 27 + dy, withAlpha(COL_ACCENT, fade));
-            Component label = Component.translatable(gr.labelKey);
-            g.text(font, label, tx + 10, 26 + dy + (TAB_H - font.lineHeight) / 2 + 1,
-                    withAlpha(active ? COL_ACCENT : lerpColor(COL_TEXT, COL_ACCENT, th * 0.6f), fade));
-            tx += tw + 4;
-        }
+        drawTabs(g, mouseX, mouseY, fade, dy);
 
-        if (tabSwitchNs < 0L) tabSwitchNs = nowNs;
-        float tabAge = (nowNs - tabSwitchNs) / 1_000_000_000f;
-        List<Item> vis = visible();
-        int y = listTop() + dy;
-        for (int i = scroll; i < vis.size() && i < scroll + visibleRows(); i++) {
-            Item it = vis.get(i);
-            // staggered fade-in on real time: no flicker on tab switches, frame-rate independent
-            float rowDelay = (i - scroll) * 0.03f;
-            float rowT = fade * Math.min(1f, Math.max(0f, (tabAge - rowDelay) / 0.16f));
-            if (it.header()) {
-                g.fill(PAD, y, rowRight(), y + ROW_H, withAlpha(0x4010141A, rowT));
-                g.fill(PAD, y + ROW_H - 1, rowRight(), y + ROW_H, withAlpha(COL_BORDER, rowT));
-                g.text(font, Component.translatable(it.name()), PAD + 6,
-                        y + (ROW_H - font.lineHeight) / 2 + 1, withAlpha(COL_ACCENT, rowT));
+        if (aboutTab) {
+            // 1.21.1 batch order can paint earlier text over the modal; hide the page underneath.
+            if (!feedbackOpen) drawAbout(g, mouseX, mouseY, fade, dy, nowNs);
+        } else {
+            if (tabSwitchNs < 0L) tabSwitchNs = nowNs;
+            float tabAge = (nowNs - tabSwitchNs) / 1_000_000_000f;
+            List<Item> vis = visible();
+            int y = listTop() + dy;
+            for (int i = scroll; i < vis.size() && i < scroll + visibleRows(); i++) {
+                Item it = vis.get(i);
+                // staggered fade-in on real time: no flicker on tab switches, frame-rate independent
+                float rowDelay = (i - scroll) * 0.03f;
+                float rowT = fade * Math.min(1f, Math.max(0f, (tabAge - rowDelay) / 0.16f));
+                if (it.header()) {
+                    g.fill(PAD, y, rowRight(), y + ROW_H, withAlpha(0x4010141A, rowT));
+                    g.fill(PAD, y + ROW_H - 1, rowRight(), y + ROW_H, withAlpha(COL_BORDER, rowT));
+                    g.text(font, Component.translatable(it.name()), PAD + 6,
+                            y + (ROW_H - font.lineHeight) / 2 + 1, withAlpha(COL_ACCENT, rowT));
+                    y += ROW_H;
+                    continue;
+                }
+                boolean hover = mouseY >= y && mouseY < y + ROW_H;
+                float rh = hover("row:" + i, hover, lastDt);
+                g.fill(PAD, y, rowRight(), y + ROW_H, withAlpha(0x30101014, rowT));
+                if (rh > 0.01f) {
+                    g.fill(PAD, y, rowRight(), y + ROW_H, withAlpha(COL_ROW_HOVER, rowT * rh * 0.8f));
+                }
+                // rows below the first get a thin divider; section headers are their own row type
+                if (i > scroll) {
+                    g.fill(PAD, y, rowRight(), y + 1, withAlpha(0x20FFFFFF, rowT));
+                }
+
+                drawRowText(g, it, y, rowT, nowNs);
+
+                drawControl(g, it, y, rowT);
                 y += ROW_H;
-                continue;
-            }
-            boolean hover = mouseY >= y && mouseY < y + ROW_H;
-            float rh = hover("row:" + i, hover, lastDt);
-            g.fill(PAD, y, rowRight(), y + ROW_H, withAlpha(0x30101014, rowT));
-            if (rh > 0.01f) {
-                g.fill(PAD, y, rowRight(), y + ROW_H, withAlpha(COL_ROW_HOVER, rowT * rh * 0.8f));
-            }
-            // rows below the first get a thin divider; section headers are their own row type
-            if (i > scroll) {
-                g.fill(PAD, y, rowRight(), y + 1, withAlpha(0x20FFFFFF, rowT));
             }
 
-            Component name = Component.translatable("voxymap.config." + it.name());
-            g.text(font, name, PAD + 6, y + 5, withAlpha(COL_TEXT, rowT));
-            Component desc = Component.translatable(it.descKey());
-            g.text(font, Component.literal(desc.getString()), PAD + 6, y + 17, withAlpha(COL_DIM, rowT));
-
-            drawControl(g, it, y, rowT);
-            y += ROW_H;
+            drawScrollbar(g, fade);
         }
 
-        drawScrollbar(g, fade);
         drawBottomBar(g, mouseX, mouseY, fade);
+
+        if (feedbackOpen) drawFeedbackPanel(g, mouseX, mouseY, partialTick);
 
         // open/close fade, same as the NeoForge build
         float veil = closing ? closeT() : 1f - appearT;
@@ -587,6 +824,438 @@ public class MapConfigScreen extends Screen {
 
     private float closeT() {
         return Math.min(1f, 1f - appearT);
+    }
+
+    private void drawTabs(GuiGraphicsExtractor g, int mouseX, int mouseY, float fade, int dy) {
+        tabScroll = clamp(tabScroll, 0, tabMaxScroll());
+        int top = 26 + dy;
+        g.enableScissor(PAD, top, width - PAD, top + TAB_H);
+        for (int i = 0; i < tabCount(); i++) {
+            int tx = tabX(i);
+            int tw = tabWidth(i);
+            boolean active = tabActive(i);
+            boolean tabHover = mouseX >= tx && mouseX <= tx + tw && mouseY >= top && mouseY <= top + TAB_H;
+            float th = hover("tab:" + i, tabHover, lastDt);
+            g.fill(tx, top, tx + tw, top + TAB_H, withAlpha(active ? COL_SELECTED : COL_PANEL_OFF, fade));
+            if (th > 0.01f) {
+                g.fill(tx, top, tx + tw, top + TAB_H, withAlpha(COL_ROW_HOVER, fade * th * 0.6f));
+            }
+            if (active) g.fill(tx, top, tx + tw, top + 1, withAlpha(COL_ACCENT, fade));
+            g.text(font, tabLabel(i), tx + 10, top + (TAB_H - font.lineHeight) / 2 + 1,
+                    withAlpha(active ? COL_ACCENT : lerpColor(COL_TEXT, COL_ACCENT, th * 0.6f), fade));
+        }
+        g.disableScissor();
+
+        if (tabScroll > 0) {
+            g.fill(PAD, top, PAD + 9, top + TAB_H, withAlpha(COL_PANEL, fade));
+            drawTabArrow(g, PAD + 3, top + 6, false, fade);
+        }
+        if (tabScroll < tabMaxScroll()) {
+            g.fill(width - PAD - 9, top, width - PAD, top + TAB_H, withAlpha(COL_PANEL, fade));
+            drawTabArrow(g, width - PAD - 7, top + 6, true, fade);
+        }
+    }
+
+    /** Small pixel chevron used by the scrollable tab strip. */
+    private void drawTabArrow(GuiGraphicsExtractor g, int x, int y, boolean right, float alpha) {
+        int col = withAlpha(COL_ACCENT, alpha);
+        for (int i = 0; i < 3; i++) {
+            int xx = right ? x + i : x + 2 - i;
+            int h = 7 - i * 2;
+            g.fill(xx, y + (7 - h) / 2, xx + 1, y + (7 - h) / 2 + h, col);
+        }
+    }
+
+    private int aboutContentWidth() {
+        return Math.max(60, width - PAD * 2 - 20);
+    }
+
+    private record AboutLayout(int textW, int feedbackY, int linksLabelY, int linksY, int cols, int cellW,
+                               int totalH) {
+    }
+
+    private AboutLayout aboutLayout() {
+        int pad = 10;
+        int textW = Math.max(80, aboutContentWidth() - (ABOUT_ICON_SIZE + 12));
+        int taglineLines = Math.max(1, font.split(Component.translatable("voxymap.about.tagline"), textW).size());
+        int descLines = Math.max(1, font.split(Component.translatable("voxymap.about.description"), textW).size());
+        int textBottom = 36 + taglineLines * 10 + 2 + descLines * 10;
+        int header = Math.max(ABOUT_ICON_SIZE, textBottom - 10);
+        int feedbackY = pad + header + 10;
+        int linksLabelY = feedbackY + 26 + 8;
+        int linksY = linksLabelY + 10;
+        int cols = aboutContentWidth() >= 320 ? 2 : 1;
+        int rows = (ABOUT_LINK_URLS.length + cols - 1) / cols;
+        int cellW = (aboutContentWidth() - (cols - 1) * ABOUT_LINK_GAP) / cols;
+        int totalH = linksY + rows * ABOUT_LINK_H + 4;
+        return new AboutLayout(textW, feedbackY, linksLabelY, linksY, cols, cellW, totalH);
+    }
+
+    /** The About tab: mod icon, version/platform line, author, and clickable project links. */
+    private void drawAbout(GuiGraphicsExtractor g, int mouseX, int mouseY, float fade, int dy, long nowNs) {
+        int x0 = PAD;
+        int x1 = width - PAD;
+        int top = listTop() + dy;
+        int bottom = listBottom();
+        if (bottom <= top) return;
+
+        if (tabSwitchNs < 0L) tabSwitchNs = nowNs;
+        float tabAge = (nowNs - tabSwitchNs) / 1_000_000_000f;
+        float tHeader = stagger(fade, tabAge, 0.00f);
+        float tAuthor = stagger(fade, tabAge, 0.05f);
+        float tLinks = stagger(fade, tabAge, 0.09f);
+        if (tHeader <= 0f) return;
+
+        g.fill(x0, top, x1, bottom, withAlpha(0x30101014, fade));
+
+        AboutLayout layout = aboutLayout();
+        aboutContentHeight = layout.totalH();
+        aboutScroll = clamp(aboutScroll, 0, aboutMaxScroll());
+        int baseY = top - aboutScroll;
+        int x = x0 + 10;
+        int right = x1 - 10;
+
+        g.enableScissor(x0 + 1, top, x1 - 1, bottom);
+
+        if (tHeader > 0.04f) {
+            g.blit(GuiPipelines.GUI_TEXTURED, TEX_ABOUT_ICON, x, baseY + 10, 0f, 0f,
+                    ABOUT_ICON_SIZE, ABOUT_ICON_SIZE, ABOUT_ICON_SIZE, ABOUT_ICON_SIZE,
+                    ABOUT_ICON_SIZE, ABOUT_ICON_SIZE);
+        }
+
+        int textX = x + ABOUT_ICON_SIZE + 12;
+        g.text(font, Component.literal("Voxy Map"), textX, baseY + 10, withAlpha(COL_TEXT, tHeader));
+        g.text(font, Component.literal("v" + AboutInfo.modVersion() + "  ·  " + AboutInfo.platform()
+                        + "  ·  MC " + AboutInfo.mcVersion()),
+                textX, baseY + 22, withAlpha(COL_ACCENT, tHeader));
+
+        int ty = baseY + 36;
+        for (FormattedCharSequence line : font.split(Component.translatable("voxymap.about.tagline"), layout.textW())) {
+            g.text(font, line, textX, ty, withAlpha(COL_TEXT, tHeader));
+            ty += font.lineHeight + 1;
+        }
+        ty += 2;
+        for (FormattedCharSequence line : font.split(Component.translatable("voxymap.about.description"), layout.textW())) {
+            g.text(font, line, textX, ty, withAlpha(COL_DIM, tHeader));
+            ty += font.lineHeight + 1;
+        }
+
+        // author badge in the top-right corner, so the links stay visible on short screens
+        int authorX = right - ABOUT_AVATAR_SIZE;
+        int authorY = baseY + 10;
+        if (tAuthor > 0.04f) {
+            g.blit(GuiPipelines.GUI_TEXTURED, TEX_ABOUT_AUTHOR, authorX, authorY, 0f, 0f,
+                    ABOUT_AVATAR_SIZE, ABOUT_AVATAR_SIZE, ABOUT_AVATAR_SIZE, ABOUT_AVATAR_SIZE,
+                    ABOUT_AVATAR_SIZE, ABOUT_AVATAR_SIZE);
+        }
+        Component authorName = Component.literal("Tsutsutsuu");
+        int authorNameX = authorX - 8 - font.width(authorName);
+        g.text(font, authorName, authorNameX, authorY + 1, withAlpha(COL_TEXT, tAuthor));
+        g.text(font, Component.translatable("voxymap.about.author"),
+                authorNameX, authorY + 11, withAlpha(COL_DIM, tAuthor));
+
+        int fbY = baseY + layout.feedbackY();
+        feedbackButtonY = fbY;
+        boolean fbHover = mouseX >= x - 4 && mouseX <= right + 4 && mouseY >= fbY && mouseY < fbY + 24;
+        float fh = hover("about:feedback", fbHover, lastDt);
+        g.fill(x - 4, fbY, right + 4, fbY + 24, withAlpha(COL_SELECTED, tLinks));
+        g.fill(x - 4, fbY, right + 4, fbY + 1, withAlpha(COL_ACCENT, tLinks));
+        if (fh > 0.01f) {
+            g.fill(x - 4, fbY, right + 4, fbY + 24, withAlpha(COL_ROW_HOVER, tLinks * fh * 0.8f));
+        }
+        Component feedbackLabel = Component.translatable("voxymap.about.feedback");
+        if (tLinks > 0.04f) {
+            g.blit(GuiPipelines.GUI_TEXTURED, TEX_ABOUT_BUG, x + 4, fbY + 4, 0f, 0f,
+                    16, 16, 16, 16, 16, 16);
+        }
+        int fbTextY = fbY + (24 - font.lineHeight) / 2 + 1;
+        g.text(font, feedbackLabel, x + 24, fbTextY, withAlpha(COL_ACCENT, tLinks));
+        Component recommended = Component.translatable("voxymap.about.feedback.recommended");
+        g.text(font, recommended, x + 24 + font.width(feedbackLabel) + 8, fbTextY,
+                withAlpha(0xFFFFFFFF, tLinks));
+
+        int dividerY = baseY + layout.linksLabelY() - 8;
+        g.fill(x, dividerY, right, dividerY + 1, withAlpha(COL_BORDER, tLinks));
+        g.text(font, Component.translatable("voxymap.about.links"), x, baseY + layout.linksLabelY(),
+                withAlpha(COL_DIM, tLinks));
+        Component license = Component.translatable("voxymap.about.license").copy()
+                .append(Component.literal("  ·  "))
+                .append(Component.translatable("voxymap.about.client"));
+        g.text(font, license, right - font.width(license), baseY + layout.linksLabelY(),
+                withAlpha(COL_DIM, tLinks));
+
+        int cols = layout.cols();
+        int cellW = layout.cellW();
+        for (int i = 0; i < ABOUT_LINK_URLS.length; i++) {
+            int col = i % cols;
+            int row = i / cols;
+            int cellX = x + col * (cellW + ABOUT_LINK_GAP);
+            int cellY = baseY + layout.linksY() + row * ABOUT_LINK_H;
+            aboutLinkX[i] = cellX;
+            aboutLinkW[i] = cellW;
+            aboutLinkY[i] = cellY;
+            float cellT = stagger(fade, tabAge, 0.11f + i * 0.03f);
+            boolean hovered = mouseX >= cellX - 4 && mouseX <= cellX + cellW
+                    && mouseY >= cellY && mouseY < cellY + ABOUT_LINK_H - 2;
+            float lh = hover("about:" + i, hovered, lastDt);
+            if (lh > 0.01f) {
+                g.fill(cellX - 4, cellY, cellX + cellW, cellY + ABOUT_LINK_H - 2,
+                        withAlpha(COL_ROW_HOVER, cellT * lh * 0.8f));
+                g.fill(cellX - 4, cellY, cellX - 3, cellY + ABOUT_LINK_H - 2,
+                        withAlpha(COL_ACCENT, cellT * lh));
+            }
+            if (cellT > 0.12f) {
+                g.blit(GuiPipelines.GUI_TEXTURED, ABOUT_LINK_ICONS[i], cellX, cellY + 1, 0f, 0f,
+                        32, 32, 32, 32, 32, 32);
+            }
+            g.text(font, Component.translatable(ABOUT_LINK_KEYS[i]), cellX + 40, cellY + 5,
+                    withAlpha(hovered ? 0xFFFFFFFF : COL_TEXT, cellT));
+            String url = ABOUT_LINK_URLS[i].replaceFirst("^https?://", "");
+            g.text(font, Component.literal(ellipsize(url, Math.max(24, cellW - 44))),
+                    cellX + 40, cellY + 17, withAlpha(COL_DIM, cellT));
+        }
+        g.disableScissor();
+
+        if (aboutMaxScroll() > 0) drawAboutScrollbar(g, fade, top, bottom);
+    }
+
+    private void drawAboutScrollbar(GuiGraphicsExtractor g, float fade, int top, int bottom) {
+        int trackX = width - PAD;
+        int trackH = bottom - top;
+        if (trackH <= 0) return;
+        g.fill(trackX, top, trackX + 3, top + trackH, withAlpha(0x30FFFFFF, fade));
+        int barH = Math.max(18, trackH * trackH / Math.max(1, aboutContentHeight));
+        int barY = top + (trackH - barH) * aboutScroll / Math.max(1, aboutMaxScroll());
+        g.fill(trackX, barY, trackX + 3, barY + barH, withAlpha(COL_ACCENT, fade));
+    }
+
+    private record FeedbackBox(int x, int y, int w, int h, int textX, int textY, int textW, int textH,
+                               int checkX, int checkY, int sendX, int closeX, int btnY, int btnW, int btnH) {
+    }
+
+    private FeedbackBox feedbackBox() {
+        int w = Math.min(width - 32, 460);
+        int h = Math.min(height - 24, 240);
+        int x = (width - w) / 2;
+        int y = (height - h) / 2;
+        int textX = x + 12;
+        int textY = y + 50;
+        int textW = w - 24;
+        int btnW = 64;
+        int btnH = 20;
+        int closeX = x + w - 12 - btnW;
+        int sendX = closeX - 8 - btnW;
+        int btnY = y + h - 10 - btnH;
+        int checkX = x + 12;
+        int checkY = btnY - 26;
+        int textH = checkY - 8 - textY;
+        return new FeedbackBox(x, y, w, h, textX, textY, textW, textH,
+                checkX, checkY, sendX, closeX, btnY, btnW, btnH);
+    }
+
+    private int feedbackLogX(FeedbackBox box) {
+        return box.checkX() + 15 + font.width(Component.translatable("voxymap.feedback.attachMods")) + 14;
+    }
+
+    private int feedbackPasteX(FeedbackBox box) {
+        return box.x() + box.w() - 12 - 52;
+    }
+
+    private void drawCheckbox(GuiGraphicsExtractor g, int x, int y, boolean on, Component label) {
+        g.fill(x, y, x + 10, y + 10, on ? COL_SELECTED : 0xE0101216);
+        g.fill(x, y, x + 10, y + 1, COL_BORDER);
+        if (on) g.fill(x + 2, y + 3, x + 8, y + 8, COL_ACCENT);
+        g.text(font, label, x + 15, y + 1, COL_TEXT);
+    }
+
+    /** Same shape/size/colour for every button inside the feedback panel. */
+    private void drawSmallButton(GuiGraphicsExtractor g, int x, int y, int w, int h, Component label,
+                                 int accent, int mouseX, int mouseY) {
+        boolean hovered = mouseX >= x && mouseX <= x + w && mouseY >= y && mouseY <= y + h;
+        float bh = hover("small:" + label.getString(), hovered, lastDt);
+        g.fill(x, y, x + w, y + h, COL_PANEL_OFF);
+        if (bh > 0.01f) g.fill(x, y, x + w, y + h, withAlpha(COL_ROW_HOVER, bh));
+        g.fill(x, y, x + w, y + 1, lerpColor(accent, 0xFFFFFFFF, bh * 0.3f));
+        g.text(font, label, x + (w - font.width(label)) / 2, y + (h - font.lineHeight) / 2 + 1,
+                lerpColor(COL_TEXT, 0xFFFFFFFF, bh));
+    }
+
+    /** In-game feedback editor: free text, report tips, optional mod list / log, one send button. */
+    private void drawFeedbackPanel(GuiGraphicsExtractor g, int mouseX, int mouseY, float partialTick) {
+        g.flush();
+        FeedbackBox box = feedbackBox();
+        g.fill(0, 0, width, height, 0x99000000);
+        g.fill(box.x(), box.y(), box.x() + box.w(), box.y() + box.h(), 0xF014171C);
+        g.fill(box.x(), box.y(), box.x() + box.w(), box.y() + 1, COL_ACCENT);
+
+        Component title = Component.translatable("voxymap.feedback.title");
+        g.text(font, title, box.x() + (box.w() - font.width(title)) / 2, box.y() + 10, COL_ACCENT);
+        g.text(font, Component.literal(ellipsize(Component.translatable("voxymap.feedback.hint").getString(),
+                        box.textW())), box.x() + 12, box.y() + 24, COL_TEXT);
+        g.text(font, Component.literal(ellipsize(Component.translatable("voxymap.feedback.privacy").getString(),
+                        box.textW())), box.x() + 12, box.y() + 36, COL_DIM);
+
+        g.fill(box.textX(), box.textY(), box.textX() + box.textW(), box.textY() + box.textH(), 0xE0101216);
+        g.fill(box.textX(), box.textY(), box.textX() + box.textW(), box.textY() + 1, COL_BORDER);
+
+        if (feedbackInput != null) {
+            // Window focus loss can clear the screen focus; reclaim it while the editor is open.
+            if (!feedbackInput.isFocused() || getFocused() != feedbackInput) {
+                feedbackInput.setFocused(true);
+                setFocused(feedbackInput);
+            }
+            feedbackInput.renderWidget(g.vanilla(), mouseX, mouseY, partialTick);
+        }
+
+        drawCheckbox(g, box.checkX(), box.checkY(), feedbackAttachMods,
+                Component.translatable("voxymap.feedback.attachMods"));
+        drawCheckbox(g, feedbackLogX(box), box.checkY(), feedbackAttachLog,
+                Component.translatable("voxymap.feedback.attachLog"));
+
+        drawSmallButton(g, feedbackPasteX(box), box.checkY() - 3, 52, 16,
+                Component.translatable("voxymap.feedback.paste"), COL_BORDER, mouseX, mouseY);
+
+        String status = feedbackStatus;
+        if (!status.isEmpty()) {
+            int statusRight = box.sendX() - 8;
+            g.text(font, Component.literal(ellipsize(status, Math.max(20, statusRight - box.x() - 12))),
+                    box.x() + 12, box.btnY() + 6, COL_DIM);
+        }
+
+        Component sendLabel = Component.translatable(feedbackSending
+                ? "voxymap.feedback.sending" : "voxymap.feedback.send");
+        drawSmallButton(g, box.sendX(), box.btnY(), box.btnW(), box.btnH(), sendLabel,
+                COL_ACCENT, mouseX, mouseY);
+        drawSmallButton(g, box.closeX(), box.btnY(), box.btnW(), box.btnH(),
+                Component.translatable("voxymap.feedback.close"), COL_ACCENT, mouseX, mouseY);
+    }
+
+    private void handleFeedbackClick(int mx, int my) {
+        FeedbackBox box = feedbackBox();
+        if (mx >= box.checkX() - 2 && mx <= box.checkX() + 12
+                && my >= box.checkY() - 2 && my <= box.checkY() + 12) {
+            feedbackAttachMods = !feedbackAttachMods;
+            return;
+        }
+        int logX = feedbackLogX(box);
+        if (mx >= logX - 2 && mx <= logX + 12 && my >= box.checkY() - 2 && my <= box.checkY() + 12) {
+            feedbackAttachLog = !feedbackAttachLog;
+            return;
+        }
+        int pasteX = feedbackPasteX(box);
+        int pasteY = box.checkY() - 3;
+        if (mx >= pasteX && mx <= pasteX + 52 && my >= pasteY && my <= pasteY + 16) {
+            pasteFeedback();
+            return;
+        }
+        if (mx >= box.sendX() && mx <= box.sendX() + box.btnW()
+                && my >= box.btnY() && my <= box.btnY() + box.btnH()) {
+            sendFeedback();
+            return;
+        }
+        if (mx >= box.closeX() && mx <= box.closeX() + box.btnW()
+                && my >= box.btnY() && my <= box.btnY() + box.btnH()) {
+            feedbackOpen = false;
+        }
+    }
+
+    private void sendFeedback() {
+        if (feedbackSending) return;
+        String rawText = feedbackInput == null ? "" : feedbackInput.getValue().trim();
+        String text = rawText.length() > FEEDBACK_MAX_CHARS
+                ? rawText.substring(0, FEEDBACK_MAX_CHARS) : rawText;
+        if (text.isEmpty()) {
+            feedbackStatus = Component.translatable("voxymap.feedback.empty").getString();
+            return;
+        }
+        feedbackSending = true;
+        feedbackStatus = Component.translatable("voxymap.feedback.sending").getString();
+        String version = "v" + AboutInfo.modVersion() + " · " + AboutInfo.platform()
+                + " · MC " + AboutInfo.mcVersion();
+        FeedbackSender.send(text, feedbackAttachLog, feedbackAttachMods, version, result -> {
+            feedbackSending = false;
+            if (result.ok()) {
+                feedbackStatus = Component.translatable("voxymap.feedback.sent").getString();
+                if (feedbackInput != null) feedbackInput.setValue("");
+            } else if ("rate".equals(result.detail())) {
+                feedbackStatus = Component.translatable("voxymap.feedback.rate").getString();
+            } else {
+                feedbackStatus = Component.translatable("voxymap.feedback.failed").getString();
+                copyToClipboard(FeedbackSender.buildPayload(text, feedbackAttachLog, feedbackAttachMods, version));
+            }
+        });
+    }
+
+    private void copyToClipboard(String text) {
+        try {
+            Minecraft.getInstance().keyboardHandler.setClipboard(text);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private void appendFeedback(String text) {
+        int room = FEEDBACK_MAX_CHARS - feedbackText.length();
+        if (room <= 0 || text == null || text.isEmpty()) return;
+        feedbackText.append(text, 0, Math.min(room, text.length()));
+    }
+
+    private void deleteLastFeedbackChar() {
+        int len = feedbackText.length();
+        if (len == 0) return;
+        int start = len - 1;
+        if (Character.isLowSurrogate(feedbackText.charAt(start)) && start > 0
+                && Character.isHighSurrogate(feedbackText.charAt(start - 1))) {
+            start--;
+        }
+        feedbackText.delete(start, len);
+    }
+
+    private void pasteFeedback() {
+        try {
+            String clip = Minecraft.getInstance().keyboardHandler.getClipboard();
+            if (clip == null || clip.isEmpty() || feedbackInput == null) return;
+            StringBuilder filtered = new StringBuilder(clip.length());
+            for (int i = 0; i < clip.length(); i++) {
+                char c = clip.charAt(i);
+                if (c == '\n' || c == '\t' || c >= 32) filtered.append(c);
+            }
+            feedbackInput.setValue(feedbackInput.getValue() + filtered);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** Character wrap (CJK-friendly) with explicit newlines preserved. */
+    private List<String> wrapFeedback(int maxWidth) {
+        List<String> lines = new ArrayList<>();
+        String text = feedbackText.toString();
+        if (text.isEmpty()) {
+            lines.add("");
+            return lines;
+        }
+        for (String paragraph : text.split("\n", -1)) {
+            if (paragraph.isEmpty()) {
+                lines.add("");
+                continue;
+            }
+            StringBuilder line = new StringBuilder();
+            int used = 0;
+            for (int i = 0; i < paragraph.length(); ) {
+                int cp = paragraph.codePointAt(i);
+                int n = Character.charCount(cp);
+                String ch = paragraph.substring(i, i + n);
+                int cw = font.width(ch);
+                if (used + cw > maxWidth && line.length() > 0) {
+                    lines.add(line.toString());
+                    line.setLength(0);
+                    used = 0;
+                }
+                line.append(ch);
+                used += cw;
+                i += n;
+            }
+            lines.add(line.toString());
+        }
+        return lines;
     }
 
     private void drawScrollbar(GuiGraphicsExtractor g, float fade) {
@@ -633,6 +1302,47 @@ public class MapConfigScreen extends Screen {
         }
         g.fill(x, y, x + w, y + 1, withAlpha(lerpColor(COL_BORDER, COL_ACCENT, bh), fade));
         g.text(font, label, x + 6, y + 6, withAlpha(lerpColor(COL_TEXT, 0xFFFFFFFF, bh), fade));
+    }
+
+    /**
+     * Draws a row's title (clipped with an ellipsis before the control column) and its help text.
+     * Help text that does not fit scrolls continuously to the left, clipped to the text column, so
+     * long translations can never run under the slider/toggle or off the panel.
+     */
+    private void drawRowText(GuiGraphicsExtractor g, Item it, int y, float alpha, long nowNs) {
+        int textX = PAD + 6;
+        int textRight = Math.max(textX + 24, controlX() - 4);
+        int maxW = textRight - textX;
+
+        String name = Component.translatable("voxymap.config." + it.name()).getString();
+        if (font.width(name) > maxW) name = ellipsize(name, maxW);
+        g.text(font, Component.literal(name), textX, y + 5, withAlpha(COL_TEXT, alpha));
+
+        String desc = Component.translatable(it.descKey()).getString();
+        if (desc.isEmpty() || maxW < 16) return;
+        int descW = font.width(desc);
+        if (descW <= maxW) {
+            g.text(font, Component.literal(desc), textX, y + 17, withAlpha(COL_DIM, alpha));
+            return;
+        }
+        if (descClockNs == 0L) descClockNs = nowNs;
+        int cycle = descW + DESC_GAP_PX;
+        float seconds = (nowNs - descClockNs) / 1_000_000_000f;
+        int shift = (int) (seconds * DESC_SPEED_PX_S % cycle);
+        g.enableScissor(textX, y + 16, textRight, y + 16 + font.lineHeight + 1);
+        g.text(font, Component.literal(desc), textX - shift, y + 17, withAlpha(COL_DIM, alpha));
+        g.text(font, Component.literal(desc), textX - shift + cycle, y + 17, withAlpha(COL_DIM, alpha));
+        g.disableScissor();
+    }
+
+    /** Trims a single-line label to {@code maxW} pixels, ending with an ellipsis. */
+    private String ellipsize(String text, int maxW) {
+        String dots = "…";
+        int dotsW = font.width(dots);
+        if (maxW <= dotsW) return dots;
+        int end = text.length();
+        while (end > 0 && font.width(text.substring(0, end)) + dotsW > maxW) end--;
+        return text.substring(0, end) + dots;
     }
 
     private void drawControl(GuiGraphicsExtractor g, Item it, int rowY, float alpha) {
