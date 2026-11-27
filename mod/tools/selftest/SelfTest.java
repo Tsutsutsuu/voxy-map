@@ -85,7 +85,19 @@ public final class SelfTest {
                     }
                     log("2D confirmed");
                 }
-                if (t == 240) {
+                if (t == 120) {
+                    setStyleMenu(mc, true, true);
+                } else if (t > 120 && t < 180) {
+                    setStyleMenu(mc, true, false);
+                }
+                if (t == 150) {
+                    shot(mc, "selftest-style-menu");
+                }
+                if (t == 180) {
+                    setStyleMenu(mc, false, true);
+                } else if (t > 180 && t < 190) {
+                    setStyleMenu(mc, false, false);
+                }                if (t == 240) {
                     log2d(mc);
                     shot(mc, "selftest-2d");
                 }
@@ -142,6 +154,28 @@ public final class SelfTest {
         }
     }
 
+    /** Opens/closes the palette dropdown via its private fields so the render can be screenshotted. */
+    private static void setStyleMenu(Minecraft mc, boolean open) {
+        setStyleMenu(mc, open, true);
+    }
+
+    private static void setStyleMenu(Minecraft mc, boolean open, boolean logIt) {
+        if (!(mc.screen instanceof MapScreen screen)) {
+            if (logIt) log("style menu: no MapScreen");
+            return;
+        }
+        try {
+            var f = MapScreen.class.getDeclaredField("styleMenuOpen");
+            f.setAccessible(true);
+            f.setBoolean(screen, open);
+            var t = MapScreen.class.getDeclaredField("styleMenuT");
+            t.setAccessible(true);
+            t.setFloat(screen, open ? 1f : 0f);
+            if (logIt) log("style menu " + (open ? "opened" : "closed"));
+        } catch (Throwable e) {
+            if (logIt) log("style menu toggle failed: " + e);
+        }
+    }
     private static boolean view3d(Minecraft mc) {
         return mc.screen instanceof MapScreen m && m.isGpu3dView();
     }
