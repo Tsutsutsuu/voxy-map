@@ -2586,14 +2586,18 @@ public final class MapData {
                 store.reopenSourceDb();
                 store.markAllSourceStale(false);
             }
-            // A background index rebuild finished: the new key set may contain data for any tile,
-            // so re-query all resident tiles exactly once (cheap: the resident set is viewport-bound).
+            // A background index rebuild finished: re-query only tiles whose section-key set
+            // actually changed. Closed-map writes are covered by processPendingDirtyTiles()
+            // (explicit forceSourceReplace), so forcing every resident tile here duplicated work:
+            // a warm open re-decoded all ~576 tiles even when their cached pixels were current.
             if (store.consumeIndexSwapped()) {
-                store.markAllSourceStale(true);
+                store.markAllSourceStale(false);
             }
             maybeRecolorForTileRamp(store, now);
             maybeRefreshTileBiome(store, now);
-            if (now - lastTileCacheSaveMs >= 5_000L) {
+            // Do not compete with Voxy/SeedGen for the disk while it is streaming: defer .vxt writes
+            // to a quiet moment (map close/game exit always persists everything anyway).
+            if (now - lastLiveSectionMs > 3_000L && now - lastTileCacheSaveMs >= 5_000L) {
                 lastTileCacheSaveMs = now;
                 store.persistDirtyTiles(64);
             }

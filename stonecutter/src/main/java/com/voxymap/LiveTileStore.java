@@ -38,9 +38,11 @@ public final class LiveTileStore {
     public static final long TEXTURE_BYTES = (long) TILE_PIXELS * TILE_PIXELS * 4L;
     /**
      * How long a live-created tile may wait for its source fill / neighbour halo before it is
-     * coloured with the clamped halo anyway (see {@link #liveTileDrawable}).
+     * coloured with the clamped halo anyway (see {@link #liveTileDrawable}). Kept short: a blank
+     * tile for 2s was visible on every cold zoomed-out open, and the later fill bumps the version
+     * which recolours the tile anyway.
      */
-    private static final long LIVE_PARTIAL_DRAW_GRACE_MS = 2_000L;
+    private static final long LIVE_PARTIAL_DRAW_GRACE_MS = 600L;
     private static final int CACHE_MAGIC = 0x56585431;
     /**
      * 11: the material palette gained fixed-colour spruce/birch leaf classes (and vine moved to the
@@ -813,6 +815,12 @@ public final class LiveTileStore {
         VoxyTileSource src = source;
         for (LiveTile tile : tiles.values()) {
             long sig = src == null ? 0L : src.tileKeySignature(tile.tx, tile.tz);
+            if (!forceAll && tile.fromCache && tile.sourceKeySig == 0L) {
+                // Cached before the index was usable: adopt the current signature. The pixels are a
+                // complete field, and real closed-map changes are covered by the dirty-tile list.
+                tile.sourceKeySig = sig;
+                continue;
+            }
             if (!forceAll && !tile.sourceStale && sig == tile.sourceKeySig) continue;
             tile.sourceStale = true;
             if (tile.rgb == null) tile.sourceFilled = false;
@@ -1367,6 +1375,20 @@ public final class LiveTileStore {
 
     private LiveTile loadCached(int tx, int tz) {
         if (cacheDir == null) return null;
+        try {
+            return loadCachedFile(tx, tz);
+        } catch (Throwable t) {
+            // A corrupt/partially written .vxt must never escape: the SEED_IO callback would be
+            // skipped and getOrCreateSeed would re-submit the same tile every frame.
+            if (TileTrace.enabled()) {
+                TileTrace.stage(tx, tz, "cache_read_error",
+                        t.getClass().getSimpleName() + ": " + t.getMessage());
+            }
+            return null;
+        }
+    }
+
+    private LiveTile loadCachedFile(int tx, int tz) throws Exception {
         Path file = cacheFile(tx, tz);
         if (!Files.isRegularFile(file)) {
             if (TileTrace.enabled()) TileTrace.stage(tx, tz, "cache_no_file", file.getFileName().toString());
@@ -1387,9 +1409,10 @@ public final class LiveTileStore {
             int rawLen = in.readInt();
             int fmaxLand = in.readInt();
             if (ftx != tx || ftz != tz || fpb != pixelBlocks
-                    || fminX != tileMinWX(tx) || fminZ != tileMinWZ(tz)) {
+                    || fminX != tileMinWX(tx) || fminZ != tileMinWZ(tz)
+                    || rawLen != TILE_PIXELS * TILE_PIXELS * Long.BYTES) {
                 if (TileTrace.enabled()) TileTrace.stage(tx, tz, "cache_geom_mismatch",
-                        "tx=" + ftx + " tz=" + ftz + " pb=" + fpb);
+                        "tx=" + ftx + " tz=" + ftz + " pb=" + fpb + " raw=" + rawLen);
                 return null;
             }
             byte[] comp = in.readAllBytes();
@@ -1416,12 +1439,8 @@ public final class LiveTileStore {
             VoxyTileSource src = source;
             tile.sourceKeySig = src == null ? 0L : src.tileKeySignature(tx, tz);
             return tile;
-        } catch (Throwable t) {
-            if (TileTrace.enabled()) TileTrace.stage(tx, tz, "cache_read_error", t.getClass().getSimpleName());
-            return null;
         }
     }
-
     private void saveCached(LiveTile tile) {
         if (cacheDir == null || !cacheReady || tile.seedEpoch >= 0 || !tile.sourceFilled) return;
         final long saveStartNs = System.nanoTime();
@@ -1431,11 +1450,14 @@ public final class LiveTileStore {
             ByteBuffer raw = ByteBuffer.allocate(TILE_PIXELS * TILE_PIXELS * Long.BYTES)
                     .order(ByteOrder.LITTLE_ENDIAN);
             for (long v : tile.pixels) raw.putLong(v);
+            // NOTE: use the allocating API. In the bundled zstd-jni 1.5.6-3 the "write into the
+            // caller's array" variants (compressByteArray/decompressByteArray) return a size but
+            // leave the destination zero-filled, which produced corrupt .vxt files.
             byte[] comp = Zstd.compress(raw.array(), 3);
             Path file = cacheFile(tile.tx, tile.tz);
             Path tmp = file.resolveSibling(file.getFileName() + ".tmp");
             try (DataOutputStream out = new DataOutputStream(
-                    new java.io.BufferedOutputStream(Files.newOutputStream(tmp)))) {
+                    new java.io.BufferedOutputStream(Files.newOutputStream(tmp), 64 * 1024))) {
                 out.writeInt(CACHE_MAGIC);
                 out.writeInt(CACHE_VERSION);
                 out.writeInt(tile.tx);
@@ -1458,7 +1480,6 @@ public final class LiveTileStore {
             if (TileTrace.enabled()) TileTrace.timed(tile.tx, tile.tz, "cache_save_error", saveStartNs, "exception");
         }
     }
-
     private void refreshSeed(LiveTile tile) {
         long[] srcPixels = seedPixels;
         int[] srcRgb = seedRgb;
@@ -1808,65 +1829,45 @@ public final class LiveTileStore {
      * black instead of showing the data it already had.</p>
      */
     private boolean liveTileDrawable(LiveTile tile) {
-        if (tile.sourceFilled && neighbourHaloReady(tile)) return true;
+        // The halo does NOT have to be complete before colouring any more. Forcing all 8 neighbours
+        // to be source-filled first made a cold zoomed-out open wait several seconds before the
+        // first coloured tile; buildColorHalo clamps missing edges, and each neighbour that arrives
+        // later calls invalidateNeighborColors() so the tile is recoloured exactly once.
+        // Neighbours are deliberately NOT prefetched here: they consume the per-frame request
+        // budget and starved the actual viewport tiles (measured: resident tile count grew far
+        // slower during a cold zoomed-out load).
+        if (tile.sourceFilled) return true;
         return System.currentTimeMillis() - tile.createdMs >= LIVE_PARTIAL_DRAW_GRACE_MS;
     }
 
-    /** Wait for already-created neighbours to finish their source fill before colouring. */
-    private boolean neighbourHaloReady(LiveTile tile) {
-        VoxyTileSource src = source;
-        for (int dz = -1; dz <= 1; dz++) {
-            for (int dx = -1; dx <= 1; dx++) {
-                if (dx == 0 && dz == 0) continue;
-                int ntx = tile.tx + dx;
-                int ntz = tile.tz + dz;
-                long nk = key(ntx, ntz);
-                LiveTile n = tiles.get(nk);
-                if (n != null) {
-                    if (!n.sourceFilled) return false;
-                    continue;
-                }
-                if (sourceEmpty.contains(nk)) continue;
-                if (src == null) continue;
-                if (!src.hasTileData(ntx, ntz)) {
-                    sourceEmpty.add(nk);
-                    continue;
-                }
-                // Make the neighbour participate in the normal cache/source pipeline, then wait
-                // for it instead of colouring this tile with a clamped halo that will be cancelled
-                // as soon as the neighbour arrives.
-                getOrCreateSeed(ntx, ntz);
-                return false;
-            }
-        }
-        return true;
-    }
-
     /**
-     * Builds the 8px neighbour halo on the loader thread. Doing this on the render thread cost
-     * ~74k ConcurrentHashMap lookups per tile and produced frame hitches while colour jobs queued.
+     * Builds the 8px neighbour halo on the loader thread. The neighbour references are looked up
+     * once per 3×3 block; the previous version did a ConcurrentHashMap lookup per halo pixel
+     * (272×272 ≈ 74k lookups per tile, tens of millions while a zoomed-out map loads).
      */
     private long[] buildColorHalo(LiveTile tile, int halo) {
         int hw = TILE_PIXELS + halo * 2;
         long[] withHalo = new long[hw * hw];
-        int baseX = tile.tx * TILE_PIXELS - halo;
-        int baseZ = tile.tz * TILE_PIXELS - halo;
+        LiveTile[] n = new LiveTile[9];
+        for (int dz = -1; dz <= 1; dz++) {
+            for (int dx = -1; dx <= 1; dx++) {
+                n[(dz + 1) * 3 + (dx + 1)] = tiles.get(key(tile.tx + dx, tile.tz + dz));
+            }
+        }
+        final long[] own = tile.pixels;
         for (int z = 0; z < hw; z++) {
-            int gz = baseZ + z;
-            int tz = Math.floorDiv(gz, TILE_PIXELS);
-            int lz = gz - tz * TILE_PIXELS;
+            int oz = z - halo;
+            int dz = oz < 0 ? -1 : (oz >= TILE_PIXELS ? 1 : 0);
+            int lz = oz - dz * TILE_PIXELS;
             for (int x = 0; x < hw; x++) {
-                int gx = baseX + x;
-                int tx = Math.floorDiv(gx, TILE_PIXELS);
-                int lx = gx - tx * TILE_PIXELS;
-                LiveTile src = tiles.get(key(tx, tz));
-                if (src != null) {
-                    withHalo[z * hw + x] = src.pixels[lz * TILE_PIXELS + lx];
-                } else {
-                    int ownX = Math.max(0, Math.min(TILE_PIXELS - 1, gx - tile.tx * TILE_PIXELS));
-                    int ownZ = Math.max(0, Math.min(TILE_PIXELS - 1, gz - tile.tz * TILE_PIXELS));
-                    withHalo[z * hw + x] = tile.pixels[ownZ * TILE_PIXELS + ownX];
-                }
+                int ox = x - halo;
+                int dx = ox < 0 ? -1 : (ox >= TILE_PIXELS ? 1 : 0);
+                int lx = ox - dx * TILE_PIXELS;
+                LiveTile src = n[(dz + 1) * 3 + (dx + 1)];
+                withHalo[z * hw + x] = src != null
+                        ? src.pixels[lz * TILE_PIXELS + lx]
+                        : own[Math.max(0, Math.min(TILE_PIXELS - 1, ox))
+                            * TILE_PIXELS + Math.max(0, Math.min(TILE_PIXELS - 1, lx))];
             }
         }
         return withHalo;
