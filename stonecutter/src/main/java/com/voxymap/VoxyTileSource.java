@@ -75,8 +75,6 @@ public final class VoxyTileSource {
      */
     private final java.util.concurrent.locks.ReentrantReadWriteLock dbLock =
             new java.util.concurrent.locks.ReentrantReadWriteLock();
-    /** coalesces repeated invalidate requests (SeedGen resyncs can fire faster than a scan). */
-    private final AtomicBoolean invalidateQueued = new AtomicBoolean();
     /** duration of the last completed index scan; callers pace their rescans by it. */
     private volatile long lastIndexScanNanos;
     /** bumped to discard queued/running decode work after the viewport moved */
@@ -97,6 +95,22 @@ public final class VoxyTileSource {
     private volatile boolean rescanRequested;
     /** true when the index came from the disk cache but its signature no longer matches the DB */
     private volatile boolean indexFromStaleCache;
+    /**
+     * Background full re-index. Runs on its own thread with its own read-only RocksDB handle, so a
+     * rescan never blocks tile decodes (the old index keeps serving until the new map is swapped).
+     */
+    private final java.util.concurrent.ExecutorService indexPool =
+            Executors.newSingleThreadExecutor(r -> {
+                Thread t = new Thread(r, "voxymap-index-scan");
+                t.setDaemon(true);
+                t.setPriority(Thread.MIN_PRIORITY);
+                return t;
+            });
+    private final AtomicBoolean scanInFlight = new AtomicBoolean();
+    /** live keys that arrived while a background scan was running; merged before the swap */
+    private final java.util.Queue<Long> liveDuringScan = new java.util.concurrent.ConcurrentLinkedQueue<>();
+    /** set when a background scan swapped in a new index; the store re-queries its tiles once. */
+    private volatile boolean indexSwapped;
     private Object db;
     private final List<Object> handles = new ArrayList<>();
     private Object sectionsHandle;
@@ -258,32 +272,13 @@ public final class VoxyTileSource {
         final java.util.concurrent.ConcurrentHashMap<Long, KeyList> built =
                 new java.util.concurrent.ConcurrentHashMap<>();
         Object it = RocksBridge.newIterator(db, sectionsHandle);
-        final long tileWorld = (long) LiveTileStore.TILE_PIXELS * pixelBlocks;
         try {
             RocksBridge.seekToFirst(it);
             while (RocksBridge.isValid(it)) {
                 byte[] kb = RocksBridge.key(it);
                 if (kb != null && kb.length == 8) {
                     long key = ByteBuffer.wrap(kb).order(ByteOrder.BIG_ENDIAN).getLong();
-                    int lvl = (int) ((key >>> 60) & 0xF);
-                    if (lvl <= maxLod) {
-                        int scale = 1 << lvl;
-                        int sx = (int) ((key << 36) >> 40);
-                        int sz = (int) ((key << 12) >> 40);
-                        long wx0 = (long) sx * 32 * scale;
-                        long wz0 = (long) sz * 32 * scale;
-                        long wx1 = wx0 + 32L * scale;
-                        long wz1 = wz0 + 32L * scale;
-                        int tx0 = (int) Math.floorDiv(wx0 - minWX, tileWorld);
-                        int tx1 = (int) Math.floorDiv(wx1 - 1 - minWX, tileWorld);
-                        int tz0 = (int) Math.floorDiv(wz0 - minWZ, tileWorld);
-                        int tz1 = (int) Math.floorDiv(wz1 - 1 - minWZ, tileWorld);
-                        for (int tz = tz0; tz <= tz1; tz++) {
-                            for (int tx = tx0; tx <= tx1; tx++) {
-                                built.computeIfAbsent(tileKey(tx, tz), k -> new KeyList()).add(key);
-                            }
-                        }
-                    }
+                    addKeyTo(built, key);
                 }
                 RocksBridge.next(it);
             }
@@ -322,6 +317,13 @@ public final class VoxyTileSource {
         int lvl = (int) ((key >>> 60) & 0xF);
         if (lvl > maxLod) return;
         if (!liveKeys.add(key)) return;
+        addKeyTo(byTile, key);
+    }
+
+    /** Adds one section key to the given tile map (one entry per intersecting tile). */
+    private void addKeyTo(java.util.Map<Long, KeyList> map, long key) {
+        int lvl = (int) ((key >>> 60) & 0xF);
+        if (lvl > maxLod) return;
         int scale = 1 << lvl;
         int sx = (int) ((key << 36) >> 40);
         int sz = (int) ((key << 12) >> 40);
@@ -334,8 +336,88 @@ public final class VoxyTileSource {
         int tz1 = (int) Math.floorDiv(wz0 + 32L * scale - 1 - minWZ, tileWorld);
         for (int tz = tz0; tz <= tz1; tz++) {
             for (int tx = tx0; tx <= tx1; tx++) {
-                byTile.computeIfAbsent(tileKey(tx, tz), k -> new KeyList()).add(key);
+                map.computeIfAbsent(tileKey(tx, tz), k -> new KeyList()).add(key);
             }
+        }
+    }
+
+    /** One-shot: a background scan has swapped in a new index and tiles should re-query. */
+    public boolean consumeIndexSwapped() {
+        if (!indexSwapped) return false;
+        indexSwapped = false;
+        return true;
+    }
+
+    /**
+     * Full index rebuild in the background. Uses a separate read-only connection so decodes keep
+     * running against the old index/handle; the new map replaces {@code byTile} atomically when it
+     * is complete. This removes the old "scan blocks every source worker" stall on first open and
+     * during refresh.
+     */
+    private void startBackgroundScan() {
+        if (closed.get() || !RocksBridge.available() || storage == null) return;
+        if (!scanInFlight.compareAndSet(false, true)) return;
+        try {
+            indexPool.submit(() -> {
+                try {
+                    scanIndexIndependent();
+                } finally {
+                    scanInFlight.set(false);
+                }
+            });
+        } catch (java.util.concurrent.RejectedExecutionException rejected) {
+            scanInFlight.set(false);
+        }
+    }
+
+    private void scanIndexIndependent() {
+        final long scanStartNs = System.nanoTime();
+        if (TileTrace.enabled()) TileTrace.stage(-1, -1, "index_scan_start", "pb=" + pixelBlocks + " async");
+        List<Object> hs = new ArrayList<>();
+        Object ownDb = null;
+        try {
+            ownDb = RocksBridge.openReadOnly(storage.toString(), hs);
+            if (ownDb == null || hs.size() < 3) return;
+            Object ownSections = hs.get(1);
+            long signature = RocksBridge.latestSequence(ownDb);
+            if (signature < 0) signature = storageSignature();
+            final java.util.concurrent.ConcurrentHashMap<Long, KeyList> built =
+                    new java.util.concurrent.ConcurrentHashMap<>();
+            Object it = RocksBridge.newIterator(ownDb, ownSections);
+            try {
+                RocksBridge.seekToFirst(it);
+                while (RocksBridge.isValid(it)) {
+                    byte[] kb = RocksBridge.key(it);
+                    if (kb != null && kb.length == 8) {
+                        long sectionKey = ByteBuffer.wrap(kb).order(ByteOrder.BIG_ENDIAN).getLong();
+                        addKeyTo(built, sectionKey);
+                    }
+                    RocksBridge.next(it);
+                }
+            } finally {
+                RocksBridge.close(it);
+            }
+            // Section keys that arrived while we were scanning: they belong to the new index too.
+            Long pending;
+            while ((pending = liveDuringScan.poll()) != null) {
+                addKeyTo(built, pending);
+            }
+            byTile = built;
+            indexed = true;
+            indexFromStaleCache = false;
+            indexSwapped = true;
+            liveKeys.clear();
+            pendingLiveKeys.clear();
+            lastIndexScanNanos = System.nanoTime() - scanStartNs;
+            saveIndexCacheAsync(signature);
+            if (TileTrace.enabled()) {
+                TileTrace.timed(-1, -1, "index_scan_done", scanStartNs, "tiles=" + built.size() + " async");
+            }
+        } catch (Throwable t) {
+            System.out.println("[voxymap] background index scan failed: " + t);
+        } finally {
+            for (Object h : hs) RocksBridge.close(h);
+            RocksBridge.close(ownDb);
         }
     }
 
@@ -441,6 +523,12 @@ public final class VoxyTileSource {
         if (closed.get()) return;
         if (!indexed) {
             pendingLiveKeys.add(key);
+            return;
+        }
+        if (scanInFlight.get()) {
+            // A background scan is building a fresh map from its own snapshot: queue keys so they
+            // are merged before the swap instead of touching the soon-to-be-replaced index.
+            liveDuringScan.add(key);
             return;
         }
         if (liveKeys.size() >= 131_072) {
@@ -675,6 +763,7 @@ public final class VoxyTileSource {
 
     public void close() {
         if (!closed.compareAndSet(false, true)) return;
+        indexPool.shutdownNow();
         io.shutdown();
         try {
             io.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS);
@@ -702,33 +791,20 @@ public final class VoxyTileSource {
      * the live-key dedupe cap). The previous index stays usable for in-flight decodes until the new
      * one is built and swapped in (see {@link #ensureIndex()}), so this no longer cancels work.
      */
+    /**
+     * Requests a full index rebuild (manual refresh, closed-map dirty data, or the live-key dedupe
+     * cap). The scan runs on its own thread with its own read-only handle and swaps the new map in
+     * atomically, so decodes keep using the previous index in the meantime — no lock stall, no
+     * cancelled in-flight work.
+     */
     public void invalidateIndex() {
         if (closed.get()) return;
-        // Several resyncs can pile up while a scan is slow; one close/reopen is enough.
-        if (!invalidateQueued.compareAndSet(false, true)) return;
-        if (TileTrace.enabled()) TileTrace.stage(-1, -1, "index_invalidate", "");
+        if (TileTrace.enabled()) TileTrace.stage(-1, -1, "index_invalidate", "async");
         try {
-            io.submit(() -> {
-                dbLock.writeLock().lock();
-                try {
-                    indexed = false;
-                    indexFromStaleCache = false;
-                    pendingLiveKeys.clear();
-                    liveKeys.clear();
-                    // waits for in-flight decodes (read lock) before closing the handle
-                    closeHandlesKeepIndex();
-                    try {
-                        if (indexCache != null) Files.deleteIfExists(indexCache);
-                    } catch (Throwable ignored) {
-                    }
-                } finally {
-                    dbLock.writeLock().unlock();
-                    invalidateQueued.set(false);
-                }
-            });
-        } catch (java.util.concurrent.RejectedExecutionException rejected) {
-            invalidateQueued.set(false);
+            if (indexCache != null) Files.deleteIfExists(indexCache);
+        } catch (Throwable ignored) {
         }
+        startBackgroundScan();
     }
 
     /** Closes the DB handle but keeps the in-memory index (used by reopen and before a rescan). */

@@ -174,6 +174,13 @@ public final class LiveTileStore {
     private long textureFrame;
     /** wall clock of the last live section that actually changed pixels (debounce hint). */
     private volatile long lastLiveApplyMs;
+    /**
+     * Minimum interval between two live-driven recolours of the same tile. Set from the map screen
+     * from the tile's on-screen size: a zoomed-out viewport shows hundreds of small tiles, so
+     * repainting each of them as fast as a zoomed-in one would saturate the colour pool (the
+     * dominant cost was cancelled/stale colour jobs, not the pixel data itself).
+     */
+    private volatile int liveRepaintIntervalMs = 800;
     private final AtomicLong sectionCount = new AtomicLong();
     private final AtomicInteger createdThisFrame = new AtomicInteger();
     private final AtomicInteger colorRequestsThisFrame = new AtomicInteger();
@@ -184,6 +191,12 @@ public final class LiveTileStore {
     private final Set<Long> seedPending = ConcurrentHashMap.newKeySet();
     private final Set<Long> sourcePending = ConcurrentHashMap.newKeySet();
     private final Set<Long> sourceEmpty = ConcurrentHashMap.newKeySet();
+    /** upper bound on concurrent source tile loads (keeps the cold-start queue short). */
+    private static final int MAX_CONCURRENT_SOURCE_LOADS = 48;
+    /** tiles waiting for a free source slot, drained in insertion (centre-out) order. */
+    private final java.util.LinkedHashSet<Long> sourceBacklog = new java.util.LinkedHashSet<>();
+    /** tiles sitting in {@link #sourceBacklog} (so getOrCreateSeed does not re-submit them). */
+    private final Set<Long> sourceQueued = ConcurrentHashMap.newKeySet();
     private final AtomicInteger resetGeneration = new AtomicInteger();
     private final AtomicInteger sourceEpoch = new AtomicInteger();
     private final AtomicInteger cacheEpoch = new AtomicInteger();
@@ -429,6 +442,10 @@ public final class LiveTileStore {
         sourceEmpty.clear();
         seedPending.clear();
         sourcePending.clear();
+        synchronized (sourceBacklog) {
+            sourceBacklog.clear();
+        }
+        sourceQueued.clear();
         cacheEpoch.incrementAndGet();
         maxLandY.set(persistedMaxLand);
         rampVersion.incrementAndGet();
@@ -572,8 +589,7 @@ public final class LiveTileStore {
                 t.colorEpoch++;
                 t.colorDirtySinceMs = System.currentTimeMillis();
                 if (t.colorRetryAtMs == 0L) {
-                    long live = System.currentTimeMillis() - lastLiveApplyMs;
-                    t.colorRetryAtMs = t.colorDirtySinceMs + (live < 1_500L ? 800L : 500L);
+                    t.colorRetryAtMs = t.colorDirtySinceMs + liveRepaintDelayMs();
                 }
                 // Do not clear colorPending: a job is already in flight. Clearing it queued another
                 // full colour job for the same tile on every neighbour arrival (the 26s backlog).
@@ -769,6 +785,10 @@ public final class LiveTileStore {
         VoxyTileSource src = source;
         if (src != null) src.cancelPending();
         sourcePending.clear();
+        synchronized (sourceBacklog) {
+            sourceBacklog.clear();
+        }
+        sourceQueued.clear();
         cacheEpoch.incrementAndGet();
         seedPending.clear();
     }
@@ -819,6 +839,43 @@ public final class LiveTileStore {
     public boolean consumeSourceRescanRequest() {
         VoxyTileSource src = source;
         return src != null && src.consumeRescanRequest();
+    }
+
+    /** One-shot: a background index scan swapped in a new index and tiles should re-query. */
+    public boolean consumeIndexSwapped() {
+        VoxyTileSource src = source;
+        return src != null && src.consumeIndexSwapped();
+    }
+
+    /** Starts queued source loads while there is room, in the order they were requested. */
+    private void drainSourceBacklog() {
+        while (true) {
+            long tileKey;
+            synchronized (sourceBacklog) {
+                if (sourceBacklog.isEmpty() || sourcePending.size() >= MAX_CONCURRENT_SOURCE_LOADS) return;
+                java.util.Iterator<Long> it = sourceBacklog.iterator();
+                tileKey = it.next();
+                it.remove();
+            }
+            int tx = (int) (tileKey >> 32);
+            int tz = (int) tileKey;
+            sourceQueued.remove(tileKey);
+            requestSourceTile(tx, tz, tileKey);
+        }
+    }
+
+    /** Recolour throttle for live updates; the map screen scales it with the on-screen tile size. */
+    public void setLiveRepaintIntervalMs(int value) {
+        liveRepaintIntervalMs = Math.max(200, Math.min(10_000, value));
+    }
+
+    public int liveRepaintIntervalMs() {
+        return liveRepaintIntervalMs;
+    }
+
+    /** Retry delay for a live-driven invalidation right now (short when no stream is active). */
+    private long liveRepaintDelayMs() {
+        return System.currentTimeMillis() - lastLiveApplyMs < 1_500L ? liveRepaintIntervalMs : 300L;
     }
 
     /** Visible tile rectangle of the last drawn frame; limits live-tile creation to the viewport. */
@@ -892,6 +949,16 @@ public final class LiveTileStore {
             sourceEmpty.add(key);
             return;
         }
+        if (sourcePending.size() >= MAX_CONCURRENT_SOURCE_LOADS) {
+            // Bounded ingestion: a zoomed-out cold viewport needs hundreds of tiles. Queueing them
+            // all at once made every decode wait seconds in src_queue; the backlog is drained in
+            // the submission order (centre-out from the draw loop).
+            if (!sourceQueued.add(key)) return;
+            synchronized (sourceBacklog) {
+                sourceBacklog.add(key);
+            }
+            return;
+        }
         sourcePending.add(key);
         final long srcStartNs = System.nanoTime();
         if (TileTrace.enabled()) TileTrace.stage(tx, tz, "src_request", "reason=cache-miss");
@@ -956,6 +1023,7 @@ public final class LiveTileStore {
             return;
         }
         if (sourceFillRequestsThisFrame.get() >= 48) return;
+        if (sourcePending.size() >= MAX_CONCURRENT_SOURCE_LOADS) return;
         sourceFillRequestsThisFrame.incrementAndGet();
         sourcePending.add(key);
         final long fillStartNs = System.nanoTime();
@@ -1057,6 +1125,7 @@ public final class LiveTileStore {
         textureFrame++;
         visibleTiles.clear();
         visibleTextures.clear();
+        drainSourceBacklog();
     }
 
     /**
@@ -1171,7 +1240,7 @@ public final class LiveTileStore {
         long key = key(tx, tz);
         // Do not retry the cache/source for a tile that is already being decoded or was proven
         // empty. Without these checks a visible empty margin re-ran loadCached() every frame.
-        if (sourcePending.contains(key) || sourceEmpty.contains(key)) return null;
+        if (sourcePending.contains(key) || sourceQueued.contains(key) || sourceEmpty.contains(key)) return null;
         if (!seedPending.add(key)) return null;
         seedRequestsThisFrame.incrementAndGet();
         final boolean hasSeed = seedPixels != null && seedRgb != null;
@@ -1553,10 +1622,10 @@ public final class LiveTileStore {
             t.cacheDirty = true;
             t.colorEpoch++;
             t.colorDirtySinceMs = nowLive;
-            if (t.colorRetryAtMs == 0L) {
-                // While Voxy is streaming, live events arrive much faster than a colour job takes:
-                // coalesce to roughly one recolour per second instead of cancelling every job.
-                t.colorRetryAtMs = nowLive + (nowLive - lastLiveApplyMs < 1_500L ? 800L : 300L);
+            if (t.colorRetryAtMs == 0L && t.coloredVersion >= 0) {
+                // Throttle REPAINTS only: a tile that has never been coloured must show up
+                // immediately (first paint of a live tile is not a "re"paint).
+                t.colorRetryAtMs = nowLive + liveRepaintDelayMs();
             }
             t.textureDirty = true;
             t.tileMaxLandKnown = false;
@@ -1668,6 +1737,11 @@ public final class LiveTileStore {
     }
 
     private void requestColor(LiveTile tile, int colorHash) {
+        // Backpressure: keep at most ~4 jobs per colour thread queued. Without this a zoomed-out
+        // viewport queues hundreds of jobs; each waits long enough that live updates make it stale,
+        // which is pure wasted work (and the biggest cost at low zoom).
+        int budget = Math.max(8, Runtime.getRuntime().availableProcessors());
+        if (MapData.INSTANCE.tileColorJobsInFlight() >= budget) return;
         tile.colorPending = true;
         tile.colorRetryAtMs = 0L;
         colorRequestsThisFrame.incrementAndGet();
@@ -1683,19 +1757,22 @@ public final class LiveTileStore {
         MapData.INSTANCE.submitTileColor(hw, hw, minX, minZ, pixelBlocks, full -> {
             tile.colorPending = false;
             if (full == null || full.length < hw * hw) {
-                // The job was cancelled because the tile/neighbour changed again. Back off before
-                // queueing another full halo+colour job; busy live updates otherwise form a loop.
+                // No halo yet (neighbour not ready / map closing). Back off before retrying.
                 tile.colorDirtySinceMs = System.currentTimeMillis();
-                tile.colorRetryAtMs = tile.colorDirtySinceMs + 300L;
+                tile.colorRetryAtMs = tile.colorDirtySinceMs + liveRepaintDelayMs();
                 if (TileTrace.enabled()) TileTrace.timed(tile.tx, tile.tz, "color_empty", colorStartNs, "null");
                 return;
             }
-            if (tile.version != version || tile.colorEpoch != epoch) {
-                if (TileTrace.enabled()) TileTrace.timed(tile.tx, tile.tz, "color_stale", colorStartNs, "version-or-halo-changed");
+            // A newer colour result is already on screen: this one is older data, drop it.
+            if (tile.coloredVersion > version) {
+                if (TileTrace.enabled()) TileTrace.timed(tile.tx, tile.tz, "color_stale", colorStartNs, "superseded");
                 MapPerf.INSTANCE.colorStale.increment();
-                return; // a newer section/neighbour update won the race; a later frame requests again
+                return;
             }
-            if (tile.coloredVersion == version && tile.colorStyleHash == colorHash) return;
+            if (tile.coloredVersion == version && tile.colorStyleHash == colorHash) {
+                return; // identical result already applied
+            }
+            boolean stale = tile.version != version || tile.colorEpoch != epoch;
             int[] cropped = new int[TILE_PIXELS * TILE_PIXELS];
             for (int z = 0; z < TILE_PIXELS; z++) {
                 System.arraycopy(full, (z + halo) * hw + halo, cropped, z * TILE_PIXELS, TILE_PIXELS);
@@ -1705,10 +1782,19 @@ public final class LiveTileStore {
             tile.colorStyleHash = colorHash;
             tile.textureDirty = true;
             colorVersion.incrementAndGet();
-            MapPerf.INSTANCE.colorDone.increment();
-            if (TileTrace.enabled()) TileTrace.timed(tile.tx, tile.tz, "color_done", colorStartNs, "version=" + version);
-        }, () -> buildColorHalo(tile, halo),
-                () -> tile.version == version && tile.colorEpoch == epoch);
+            if (stale) {
+                // Live pixels changed while this job ran. The result is still newer than what is on
+                // screen, so apply it instead of throwing it away and re-running immediately; the
+                // normal repaint interval schedules the next (correct) pass.
+                MapPerf.INSTANCE.colorStaleApplied.increment();
+                tile.colorRetryAtMs = System.currentTimeMillis() + liveRepaintDelayMs();
+                if (TileTrace.enabled()) TileTrace.timed(tile.tx, tile.tz, "color_done_stale", colorStartNs,
+                        "version=" + version + " now=" + tile.version);
+            } else {
+                MapPerf.INSTANCE.colorDone.increment();
+                if (TileTrace.enabled()) TileTrace.timed(tile.tx, tile.tz, "color_done", colorStartNs, "version=" + version);
+            }
+        }, () -> buildColorHalo(tile, halo), () -> true);
     }
 
     /**
@@ -1925,6 +2011,10 @@ public final class LiveTileStore {
     public void dispose() {
         resetGeneration.incrementAndGet();
         clearViewportHint();
+        synchronized (sourceBacklog) {
+            sourceBacklog.clear();
+        }
+        sourceQueued.clear();
         for (LiveTile tile : tiles.values()) {
             if (tile.seedEpoch < 0) scheduleSave(tile);
             tile.dispose();

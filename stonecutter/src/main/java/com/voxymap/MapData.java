@@ -33,6 +33,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.zip.GZIPInputStream;
 
 /**
@@ -118,6 +119,12 @@ public final class MapData {
                 return t;
             });
     private final AtomicBoolean requested = new AtomicBoolean();
+    /** queued/running tile recolour jobs: live updates use this as backpressure (see LiveTileStore) */
+    private final AtomicInteger tileColorInFlight = new AtomicInteger();
+
+    public int tileColorJobsInFlight() {
+        return tileColorInFlight.get();
+    }
 
     private volatile Snapshot snap;
     /** per-section value hashes paired with {@link #snap}; null = incremental refresh unavailable */
@@ -2555,12 +2562,12 @@ public final class MapData {
                 // sections feed the index incrementally (VoxyTileSource.addLiveKey), so routine
                 // freshness only needs the cheap snapshot reopen below. A full scan still runs at
                 // open when the on-disk index is stale and as a 2-minute safety net.
+                // The scan itself runs in the background on its own RocksDB handle; tiles are only
+                // re-queried after it swapped the new index in (see consumeIndexSwapped below).
                 tileResyncAtMs = 0;
                 lastTileRescanMs = now;
                 MapPerf.INSTANCE.resyncs.increment();
                 store.invalidateSourceIndex();
-                // The new key set may contain data for any tile: re-query all of them once.
-                store.markAllSourceStale(true);
                 tileResyncAtMs = now + 120_000L;
             } else if (tileRescanNeeded && now >= tileReopenAtMs) {
                 // Cheap snapshot refresh while Voxy is writing: reopen the read-only handle so new
@@ -2578,6 +2585,11 @@ public final class MapData {
                 tileReopenAtMs = now + 30_000L;
                 store.reopenSourceDb();
                 store.markAllSourceStale(false);
+            }
+            // A background index rebuild finished: the new key set may contain data for any tile,
+            // so re-query all resident tiles exactly once (cheap: the resident set is viewport-bound).
+            if (store.consumeIndexSwapped()) {
+                store.markAllSourceStale(true);
             }
             maybeRecolorForTileRamp(store, now);
             maybeRefreshTileBiome(store, now);
@@ -3520,38 +3532,46 @@ public final class MapData {
         final int tileWorld = LiveTileStore.TILE_PIXELS * Math.max(1, pixelBlocks);
         final int traceTx = (int) Math.floorDiv(minWX + 8L * pixelBlocks, (long) tileWorld);
         final int traceTz = (int) Math.floorDiv(minWZ + 8L * pixelBlocks, (long) tileWorld);
-        colorPool.submit(() -> {
-            final long workStartNs = System.nanoTime();
-            if (TileTrace.enabled()) TileTrace.timed(traceTx, traceTz, "color_wait", submittedNs, "loader-queue");
-            try {
-                if (!stillValid.getAsBoolean()) {
-                    if (TileTrace.enabled()) TileTrace.timed(traceTx, traceTz, "color_cancelled", submittedNs, "stale-before-work");
-                    done.accept(null); // cancellation only clears colorPending; no main-thread UI work
-                    return;
+        tileColorInFlight.incrementAndGet();
+        try {
+            colorPool.submit(() -> {
+                final long workStartNs = System.nanoTime();
+                if (TileTrace.enabled()) TileTrace.timed(traceTx, traceTz, "color_wait", submittedNs, "loader-queue");
+                try {
+                    if (!stillValid.getAsBoolean()) {
+                        if (TileTrace.enabled()) TileTrace.timed(traceTx, traceTz, "color_cancelled", submittedNs, "stale-before-work");
+                        done.accept(null); // cancellation only clears colorPending; no main-thread UI work
+                        return;
+                    }
+                    final long haloStartNs = System.nanoTime();
+                    long[] pixels = haloSupplier.get();
+                    if (TileTrace.enabled()) {
+                        TileTrace.timed(traceTx, traceTz, "color_halo", haloStartNs,
+                                "px=" + (pixels == null ? -1 : pixels.length));
+                    }
+                    if (!stillValid.getAsBoolean()) {
+                        if (TileTrace.enabled()) TileTrace.timed(traceTx, traceTz, "color_cancelled", submittedNs, "stale-after-halo");
+                        done.accept(null);
+                        return;
+                    }
+                    int[] rgb = renderTileColor(pixels, width, height, minWX, minWZ, pixelBlocks);
+                    if (TileTrace.enabled()) {
+                        TileTrace.timed(traceTx, traceTz, "color_work", workStartNs,
+                                "px=" + (rgb == null ? -1 : rgb.length));
+                    }
+                    Minecraft.getInstance().execute(() -> done.accept(rgb));
+                } catch (Throwable t) {
+                    if (TileTrace.enabled()) TileTrace.stage(traceTx, traceTz, "color_error", t.getClass().getSimpleName());
+                    t.printStackTrace();
+                    Minecraft.getInstance().execute(() -> done.accept(null));
+                } finally {
+                    tileColorInFlight.decrementAndGet();
                 }
-                final long haloStartNs = System.nanoTime();
-                long[] pixels = haloSupplier.get();
-                if (TileTrace.enabled()) {
-                    TileTrace.timed(traceTx, traceTz, "color_halo", haloStartNs,
-                            "px=" + (pixels == null ? -1 : pixels.length));
-                }
-                if (!stillValid.getAsBoolean()) {
-                    if (TileTrace.enabled()) TileTrace.timed(traceTx, traceTz, "color_cancelled", submittedNs, "stale-after-halo");
-                    done.accept(null);
-                    return;
-                }
-                int[] rgb = renderTileColor(pixels, width, height, minWX, minWZ, pixelBlocks);
-                if (TileTrace.enabled()) {
-                    TileTrace.timed(traceTx, traceTz, "color_work", workStartNs,
-                            "px=" + (rgb == null ? -1 : rgb.length));
-                }
-                Minecraft.getInstance().execute(() -> done.accept(rgb));
-            } catch (Throwable t) {
-                if (TileTrace.enabled()) TileTrace.stage(traceTx, traceTz, "color_error", t.getClass().getSimpleName());
-                t.printStackTrace();
-                Minecraft.getInstance().execute(() -> done.accept(null));
-            }
-        });
+            });
+        } catch (java.util.concurrent.RejectedExecutionException rejected) {
+            tileColorInFlight.decrementAndGet();
+            done.accept(null);
+        }
     }
     /** Writes the most recently rendered map as a PNG. */
     public boolean exportPng(java.nio.file.Path out) {
@@ -3670,7 +3690,12 @@ public final class MapData {
                             String style, int sea, int colorEpoch) {
         if (!isTile2DMode()) return;
         LiveTileStore live = ensure2DStore();
-        if (live != null) live.pumpFor3D(centerX, centerZ, radiusTiles, style, sea, colorEpoch);
+        if (live != null) {
+            // 3D terrain tiles are small on screen even up close (and many at once): a moderate
+            // repaint interval keeps live recolours from queueing up behind the 3D mesh builds.
+            live.setLiveRepaintIntervalMs(1200);
+            live.pumpFor3D(centerX, centerZ, radiusTiles, style, sea, colorEpoch);
+        }
     }
 
     /**
@@ -3947,9 +3972,8 @@ public final class MapData {
             } else {
                 store.markTilesForSourceRefresh(tiles);
             }
-            // One full rebuild picks up the closed-period writes; every resident tile re-queries
-            // once afterwards (the resident set is viewport-bounded since live tiles are too).
-            store.markAllSourceStale(true);
+            // Do not re-query every tile here: the background rebuild swaps the new index in shortly
+            // and consumeIndexSwapped() then marks all resident tiles stale exactly once.
             tileRescanNeeded = false;
             tileResyncAtMs = 0L;
             tileReopenAtMs = System.currentTimeMillis();

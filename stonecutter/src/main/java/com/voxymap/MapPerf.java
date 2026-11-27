@@ -37,6 +37,8 @@ public final class MapPerf {
     public final LongAdder colorRequests = new LongAdder();
     public final LongAdder colorDone = new LongAdder();
     public final LongAdder colorStale = new LongAdder();
+    /** colour jobs that finished after a newer pixel change but were still applied (no re-run). */
+    public final LongAdder colorStaleApplied = new LongAdder();
     public final LongAdder textureBuilds = new LongAdder();
     /** full-tile colour invalidations (ramp/style/overlay): each one re-colours every resident tile */
     public final LongAdder colorInvalidations = new LongAdder();
@@ -125,9 +127,9 @@ public final class MapPerf {
                     cacheHits.sum(), cacheMisses.sum(), sourceRequests.sum(),
                     sourceHits.sum(), sourceEmpty.sum(), evictions.sum()));
             out.add(String.format(Locale.ROOT,
-                    "pcol %d/%d/%d tex%d inv%d | live%d skip%d cal%d | tiles%d",
-                    colorRequests.sum(), colorDone.sum(), colorStale.sum(), textureBuilds.sum(),
-                    colorInvalidations.sum(),
+                    "pcol %d/%d/%d sA%d tex%d inv%d | live%d skip%d cal%d | tiles%d",
+                    colorRequests.sum(), colorDone.sum(), colorStale.sum(), colorStaleApplied.sum(),
+                    textureBuilds.sum(), colorInvalidations.sum(),
                     liveSections.sum(), liveClosedSkipped.sum(), resyncs.sum(),
                     tileObjects.sum()));
         }
