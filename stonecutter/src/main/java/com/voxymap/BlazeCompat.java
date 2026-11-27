@@ -263,4 +263,17 @@ public final class BlazeCompat {
         //?}
     }
 
+    /**
+     * Current screen: 26.2 moved the accessor onto {@code Gui}, 26.1.2 still exposes it directly on
+     * {@code Minecraft}. Test-only code (tools/selftest) is compiled per version but is not run
+     * through Stonecutter preprocessing, so it must use this helper instead of either form.
+     */
+    public static Screen screen(Minecraft mc) {
+        //? if >=26.2 {
+        return mc.gui.screen();
+        //?} else {
+        /*return mc.screen;*/
+        //?}
+    }
+
 }

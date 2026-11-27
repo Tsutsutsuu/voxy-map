@@ -13,8 +13,8 @@
 # the game does not quit on its own (the self-test harness quits by itself).
 #
 # Usage:
-#   pwsh -File tools/launch-fabric-26.2.ps1 -PrintOnly
-#   pwsh -File tools/launch-fabric-26.2.ps1 -World '新的世界' -ExtraJvmArgs '-Dvoxymap.selftest=true'
+#   pwsh -File tools/launch-fabric.ps1 -PrintOnly
+#   pwsh -File tools/launch-fabric.ps1 -World '新的世界' -ExtraJvmArgs '-Dvoxymap.selftest=true'
 param(
     [string]$Instance = 'D:\Minecraft\AxolotlLauncher\Data\profiles\26.2-Fabric 0.20.1',
     [string]$VersionId = '26.2-0.20.1',

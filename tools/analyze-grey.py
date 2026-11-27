@@ -13,6 +13,7 @@ The old soft-grey heuristic is still reported last but is only an upper bound.
 
 Usage:
   python tools/analyze-grey.py <png> [more pngs...] [-m]
+  python tools/analyze-grey.py <png> --json     # machine-readable, used by verify-release.ps1
 """
 import sys
 from pathlib import Path
@@ -57,10 +58,30 @@ def analyse(path: Path, write_mask: bool) -> None:
 
 
 if __name__ == "__main__":
-    args = [a for a in sys.argv[1:] if a != "-m"]
+    import json
+
+    args = [a for a in sys.argv[1:] if not a.startswith("-")]
     mask = "-m" in sys.argv[1:]
+    as_json = "--json" in sys.argv[1:]
     if not args:
         print(__doc__)
         sys.exit(2)
+
+    def stats(p: Path):
+        img = Image.open(p).convert("RGB")
+        a = np.asarray(img, dtype=np.int16)
+        magenta = int(np.all(a == MAGENTA, axis=2).sum())
+        exact = int(np.all(a == FALLBACK, axis=2).sum())
+        mx = a.max(axis=2)
+        mn = a.min(axis=2)
+        soft = int((((mx - mn) <= 8)
+                    & (((a[:, :, 0] + a[:, :, 1] + a[:, :, 2]) // 3) >= 85)
+                    & (((a[:, :, 0] + a[:, :, 1] + a[:, :, 2]) // 3) <= 190)).sum())
+        return {"file": p.name, "width": a.shape[1], "height": a.shape[0],
+                "magenta": magenta, "exactFallback": exact, "softGrey": soft}
+
     for p in args:
-        analyse(Path(p), mask)
+        if as_json:
+            print(json.dumps(stats(Path(p)), ensure_ascii=False))
+        else:
+            analyse(Path(p), mask)

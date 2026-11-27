@@ -260,8 +260,8 @@ public final class MapSelfTest {
         if (!installed || finished) return;
         tick++;
         long now = System.currentTimeMillis();
-        if (titleSeenAtMs == 0 && mc.level == null && mc.gui.screen() != null
-                && mc.gui.screen().getClass().getSimpleName().equals("TitleScreen")) {
+        if (titleSeenAtMs == 0 && mc.level == null && BlazeCompat.screen(mc) != null
+                && BlazeCompat.screen(mc).getClass().getSimpleName().equals("TitleScreen")) {
             titleSeenAtMs = now;
             log("title screen ready after " + (now - startMs) + "ms");
         }
@@ -334,7 +334,7 @@ public final class MapSelfTest {
                     settings,
                     net.minecraft.client.gui.screens.worldselection.SelectWorldScreen.TEST_OPTIONS,
                     net.minecraft.world.level.levelgen.presets.WorldPresets::createNormalWorldDimensions,
-                    mc.gui.screen());
+                    BlazeCompat.screen(mc));
         } catch (Throwable t) {
             addError("createFreshWorld failed: " + t);
             t.printStackTrace();
@@ -373,7 +373,7 @@ public final class MapSelfTest {
             VoxyMapConfig.DEFAULT_STYLE.set(coldStyle);
             log("cold run: DEFAULT_STYLE=" + coldStyle);
         }
-        Screen screen = mc.gui.screen();
+        Screen screen = BlazeCompat.screen(mc);
         if (!(screen instanceof MapScreen)) {
             mc.setScreenAndShow(new MapScreen());
         }
@@ -864,7 +864,7 @@ public final class MapSelfTest {
         Path out = outDir.resolve(fileName);
         shotsPending.incrementAndGet();
         try {
-            RenderTarget target = mc.gameRenderer.mainRenderTarget();
+            RenderTarget target = BlazeCompat.mainRenderTarget(mc);
             Screenshot.takeScreenshot(target, image -> {
                 try (NativeImage img = image) {
                     Files.createDirectories(out.getParent());
@@ -1038,7 +1038,7 @@ public final class MapSelfTest {
     // helpers
     // =============================================================================
     private static MapScreen mapScreen(Minecraft mc) {
-        Screen s = mc.gui.screen();
+        Screen s = BlazeCompat.screen(mc);
         return s instanceof MapScreen m ? m : null;
     }
 

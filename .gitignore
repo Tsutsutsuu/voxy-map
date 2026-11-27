@@ -33,3 +33,5 @@ tools/logs/
 tools/__pycache__/
 tools/palette-gen/__pycache__/
 tmp-cache-test/
+
+tools/release-checks/

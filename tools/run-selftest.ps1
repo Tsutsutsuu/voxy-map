@@ -1,9 +1,10 @@
-# Run the voxymap in-game self-test for one world and collect the results.
+# Run the voxymap in-game self-test for one world/version and collect the results.
 #
 # Responsibilities:
 #   1. swap the instance's voxy-map jar for the requested build (always restored afterwards),
 #   2. optionally clear this world's 2D tile cache (cold first-open benchmark),
-#   3. launch the Fabric 26.2 instance with -Dvoxymap.selftest=true via launch-fabric-26.2.ps1,
+#   3. launch the configured Fabric instance (26.2 or 26.1.2) with -Dvoxymap.selftest=true via
+#      launch-fabric.ps1,
 #   4. collect logs + screenshots + report.json under tools/selftest-results/<tag>/,
 #   5. restore the instance mods and print a compact summary.
 #
@@ -14,9 +15,12 @@
 #
 # Usage:
 #   pwsh -File tools/run-selftest.ps1 -Build -World '新的世界' -Styles all -View3d
-#   pwsh -File tools/run-selftest.ps1 -World '新的世界' -Jar <selftest jar> -Styles core
-#   pwsh -File tools/run-selftest.ps1 -World '新的世界' -Jar <jar> -Cold -ColdStyle current -Tag w1-cold-current
+#   pwsh -File tools/run-selftest.ps1 -Version 26.1.2 -Build -CreateWorld 'w' -ProbeMs 30000
+#   pwsh -File tools/run-selftest.ps1 -Version 26.1.2 -World '新的世界' -Jar <selftest jar> -Cold
+#
+# Release gate (both versions, scenario matrix): tools/verify-release.ps1
 param(
+    [string]$Version = '26.2',
     [string]$World = '新的世界',
     [string]$Jar = '',
     [string]$Tag = '',
@@ -40,10 +44,26 @@ param(
     [int]$RunSeconds = 0,
     [int]$Width = 1280,
     [int]$Height = 720,
-    [string]$Instance = 'D:\Minecraft\AxolotlLauncher\Data\profiles\26.2-Fabric 0.20.1',
+    [string]$Instance = '',
     [string]$JavaHome = 'D:\Minecraft\AxolotlLauncher\Data\meta\java_versions\zulu25.36.15-ca-jdk25.0.4-win_x64',
-    [string]$VersionId = '26.2-0.20.1'
+    [string]$VersionId = '',
+    [string]$GradleProject = ''
 )
+
+# ---- per-version defaults (only when the caller did not override them) --------
+$versionDefaults = @{
+    '26.2'   = @{ Instance = 'D:\Minecraft\AxolotlLauncher\Data\profiles\26.2-Fabric 0.20.1';
+                  VersionId = '26.2-0.20.1'; GradleProject = '26.2-fabric' }
+    '26.1.2' = @{ Instance = 'D:\Minecraft\AxolotlLauncher\Data\profiles\26.1.2-Fabric 0.20.1';
+                  VersionId = '26.1.2-0.20.1'; GradleProject = '26.1-fabric' }
+}
+if (-not $versionDefaults.ContainsKey($Version)) {
+    throw "unsupported -Version '$Version' (expected: $($versionDefaults.Keys -join ', '))"
+}
+$vd = $versionDefaults[$Version]
+if (-not $PSBoundParameters.ContainsKey('Instance')) { $Instance = $vd.Instance }
+if (-not $PSBoundParameters.ContainsKey('VersionId')) { $VersionId = $vd.VersionId }
+if (-not $PSBoundParameters.ContainsKey('GradleProject')) { $GradleProject = $vd.GradleProject }
 
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandArgumentPassing = 'Standard'
@@ -59,9 +79,9 @@ $logsDir = Join-Path $Instance 'logs'
 # The scripted harness lives in tools/selftest and is only compiled into jars built
 # with -Pselftest (the production jar has no test code at all).
 function Build-SelftestJar {
-    Write-Host '--- building selftest jar (-Pselftest, JDK25) ---'
+    Write-Host "--- building selftest jar ($GradleProject, -Pselftest, JDK25) ---"
     $gradleDir = Join-Path $RepoRoot 'stonecutter'
-    $built = Join-Path $gradleDir 'versions\26.2-fabric\build\libs'
+    $built = Join-Path $gradleDir "versions\$GradleProject\build\libs"
     $oldJava = $env:JAVA_HOME
     $PSNativeCommandArgumentPassing = 'Standard'
     $env:JAVA_HOME = $JavaHome
@@ -70,7 +90,7 @@ function Build-SelftestJar {
         try {
             # Out-Host keeps Gradle's console output visible without polluting this function's
             # return value (PowerShell would otherwise return every output line as part of $Jar).
-            & .\gradlew.bat ':26.2-fabric:build' '-Pselftest' '--no-daemon' '--console=plain' |
+            & .\gradlew.bat ":$GradleProject`:build" '-Pselftest' '--no-daemon' '--console=plain' |
                 Out-Host
             if ($LASTEXITCODE -ne 0) { throw "gradle build failed (exit $LASTEXITCODE)" }
         } finally {
@@ -82,7 +102,7 @@ function Build-SelftestJar {
     $jar = Get-ChildItem -LiteralPath $built -Filter 'voxy-map-*-selftest.jar' -File -ErrorAction SilentlyContinue |
         Sort-Object LastWriteTime -Descending | Select-Object -First 1
     if (-not $jar) { throw "selftest jar not found in $built" }
-    $dest = Join-Path $RepoRoot 'tools\feature\voxy-map-feature-harness.jar'
+    $dest = Join-Path $RepoRoot "tools\feature\voxy-map-feature-harness-$Version.jar"
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dest) | Out-Null
     Copy-Item -LiteralPath $jar.FullName -Destination $dest -Force
     Write-Host "built: $($jar.Name) -> $dest"
@@ -91,9 +111,13 @@ function Build-SelftestJar {
 if ($Build) { $Jar = Build-SelftestJar }
 if ($BuildOnly) { Write-Host "built: $Jar"; exit 0 }
 if (-not $Jar) {
-    $defaultJar = Join-Path $RepoRoot 'tools\feature\voxy-map-feature-harness.jar'
-    if (Test-Path -LiteralPath $defaultJar) { $Jar = $defaultJar }
-    else { throw "no jar given: pass -Jar <jar> or -Build (builds the selftest jar)" }
+    $candidates = @(
+        (Join-Path $RepoRoot "tools\feature\voxy-map-feature-harness-$Version.jar"),
+        (Join-Path $RepoRoot 'tools\feature\voxy-map-feature-harness.jar')
+    )
+    $defaultJar = $candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    if ($defaultJar) { $Jar = $defaultJar }
+    else { throw "no jar given: pass -Jar <jar> or -Build (builds the $GradleProject selftest jar)" }
 }
 
 # world folder -> short ASCII tag (the game side writes screenshots/report named after the tag)
@@ -281,7 +305,7 @@ try {
     if ($Cold) { Clear-TileCache }
 
     Write-Host '--- launching game (a window will open; the harness quits it when done) ---'
-    $launchScript = Join-Path $PSScriptRoot 'launch-fabric-26.2.ps1'
+    $launchScript = Join-Path $PSScriptRoot 'launch-fabric.ps1'
     $launchStart = Get-Date
     # Run the launcher in this same process (foreground call): the JVM inherits the console handles,
     # which this setup needs. Output is tee'd into console.log.
@@ -417,7 +441,7 @@ if (Test-Path -LiteralPath $reportPath) {
 
 # quick log check shared by Part A and the harness runs
 if (Test-Path -LiteralPath $gameLog) {
-    $init = Select-String -LiteralPath $gameLog -Pattern 'Voxy Map \(Fabric, 26\.2\) initialised' -SimpleMatch:$false
+    $init = Select-String -LiteralPath $gameLog -Pattern 'Voxy Map \(Fabric, 26' -SimpleMatch:$false
     $joined = Select-String -LiteralPath $gameLog -Pattern 'joined the game|加入了游戏'
     $selftestLines = @(Select-String -LiteralPath $gameLog -Pattern '\[selftest' -SimpleMatch)
     $hardErrors = @(Select-String -LiteralPath $gameLog -Pattern 'Exception in thread|Crash report|A fatal error|java\.lang\.NullPointerException|OutOfMemoryError' -SimpleMatch)

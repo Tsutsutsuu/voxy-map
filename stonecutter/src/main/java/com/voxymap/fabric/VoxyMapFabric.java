@@ -27,6 +27,10 @@ public class VoxyMapFabric implements ClientModInitializer {
         } catch (Throwable t) {
             LOGGER.warn("self-test harness could not be installed", t);
         }
+        //? if >=26.2 {
         LOGGER.info("Voxy Map (Fabric, 26.2) initialised");
+        //?} else {
+        /*LOGGER.info("Voxy Map (Fabric, 26.1.2) initialised");*/
+        //?}
     }
 }
