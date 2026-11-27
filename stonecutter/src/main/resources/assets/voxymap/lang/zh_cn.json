@@ -25,7 +25,7 @@
   "voxymap.config.desc.gpuTerrainFarStep": "远景每个顶点覆盖的地图像素，用粗网格铺满地图。",
   "voxymap.config.desc.gpuTerrainSkirtDepth": "瓦片边缘向下的裙边高度，用于遮住精度接缝。",
   "voxymap.config.desc.gpuTerrainHysteresisPct": "精度切换的滞回百分比，避免相机轻微移动反复重建。",
-"voxymap.config.desc.gpuTerrainVoxel": "把 3D 地形渲染成方块柱体素（平顶 + 垂直侧面）。实验性功能，默认关闭。",
+"voxymap.config.desc.gpuTerrainVoxel": "只把近景（最高精度）的 3D 瓦片渲染成方块柱体素，中景/远景仍用平滑地形。实验性功能，默认关闭。",
   "voxymap.config.desc.gpu3dBuildThreads": "后台瓦片构建线程数，0 为自动。",
   "voxymap.config.desc.gpu3dBatchBuild": "每帧最多提交多少个瓦片构建任务。",
   "voxymap.config.desc.keep3dTilesIn2d": "切回 2D 后保留 GPU 瓦片，下一次进 3D 更快，但占用更多显存。",

@@ -1182,7 +1182,10 @@ public final class Gpu3DMap {
                                      LiveTileStore.LiveTile tile, long[] pixels, int[] rgb,
                                      LiveTileStore live, int pb, int sea, double vscale) {
         long buildStart = System.nanoTime();
-        if (VoxyMapConfig.GPU_TERRAIN_VOXEL.get()) {
+        // Experimental voxel terrain is limited to the highest-precision (near) LOD step: larger
+        // steps would render huge blocks and look worse than the smooth height field.
+        if (VoxyMapConfig.GPU_TERRAIN_VOXEL.get()
+                && step == meshStep(VoxyMapConfig.GPU_TERRAIN_NEAR_STEP.get())) {
             return buildVoxel(gen, key, stamp, slot, step, tile, pixels, live, pb, sea, vscale, buildStart);
         }
         int grid = LiveTileStore.TILE_PIXELS / step;
