@@ -1075,7 +1075,7 @@ public final class MapData {
     public List<String> debugLines() {
         List<String> out = new ArrayList<>();
         Snapshot s = snap;
-        out.add("voxymap 0.1.0  cache v" + CACHE_VERSION);
+        out.add("voxymap " + AboutInfo.modVersion() + "  cache v" + CACHE_VERSION);
         out.add("storage: " + (lastStorage == null ? "-" : lastStorage));
         if (isTile2DMode()) {
             LiveTileStore live = liveTiles;
