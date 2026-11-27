@@ -60,8 +60,11 @@ public final class LiveTileStore {
      * 16: a tile could be decoded while {@code id_mappings} did not yet contain a newly discovered
      * block state; its slot stayed 0 (FALLBACK grey) forever. Mappings are re-read on refresh, and
      * the old .vxt files must not be reused.
+     * 17: source decoding is now gated on the mapping scan, so a tile can no longer be decoded with
+     * the empty surface-class table and saved with grey FALLBACK slots. v16 files may contain such
+     * slots (they can never be recoloured away), so they have to be rebuilt once.
      */
-    private static final int CACHE_VERSION = 16;
+    private static final int CACHE_VERSION = 17;
     private static final ExecutorService CACHE_IO = Executors.newFixedThreadPool(2, r -> {
         Thread t = new Thread(r, "voxymap-tile-cache");
         t.setDaemon(true);
@@ -102,6 +105,10 @@ public final class LiveTileStore {
         volatile long sourceKeySig;
         /** true when this tile came from the complete .vxt cache (skip resync source scans) */
         volatile boolean fromCache;
+        /** decoded pixels contain at least one unknown (FALLBACK slot 0) surface class. */
+        volatile boolean usedFallbackSlots;
+        /** how many times this tile was re-decoded after a mapping reload (loop guard). */
+        volatile int fallbackStrikes;
         /** true when the on-disk .vxt file no longer reflects this tile's pixels */
         volatile boolean cacheDirty = true;
         volatile boolean cacheSaving;
@@ -481,7 +488,7 @@ public final class LiveTileStore {
 
     private void scheduleSave(LiveTile tile) {
         if (cacheDir == null || !cacheReady || tile.seedEpoch >= 0 || !tile.cacheDirty
-                || !tile.sourceFilled || tile.cacheSaving) return;
+                || !tile.sourceFilled || tile.cacheSaving || tile.usedFallbackSlots) return;
         final int generation = cacheGeneration.get();
         tile.cacheSaving = true;
         if (TileTrace.enabled()) TileTrace.stage(tile.tx, tile.tz, "cache_save_queue", "gen=" + generation);
@@ -807,6 +814,54 @@ public final class LiveTileStore {
         markAllSourceStale(false);
     }
 
+    /** True when the decoded tile still contains columns whose surface class was unknown (slot 0). */
+    private static boolean pixelsHaveFallback(long[] pixels) {
+        for (long p : pixels) {
+            if (p == VoxyMerge.LONG_EMPTY || p == VoxyMerge.EMPTY_COLUMN) continue;
+            if (((p >>> 40) & SurfaceClassTable.SLOT_MASK) == 0) return true;
+        }
+        return false;
+    }
+
+    /** Resident tiles that currently hold FALLBACK (unknown surface class) pixels. */
+    public int fallbackTileCount() {
+        int n = 0;
+        for (LiveTile tile : tiles.values()) {
+            if (tile.usedFallbackSlots) n++;
+        }
+        return n;
+    }
+
+    /** FALLBACK tiles that were on screen in the last frame (the ones a screenshot can show). */
+    public int fallbackVisibleTileCount() {
+        int n = 0;
+        for (LiveTile tile : visibleTiles) {
+            if (tile.usedFallbackSlots) n++;
+        }
+        return n;
+    }
+
+    /**
+     * Re-decodes tiles whose pixels were baked with an unknown surface class while the mapping
+     * table was stale. Each tile gets at most two attempts: if the refreshed table still does not
+     * know the block state (genuinely new/removed states), the tile stays as-is instead of looping.
+     */
+    public void markFallbackTilesForRefresh() {
+        int marked = 0;
+        for (LiveTile tile : tiles.values()) {
+            if (!tile.usedFallbackSlots || tile.fallbackStrikes >= 2) continue;
+            tile.fallbackStrikes++;
+            tile.sourceStale = true;
+            tile.forceSourceReplace = true;
+            if (tile.rgb == null) tile.sourceFilled = false;
+            marked++;
+        }
+        if (marked > 0) {
+            sourceEmpty.clear();
+            MapPerf.INSTANCE.fallbackReloads.increment();
+        }
+    }
+
     /**
      * @param forceAll when true every tile is re-queried (full index rebuild); otherwise only tiles
      *                 whose section-key set changed, which keeps periodic snapshot refreshes cheap.
@@ -952,6 +1007,10 @@ public final class LiveTileStore {
     private void requestSourceTile(int tx, int tz, long key) {
         VoxyTileSource src = source;
         if (src == null || sourcePending.contains(key) || sourceEmpty.contains(key)) return;
+        // Never decode before the id_mappings surface-class table exists: the decoded pixel would
+        // bake slot 0 (FALLBACK grey) and only a full re-decode could repair it. The caller retries
+        // on the next frame; the mapping scan normally takes well under a second.
+        if (!MapData.INSTANCE.isTileDecodeReady()) return;
         if (!src.hasTileData(tx, tz)) {
             if (TileTrace.enabled()) TileTrace.stage(tx, tz, "src_known_empty", "index-no-section");
             sourceEmpty.add(key);
@@ -985,9 +1044,11 @@ public final class LiveTileStore {
             }
             if (TileTrace.enabled()) TileTrace.timed(tx, tz, "src_hit", srcStartNs, "pixels=" + pixels.length);
             MapPerf.INSTANCE.sourceHits.increment();
+            final boolean hasFallback = pixelsHaveFallback(pixels);
             LiveTile tile = new LiveTile(tx, tz, tileMinWX(tx), tileMinWZ(tz), pixels);
             tile.liveDirty = true;
             tile.sourceFilled = true;
+            tile.usedFallbackSlots = hasFallback;
             tile.sourceKeySig = src.tileKeySignature(tx, tz);
             LiveTile previous = tiles.putIfAbsent(key, tile);
             if (previous == null) {
@@ -998,12 +1059,15 @@ public final class LiveTileStore {
                 contentVersion.incrementAndGet();
                 biomeVersion.incrementAndGet();
                 scheduleSave(tile);
+                if (hasFallback) MapData.INSTANCE.onFallbackDecoded();
             } else {
                 previous.sourceFilled = true;
+                previous.usedFallbackSlots = hasFallback;
                 previous.sourceKeySig = src.tileKeySignature(tx, tz);
                 fillMissing(previous, pixels);
                 invalidateNeighborColors(tx, tz);
                 scheduleSave(previous);
+                if (hasFallback) MapData.INSTANCE.onFallbackDecoded();
             }
         });
     }
@@ -1021,6 +1085,8 @@ public final class LiveTileStore {
             tile.sourceStale = false;
             return;
         }
+        // Same gate as requestSourceTile: a fill decodes sections and would bake FALLBACK slots.
+        if (!MapData.INSTANCE.isTileDecodeReady()) return;
         long key = key(tx, tz);
         if (sourcePending.contains(key)) return;
         if (sourceEmpty.contains(key)) {
@@ -1056,15 +1122,18 @@ public final class LiveTileStore {
                     sourceEmpty.add(key);
                     return;
                 }
+                final boolean hasFallback = pixelsHaveFallback(pixels);
                 LiveTile created = new LiveTile(tx, tz, tileMinWX(tx), tileMinWZ(tz), pixels);
                 created.liveDirty = true;
                 created.sourceFilled = true;
+                created.usedFallbackSlots = hasFallback;
                 created.sourceKeySig = src.tileKeySignature(tx, tz);
                 if (tiles.putIfAbsent(key, created) == null) {
                     liveOnlyTileCount.incrementAndGet();
                     markBounds(tx, tz);
                     invalidateNeighborColors(tx, tz);
                     scheduleSave(created);
+                    if (hasFallback) MapData.INSTANCE.onFallbackDecoded();
                 }
                 return;
             }
@@ -1075,8 +1144,10 @@ public final class LiveTileStore {
                 return;
             }
             current.sourceKeySig = src.tileKeySignature(tx, tz);
+            current.usedFallbackSlots = pixelsHaveFallback(pixels);
             fillMissing(current, pixels);
             scheduleSave(current);
+            if (current.usedFallbackSlots) MapData.INSTANCE.onFallbackDecoded();
         });
     }
 
@@ -1217,8 +1288,10 @@ public final class LiveTileStore {
     }
 
     private void pump3DTile(int tx, int tz, int colorHash) {
+        if (!MapData.INSTANCE.isTileDecodeReady()) return;
         LiveTile tile = getOrCreateSeed(tx, tz);
         if (tile == null) return;
+        if (tile.usedFallbackSlots && tile.fallbackStrikes < 2) return;
         visibleTiles.add(tile);
         tile.lastAccessFrame = textureFrame;
         if (tile.version != tile.coloredVersion || tile.colorStyleHash != colorHash) {
@@ -1438,11 +1511,18 @@ public final class LiveTileStore {
             // pass only re-queries tiles whose source keys actually changed
             VoxyTileSource src = source;
             tile.sourceKeySig = src == null ? 0L : src.tileKeySignature(tx, tz);
+            tile.usedFallbackSlots = pixelsHaveFallback(tile.pixels);
+            if (tile.usedFallbackSlots) {
+                // A cache file from before the decode gate could hold grey FALLBACK slots; those
+                // pixels can never be repaired by recolouring, so re-decode the tile from storage.
+                MapData.INSTANCE.onFallbackDecoded();
+            }
             return tile;
         }
     }
     private void saveCached(LiveTile tile) {
-        if (cacheDir == null || !cacheReady || tile.seedEpoch >= 0 || !tile.sourceFilled) return;
+        if (cacheDir == null || !cacheReady || tile.seedEpoch >= 0 || !tile.sourceFilled
+                || tile.usedFallbackSlots) return;
         final long saveStartNs = System.nanoTime();
         final int savingVersion = tile.version;
         try {
@@ -1575,6 +1655,7 @@ public final class LiveTileStore {
         // tile creation to the viewport does not make the colour ramp drift while panning.
         observeLiveColumns(cols);
         lastLiveApplyMs = System.currentTimeMillis();
+        boolean sectionFallback = false;
         java.util.Set<LiveTile> touched = new java.util.HashSet<>();
         for (int c = 0; c < 1024; c++) {
             long packed = cols[c];
@@ -1631,12 +1712,16 @@ public final class LiveTileStore {
                         // repainted the same tile for nothing).
                         tile.pixels[idx] = merged;
                         touched.add(tile);
+                        if (!empty && ((packed >>> 40) & SurfaceClassTable.SLOT_MASK) == 0) {
+                            sectionFallback = true;
+                        }
                     }
                 }
             }
         }
         long nowLive = System.currentTimeMillis();
         for (LiveTile t : touched) {
+            if (sectionFallback) t.usedFallbackSlots = true;
             t.liveDirty = true;
             t.version++;
             t.fromCache = false;
@@ -1656,6 +1741,7 @@ public final class LiveTileStore {
             biomeVersion.incrementAndGet();
             invalidateNeighborColors(t.tx, t.tz);
         }
+        if (sectionFallback) MapData.INSTANCE.onFallbackDecoded();
     }
 
     /**
@@ -1685,6 +1771,15 @@ public final class LiveTileStore {
      */
     public Identifier textureFor(LiveTile tile, String style, int sea, int colorEpoch) {
         if (tile == null) return null;
+        // Do not colour anything before the surface-class/biome tables are published: slot 0 would
+        // paint the whole tile FALLBACK grey, and the plains biome-tint fallback would be wrong.
+        // Keep returning the already-built texture so a reload does not flicker the map.
+        if (!MapData.INSTANCE.isTileDecodeReady()) return tile.texture;
+        if (tile.usedFallbackSlots && tile.fallbackStrikes < 2) {
+            // Pixels decoded with an unknown surface class are queued for a re-decode after the
+            // mapping table reloads; keep the old texture instead of flashing a grey tile.
+            return tile.texture;
+        }
         visibleTiles.add(tile);
         tile.lastAccessFrame = textureFrame;
         visibleTextures.add(tile);

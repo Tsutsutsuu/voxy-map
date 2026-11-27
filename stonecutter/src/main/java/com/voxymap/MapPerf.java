@@ -40,6 +40,15 @@ public final class MapPerf {
     /** colour jobs that finished after a newer pixel change but were still applied (no re-run). */
     public final LongAdder colorStaleApplied = new LongAdder();
     public final LongAdder textureBuilds = new LongAdder();
+    /** decoded sections containing at least one column whose surface class was unknown (FALLBACK). */
+    public final LongAdder fallbackSections = new LongAdder();
+    /** decoded columns whose surface class was unknown (grey pixels when coloured). */
+    public final LongAdder fallbackColumns = new LongAdder();
+    /** mapping-table reloads triggered by FALLBACK pixels (each followed by a tile re-decode). */
+    public final LongAdder fallbackReloads = new LongAdder();
+    /** debug-only: coloured pixels that hit unknown slot 0 / were painted magenta. */
+    public final LongAdder debugSlot0Pixels = new LongAdder();
+    public final LongAdder debugFallbackPixels = new LongAdder();
     /** full-tile colour invalidations (ramp/style/overlay): each one re-colours every resident tile */
     public final LongAdder colorInvalidations = new LongAdder();
     public final LongAdder gpuTextureReleases = new LongAdder();
@@ -127,9 +136,11 @@ public final class MapPerf {
                     cacheHits.sum(), cacheMisses.sum(), sourceRequests.sum(),
                     sourceHits.sum(), sourceEmpty.sum(), evictions.sum()));
             out.add(String.format(Locale.ROOT,
-                    "pcol %d/%d/%d sA%d tex%d inv%d | live%d skip%d cal%d | tiles%d",
+                    "pcol %d/%d/%d sA%d tex%d inv%d fb%d/%d fbF=%d fbS0=%d | live%d skip%d cal%d | tiles%d",
                     colorRequests.sum(), colorDone.sum(), colorStale.sum(), colorStaleApplied.sum(),
                     textureBuilds.sum(), colorInvalidations.sum(),
+                    fallbackSections.sum(), fallbackColumns.sum(),
+                    debugFallbackPixels.sum(), debugSlot0Pixels.sum(),
                     liveSections.sum(), liveClosedSkipped.sum(), resyncs.sum(),
                     tileObjects.sum()));
         }

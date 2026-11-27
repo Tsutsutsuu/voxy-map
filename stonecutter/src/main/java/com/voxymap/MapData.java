@@ -58,6 +58,15 @@ public final class MapData {
     private static final int NO_TOP = -32767;
     private static final int BATCH = 2000;
     /**
+     * Debug-only: paint unknown (FALLBACK slot 0) surface classes magenta, bypassing shading, so a
+     * screenshot can prove a grey patch is a missing mapping rather than legit stone/andesite
+     * terrain (those classes are grey too, and hillshade moves every colour).
+     */
+    private static final boolean DEBUG_FALLBACK = Boolean.getBoolean("voxymap.debugFallback");
+    /** Debug-only: reproduce the pre-fix behaviour so before/after runs share one jar. */
+    public static final boolean DEBUG_DISABLE_FALLBACK_FIX =
+            Boolean.getBoolean("voxymap.debugDisableFallbackFix");
+    /**
      * World blocks of empty margin kept around a freshly built snapshot. Newly explored sections
      * landing inside this margin can be merged incrementally instead of forcing a full rebuild.
      */
@@ -175,6 +184,11 @@ public final class MapData {
     private volatile Set<Long> waterIdsCache = Set.of();
     private volatile boolean waterIdsLoading;
     private volatile boolean waterIdsLoaded;
+    /** wall clock when the current id_mappings scan started (decode gate fallback after 5 s). */
+    private volatile long mappingScanStartedMs;
+    /** throttles symptom-triggered id_mappings reloads (unknown block states in decoded pixels). */
+    private volatile long lastMappingReloadMs;
+    private volatile boolean fallbackReloadPending;
 
     /**
      * Immutable rendered colour buffer. The pixels, their dimensions and the epoch are published as
@@ -3252,6 +3266,7 @@ public final class MapData {
         int scale = 1 << (int) ((key >>> 60) & 0xF);
         long airMask = ((1L << 20) - 1) << 27;
         long[] cols = new long[1024];
+        int fallbackCols = 0;
         Arrays.fill(cols, LONG_EMPTY);
         for (int c = 0; c < 1024; c++) {
             int x = c & 31;
@@ -3294,9 +3309,17 @@ public final class MapData {
             // surface material class of the visible voxel (0 = unknown), see SurfaceClassTable
             if (topY >= 0) {
                 int slot = SurfaceClassTable.INSTANCE.slotOf((topVox >>> 27) & ((1L << 20) - 1));
+                if (slot == 0) fallbackCols++;
                 out |= ((long) (slot & 0xFF)) << 40;
             }
             cols[c] = out;
+        }
+        if (fallbackCols > 0) {
+            // Diagnostic: sections decoded before the id_mappings class table was published bake the
+            // FALLBACK grey slot into their pixels (recolouring cannot fix it, the tile must be
+            // decoded again). Should stay at 0 with the mapping-ready gate in LiveTileStore.
+            MapPerf.INSTANCE.fallbackSections.increment();
+            MapPerf.INSTANCE.fallbackColumns.add(fallbackCols);
         }
         return new Decoded(key, cols);
     }
@@ -3866,6 +3889,7 @@ public final class MapData {
         Path storage = findStorage();
         if (storage == null) return;
         waterIdsLoading = true;
+        mappingScanStartedMs = System.currentTimeMillis();
         final boolean drop = dropAll;
         loader.submit(() -> {
             List<Object> handles = new ArrayList<>();
@@ -3900,6 +3924,13 @@ public final class MapData {
                                 // "!hadWater -> dropAllTiles" threw away the whole first second of
                                 // loading for nothing on every new session/world.
                                 store.setCacheReady(true);
+                                if (fallbackReloadPending) {
+                                    // This scan was triggered by a decode that hit unknown block
+                                    // states (FALLBACK slot 0). The refreshed table may now know
+                                    // them: re-decode those tiles once so the grey patches go away.
+                                    fallbackReloadPending = false;
+                                    store.markFallbackTilesForRefresh();
+                                }
                             }
                             if (mapOpen) processPendingDirtyTiles();
                         });
@@ -3918,6 +3949,56 @@ public final class MapData {
     /** True once the mapping/biome scan has completed and live sections can be decoded safely. */
     public boolean isLiveDecodeReady() {
         return waterIdsLoaded;
+    }
+
+    /**
+     * True once the {@code id_mappings} scan has published the surface-class / biome tables. Source
+     * tile decoding MUST wait for this: a section decoded before it bakes the grey FALLBACK class
+     * slot into its pixels and only a re-decode can fix it.
+     */
+    public boolean isMappingReady() {
+        return waterIdsLoaded;
+    }
+
+    /**
+     * Gate for tile decoding and colouring. Opens when the mapping scan completed, or after a 5 s
+     * timeout so a failed scan cannot keep the map blank forever (the fallback then renders the
+     * same way the old code did, and a later refresh retries the scan).
+     */
+    public boolean isTileDecodeReady() {
+        if (DEBUG_DISABLE_FALLBACK_FIX) return true;
+        if (waterIdsLoaded) return true;
+        long started = mappingScanStartedMs;
+        return started > 0L && System.currentTimeMillis() - started > 5_000L;
+    }
+
+    /**
+     * Called when freshly decoded pixels contain unknown surface classes (slot 0). On a fresh world
+     * Voxy keeps adding new block states to {@code id_mappings} while it generates chunks, so a scan
+     * taken at map-open time goes stale within seconds and later decodes bake FALLBACK grey into
+     * their pixels. Reloading the mapping table and re-decoding the affected tiles fixes the patches
+     * instead of leaving them grey until a manual refresh.
+     */
+    public void onFallbackDecoded() {
+        if (DEBUG_DISABLE_FALLBACK_FIX) return;
+        long now = System.currentTimeMillis();
+        if (waterIdsLoading) return;
+        if (now - lastMappingReloadMs < 3_000L) return;
+        lastMappingReloadMs = now;
+        fallbackReloadPending = true;
+        ensureWaterIdsAsync(true, false);
+    }
+
+    /** Resident tiles whose pixels contain FALLBACK columns (0 when everything is resolved). */
+    public int fallbackTileCount() {
+        LiveTileStore store = liveTiles;
+        return store == null ? 0 : store.fallbackTileCount();
+    }
+
+    /** FALLBACK tiles visible in the last frame (what a screenshot can actually show). */
+    public int fallbackVisibleTileCount() {
+        LiveTileStore store = liveTiles;
+        return store == null ? 0 : store.fallbackVisibleTileCount();
     }
 
     /**
@@ -5620,6 +5701,12 @@ public final class MapData {
                     : MapStyles.waterColor("current", depth);
         } else {
             int slot = (int) ((packed >>> 40) & SurfaceClassTable.SLOT_MASK);
+            if (slot == 0) MapPerf.INSTANCE.debugSlot0Pixels.increment();
+            if (DEBUG_FALLBACK && slot == 0) {
+                // unambiguous marker for missing id_mappings entries (grey is legit stone terrain)
+                MapPerf.INSTANCE.debugFallbackPixels.increment();
+                return 0xFFFF00FF;
+            }
             if (!biomeColors) {
                 rgb = SurfaceClassTable.INSTANCE.colorOf(slot);
             } else {

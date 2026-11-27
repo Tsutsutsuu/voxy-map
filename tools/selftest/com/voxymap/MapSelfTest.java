@@ -93,6 +93,9 @@ public final class MapSelfTest {
     private static long firstPaintMs = -1L;
     private static int probeTick;
     private static final List<String> probeLines = Collections.synchronizedList(new ArrayList<>());
+    /** Probe-mode screenshot times (ms after map open), e.g. 4000,10000,20000. */
+    private static long[] shotAtMs = new long[0];
+    private static int shotIndex;
 
     private static long worldWaitTimeoutMs = 180_000L;
     private static long quietTimeoutMs = 150_000L;
@@ -146,6 +149,9 @@ public final class MapSelfTest {
     private static final List<String> logLines = Collections.synchronizedList(new ArrayList<>());
     private static String tileTraceFile = "";
     private static boolean traceWasEnabled;
+    private static boolean noShading;
+    private static boolean origHillshade = true;
+    private static boolean origContours = true;
 
     private MapSelfTest() {
     }
@@ -173,18 +179,45 @@ public final class MapSelfTest {
         } catch (Throwable t) {
             zoomOverride = -1.0;
         }
+        String shots = System.getProperty("voxymap.selftest.shotAtMs", "").trim();
+        if (!shots.isEmpty()) {
+            String[] parts = shots.split(",");
+            long[] parsed = new long[parts.length];
+            int n = 0;
+            for (String p : parts) {
+                try {
+                    parsed[n] = Long.parseLong(p.trim());
+                    n++;
+                } catch (NumberFormatException ignored) {
+                }
+            }
+            shotAtMs = java.util.Arrays.copyOf(parsed, n);
+            java.util.Arrays.sort(shotAtMs);
+        }
         // wait for the title screen to be interactive before asking it to create a world
         if (!createWorld.isEmpty()) worldWaitTimeoutMs = Math.max(worldWaitTimeoutMs, 240_000L);
         worldWaitTimeoutMs = Long.getLong("voxymap.selftest.worldTimeoutMs", worldWaitTimeoutMs);
         try { Files.createDirectories(outDir); } catch (Throwable ignored) { }
         resolveStyles();
         traceWasEnabled = VoxyMapConfig.DEBUG_TILE_TRACE.get();
+        noShading = Boolean.getBoolean("voxymap.selftest.noShading");
+        if (noShading) {
+            // Grey-patch screenshots must not be distorted by hillshade/contours: with both off a
+            // FALLBACK pixel is exactly #8C8C8C while legit stone classes keep their palette colour.
+            origHillshade = VoxyMapConfig.DRAW_HILLSHADE.get();
+            origContours = VoxyMapConfig.DRAW_CONTOURS.get();
+            VoxyMapConfig.DRAW_HILLSHADE.set(false);
+            VoxyMapConfig.DRAW_CONTOURS.set(false);
+        }
         ClientTickEvents.END_CLIENT_TICK.register(MapSelfTest::tick);
         log("installed outDir=" + outDir + " tag=" + tag + " world='" + worldName + "'"
                 + " cold=" + cold + " coldStyle='" + coldStyle + "' view3d=" + want3d
                 + " styles=" + requestedStyles + " runStyles=" + runStyles
                 + " missing=" + missingStyles + " quietTicks=" + quietTicks
-                + " createWorld='" + createWorld + "' openDelayMs=" + openDelayMs + " probeMs=" + probeMs);
+                + " createWorld='" + createWorld + "' openDelayMs=" + openDelayMs + " probeMs=" + probeMs
+                + " noShading=" + noShading
+                + " debugFallback=" + System.getProperty("voxymap.debugFallback")
+                + " disableFallbackFix=" + System.getProperty("voxymap.debugDisableFallbackFix"));
     }
 
     private static void resolveStyles() {
@@ -427,13 +460,20 @@ public final class MapSelfTest {
      * cumulative; the deltas between samples are what the investigation report analyses.
      */
     private static void probeFirstOpen(Minecraft mc, MapData data, long now) {
+        // Probe-mode screenshots at fixed times after the map opened: lets one run show whether a
+        // visual defect (e.g. grey FALLBACK patches) appears early and then heals or persists.
+        while (shotIndex < shotAtMs.length && now - mapOpenMs >= shotAtMs[shotIndex]) {
+            long at = shotAtMs[shotIndex++];
+            screenshot(mc, tag + "-t" + at + ".png");
+        }
         if (tick - probeTick >= 20) {
             probeTick = tick;
             MapPerf p = MapPerf.INSTANCE;
             long heapMb = (Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory()) >> 20;
             probeLines.add(String.format(Locale.ROOT,
                     "probe t=%dms zoom=%.3f resident=%d visible=%d drawn=%d cacheH=%d cacheM=%d"
-                            + " src=%d/%d/%d color=%d/%d/%d tex=%d inv=%d live=%d resync=%d evict=%d heap=%dMB"
+                            + " src=%d/%d/%d color=%d/%d/%d tex=%d inv=%d fb=%d/%d fbTiles=%d fbVis=%d fbr=%d"
+                            + " mapReady=%b live=%d resync=%d evict=%d heap=%dMB"
                             + " ready=%b loading=%b",
                     now - mapOpenMs, data.getZoom(),
                     p.lastResidentTiles, p.lastVisibleTiles, p.tilesDrawn.sum(),
@@ -441,6 +481,9 @@ public final class MapSelfTest {
                     p.sourceRequests.sum(), p.sourceHits.sum(), p.sourceEmpty.sum(),
                     p.colorRequests.sum(), p.colorDone.sum(), p.colorStale.sum(),
                     p.textureBuilds.sum(), p.colorInvalidations.sum(),
+                    p.fallbackSections.sum(), p.fallbackColumns.sum(),
+                    data.fallbackTileCount(), data.fallbackVisibleTileCount(), p.fallbackReloads.sum(),
+                    data.isMappingReady(),
                     p.liveSections.sum(), p.resyncs.sum(),
                     p.evictions.sum(), heapMb, data.isReady(), data.isLoading()));
         }
@@ -681,6 +724,7 @@ public final class MapSelfTest {
             warnings.add("some screenshots were still pending at quit");
         }
         VoxyMapConfig.DEBUG_TILE_TRACE.set(traceWasEnabled);
+        restoreShadingConfig();
         try { if (TileTrace.logFile() != null) tileTraceFile = TileTrace.logFile().toString(); } catch (Throwable ignored) { }
         writeReport();
         log("DONE result=" + result() + " errors=" + errors.size() + " warnings=" + warnings.size());
@@ -693,6 +737,7 @@ public final class MapSelfTest {
         if (finished) return;
         finished = true;
         VoxyMapConfig.DEBUG_TILE_TRACE.set(traceWasEnabled);
+        restoreShadingConfig();
         try { if (TileTrace.logFile() != null) tileTraceFile = TileTrace.logFile().toString(); } catch (Throwable ignored) { }
         writeReport();
         quit(mc);
@@ -808,6 +853,13 @@ public final class MapSelfTest {
     // =============================================================================
     // screenshots
     // =============================================================================
+    private static void restoreShadingConfig() {
+        if (!noShading) return;
+        VoxyMapConfig.DRAW_HILLSHADE.set(origHillshade);
+        VoxyMapConfig.DRAW_CONTOURS.set(origContours);
+        noShading = false;
+    }
+
     private static void screenshot(Minecraft mc, String fileName) {
         Path out = outDir.resolve(fileName);
         shotsPending.incrementAndGet();

@@ -31,6 +31,10 @@ param(
     [int]$OpenDelayMs = -1,
     [int]$ProbeMs = 0,
     [double]$Zoom = -1,
+    [string]$ShotAtMs = '',
+    [switch]$NoShading,
+    [switch]$DebugFallback,
+    [switch]$DisableFallbackFix,
     [switch]$DeleteWorld,
     [int]$TimeoutSec = 420,
     [int]$RunSeconds = 0,
@@ -253,6 +257,10 @@ if ($RunSeconds -le 0) {
     if ($OpenDelayMs -ge 0) { $extraJvm.Add("-Dvoxymap.selftest.openDelayMs=$OpenDelayMs") }
     if ($ProbeMs -gt 0) { $extraJvm.Add("-Dvoxymap.selftest.probeMs=$ProbeMs") }
     if ($Zoom -gt 0) { $extraJvm.Add("-Dvoxymap.selftest.zoom=$Zoom") }
+    if ($ShotAtMs) { $extraJvm.Add("-Dvoxymap.selftest.shotAtMs=$ShotAtMs") }
+    if ($NoShading) { $extraJvm.Add('-Dvoxymap.selftest.noShading=true') }
+    if ($DebugFallback) { $extraJvm.Add('-Dvoxymap.debugFallback=true') }
+    if ($DisableFallbackFix) { $extraJvm.Add('-Dvoxymap.debugDisableFallbackFix=true') }
 } else {
     Write-Host "Part A mode: no selftest properties, killing the process tree after ${RunSeconds}s"
 }
