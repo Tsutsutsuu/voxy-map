@@ -209,6 +209,10 @@ public final class MapSelfTest {
             VoxyMapConfig.DRAW_HILLSHADE.set(false);
             VoxyMapConfig.DRAW_CONTOURS.set(false);
         }
+        if (Boolean.getBoolean("voxymap.selftest.voxel3d")) {
+            VoxyMapConfig.GPU_TERRAIN_VOXEL.set(true);
+            log("experimental voxel 3D terrain enabled for this run");
+        }
         ClientTickEvents.END_CLIENT_TICK.register(MapSelfTest::tick);
         log("installed outDir=" + outDir + " tag=" + tag + " world='" + worldName + "'"
                 + " cold=" + cold + " coldStyle='" + coldStyle + "' view3d=" + want3d

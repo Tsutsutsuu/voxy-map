@@ -133,6 +133,11 @@ public final class VoxyMapConfig {
     public static final Value<Integer> GPU_TERRAIN_FAR_STEP = new Value<>("gpuTerrainFarStep", 32);
     public static final Value<Integer> GPU_TERRAIN_SKIRT_DEPTH = new Value<>("gpuTerrainSkirtDepth", 16);
     public static final Value<Integer> GPU_TERRAIN_HYSTERESIS_PCT = new Value<>("gpuTerrainHysteresisPct", 15);
+    /**
+     * Experimental: render 3D terrain as blocky voxel columns (flat per-cell tops + vertical side
+     * walls) instead of the interpolated height field. Side faces reuse the top face colour.
+     */
+    public static final Value<Boolean> GPU_TERRAIN_VOXEL = new Value<>("gpuTerrainVoxel", false);
     public static final Value<Integer> GPU3D_BUILD_THREADS = new Value<>("gpu3dBuildThreads", 0);
     public static final Value<Integer> GPU3D_BATCH_BUILD = new Value<>("gpu3dBatchBuild", 10);
     public static final Value<Boolean> KEEP_3D_TILES_IN_2D = new Value<>("keep3dTilesIn2d", true);

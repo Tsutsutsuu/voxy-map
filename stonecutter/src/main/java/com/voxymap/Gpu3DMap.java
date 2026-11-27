@@ -705,6 +705,7 @@ public final class Gpu3DMap {
         // level, vertical scale) would keep the old mesh forever.
         stamp = stamp * 31L + (Long.rotateLeft(Double.doubleToLongBits(vscale), 17) ^ (long) pb);
         stamp = stamp * 31L + sea;
+        stamp = stamp * 31L + (VoxyMapConfig.GPU_TERRAIN_VOXEL.get() ? 1L : 0L);
         // Boundary vertices use the right/bottom neighbour's first pixel. Rebuild this tile when
         // those neighbours change, otherwise two tiles would keep different heights at the seam.
         for (int dz = 0; dz <= 1; dz++) {
@@ -750,6 +751,382 @@ public final class Gpu3DMap {
      * session, so caching their arrays avoids ~100 KB of garbage per build; step 1/2 tiles are rare
      * and larger, so they still allocate (keeping memory bounded per thread).
      */
+    /** Experimental voxel mesher: one flat top per cell + vertical side walls where neighbours are lower. */
+    private static BuildResult buildVoxel(int gen, long key, long stamp, Slot slot, int step,
+                                          LiveTileStore.LiveTile tile, long[] pixels,
+                                          LiveTileStore live, int pb, int sea, double vscale,
+                                          long buildStart) {
+        final int grid = LiveTileStore.TILE_PIXELS / step;
+        final int cells = grid * grid;
+        final int texMax = LiveTileStore.TILE_PIXELS - 1;
+        final int sx = (slot.index % COLS) * CELL;
+        final int sy = (slot.index / COLS) * CELL;
+        final double seaY = sea * vscale;
+        final double skirt = VoxyMapConfig.GPU_TERRAIN_SKIRT_DEPTH.get();
+        VoxelScratch s = VoxelScratch.get(cells);
+        float[] h = s.h;
+        boolean[] empty = s.emptyCell;
+        boolean[] water = s.waterCell;
+        boolean[] visited = s.visited;
+        for (int i = 0; i < cells; i++) {
+            h[i] = 0f;
+            empty[i] = true;
+            water[i] = false;
+            visited[i] = false;
+        }
+        double minY = Double.MAX_VALUE, maxY = -Double.MAX_VALUE;
+        for (int gz = 0; gz < grid; gz++) {
+            int z = gz * step;
+            for (int gx = 0; gx < grid; gx++) {
+                int x = gx * step;
+                long packed = sampleBoundary(tile, pixels, x, z,
+                        Math.min(texMax, x), Math.min(texMax, z), live);
+                int i = gz * grid + gx;
+                int top = packed == VoxyMerge.LONG_EMPTY ? VoxyMerge.NO_TOP
+                        : (int) ((packed >>> 24) & 0xFFFF) - 32768;
+                int floor = packed == VoxyMerge.LONG_EMPTY ? VoxyMerge.NO_SOLID
+                        : (int) (packed & 0xFFFF) - 32768;
+                boolean e = packed == VoxyMerge.LONG_EMPTY
+                        || (top == VoxyMerge.NO_TOP && floor == VoxyMerge.NO_SOLID);
+                boolean w = !e && (packed & (1L << 52)) != 0;
+                float y;
+                if (e) {
+                    y = 0f;
+                } else if (w) {
+                    y = (float) seaY;
+                } else if (top == VoxyMerge.NO_TOP) {
+                    y = (float) (floor * vscale);
+                } else {
+                    y = (float) (top * vscale);
+                }
+                empty[i] = e;
+                water[i] = w;
+                h[i] = y;
+                if (!e) {
+                    minY = Math.min(minY, y);
+                    maxY = Math.max(maxY, y);
+                }
+            }
+        }
+        // ---- flat tops, greedily merged over equal-height cells ----
+        for (int gz = 0; gz < grid; gz++) {
+            for (int gx = 0; gx < grid; gx++) {
+                int i0 = gz * grid + gx;
+                if (empty[i0] || visited[i0]) continue;
+                float y0 = h[i0];
+                int w = 1;
+                while (gx + w < grid) {
+                    int i = i0 + w;
+                    if (empty[i] || visited[i] || h[i] != y0) break;
+                    w++;
+                }
+                int d = 1;
+                outer:
+                while (gz + d < grid) {
+                    int row = (gz + d) * grid + gx;
+                    for (int k = 0; k < w; k++) {
+                        int i = row + k;
+                        if (empty[i] || visited[i] || h[i] != y0) break outer;
+                    }
+                    d++;
+                }
+                for (int zz = 0; zz < d; zz++) {
+                    int row = (gz + zz) * grid + gx;
+                    for (int xx = 0; xx < w; xx++) visited[row + xx] = true;
+                }
+                double wx0 = tile.minWX + (long) (gx * step) * pb;
+                double wx1 = tile.minWX + (long) ((gx + w) * step) * pb;
+                double wz0 = tile.minWZ + (long) (gz * step) * pb;
+                double wz1 = tile.minWZ + (long) ((gz + d) * step) * pb;
+                double u0 = (sx + (double) Math.min(texMax + 1, gx * step)) / ATLAS;
+                double u1 = (sx + (double) Math.min(texMax + 1, (gx + w) * step)) / ATLAS;
+                double v0 = (sy + (double) Math.min(texMax + 1, gz * step)) / ATLAS;
+                double v1 = (sy + (double) Math.min(texMax + 1, (gz + d) * step)) / ATLAS;
+                int b = s.vi;
+                voxAdd(s, wx0, y0, wz0, u0, v0);
+                voxAdd(s, wx0, y0, wz1, u0, v1);
+                voxAdd(s, wx1, y0, wz0, u1, v0);
+                voxAdd(s, wx1, y0, wz1, u1, v1);
+                voxTri(s, b, b + 1, b + 2);
+                voxTri(s, b + 2, b + 1, b + 3);
+            }
+        }
+        // ---- vertical side walls (land only; water stays a flat plane) ----
+        for (int gx = 0; gx < grid; gx++) {
+            int x = gx * step;
+            // east faces (constant X, merged along Z); the west face of the neighbour tile is skipped,
+            // so drawing the boundary here does not duplicate walls between tiles.
+            int gz = 0;
+            while (gz < grid) {
+                int i = gz * grid + gx;
+                if (empty[i] || water[i]) { gz++; continue; }
+                float y = h[i];
+                float ny = voxNeighborY(tile, pixels, live, x + step, gz * step, sea, vscale, texMax);
+                if (Float.isNaN(ny) || ny >= y) { gz++; continue; }
+                int run = 1;
+                while (gz + run < grid) {
+                    int j = (gz + run) * grid + gx;
+                    if (empty[j] || water[j] || h[j] != y) break;
+                    float n2 = voxNeighborY(tile, pixels, live, x + step, (gz + run) * step, sea, vscale, texMax);
+                    if (!(Float.isNaN(n2) || n2 != ny) && n2 < y) { run++; } else { break; }
+                }
+                double z0 = tile.minWZ + (long) (gz * step) * pb;
+                double z1 = tile.minWZ + (long) ((gz + run) * step) * pb;
+                double xEdge = tile.minWX + (long) ((gx + 1) * step) * pb;
+                double u = (sx + Math.min(texMax, x) + 0.5) / ATLAS;
+                double v0 = (sy + (double) Math.min(texMax + 1, gz * step)) / ATLAS;
+                double v1 = (sy + (double) Math.min(texMax + 1, (gz + run) * step)) / ATLAS;
+                voxWallX(s, xEdge, ny, y, z0, z1, u, v0, v1, true);
+                minY = Math.min(minY, ny);
+                gz += run;
+            }
+            // west faces
+            gz = 0;
+            while (gz < grid) {
+                int i = gz * grid + gx;
+                if (empty[i] || water[i]) { gz++; continue; }
+                float y = h[i];
+                float ny = voxNeighborY(tile, pixels, live, x - step, gz * step, sea, vscale, texMax);
+                if (Float.isNaN(ny) || ny >= y) { gz++; continue; }
+                int run = 1;
+                while (gz + run < grid) {
+                    int j = (gz + run) * grid + gx;
+                    if (empty[j] || water[j] || h[j] != y) break;
+                    float n2 = voxNeighborY(tile, pixels, live, x - step, (gz + run) * step, sea, vscale, texMax);
+                    if (!(Float.isNaN(n2) || n2 != ny) && n2 < y) { run++; } else { break; }
+                }
+                double z0 = tile.minWZ + (long) (gz * step) * pb;
+                double z1 = tile.minWZ + (long) ((gz + run) * step) * pb;
+                double xEdge = tile.minWX + (long) (gx * step) * pb;
+                double u = (sx + Math.min(texMax, x) + 0.5) / ATLAS;
+                double v0 = (sy + (double) Math.min(texMax + 1, gz * step)) / ATLAS;
+                double v1 = (sy + (double) Math.min(texMax + 1, (gz + run) * step)) / ATLAS;
+                voxWallX(s, xEdge, ny, y, z0, z1, u, v0, v1, true);
+                minY = Math.min(minY, ny);
+                gz += run;
+            }
+        }
+        for (int gz = 0; gz < grid; gz++) {
+            int z = gz * step;
+            // south faces
+            int gx = 0;
+            while (gx < grid) {
+                int i = gz * grid + gx;
+                if (empty[i] || water[i]) { gx++; continue; }
+                float y = h[i];
+                float ny = voxNeighborY(tile, pixels, live, gx * step, z + step, sea, vscale, texMax);
+                if (Float.isNaN(ny) || ny >= y) { gx++; continue; }
+                int run = 1;
+                while (gx + run < grid) {
+                    int j = gz * grid + gx + run;
+                    if (empty[j] || water[j] || h[j] != y) break;
+                    float n2 = voxNeighborY(tile, pixels, live, (gx + run) * step, z + step, sea, vscale, texMax);
+                    if (!(Float.isNaN(n2) || n2 != ny) && n2 < y) { run++; } else { break; }
+                }
+                double x0 = tile.minWX + (long) (gx * step) * pb;
+                double x1 = tile.minWX + (long) ((gx + run) * step) * pb;
+                double zEdge = tile.minWZ + (long) ((gz + 1) * step) * pb;
+                double v = (sy + Math.min(texMax, z) + 0.5) / ATLAS;
+                double u0 = (sx + (double) Math.min(texMax + 1, gx * step)) / ATLAS;
+                double u1 = (sx + (double) Math.min(texMax + 1, (gx + run) * step)) / ATLAS;
+                voxWallZ(s, zEdge, ny, y, x0, x1, v, u0, u1, true);
+                minY = Math.min(minY, ny);
+                gx += run;
+            }
+            // north faces
+            gx = 0;
+            while (gx < grid) {
+                int i = gz * grid + gx;
+                if (empty[i] || water[i]) { gx++; continue; }
+                float y = h[i];
+                float ny = voxNeighborY(tile, pixels, live, gx * step, z - step, sea, vscale, texMax);
+                if (Float.isNaN(ny) || ny >= y) { gx++; continue; }
+                int run = 1;
+                while (gx + run < grid) {
+                    int j = gz * grid + gx + run;
+                    if (empty[j] || water[j] || h[j] != y) break;
+                    float n2 = voxNeighborY(tile, pixels, live, (gx + run) * step, z - step, sea, vscale, texMax);
+                    if (!(Float.isNaN(n2) || n2 != ny) && n2 < y) { run++; } else { break; }
+                }
+                double x0 = tile.minWX + (long) (gx * step) * pb;
+                double x1 = tile.minWX + (long) ((gx + run) * step) * pb;
+                double zEdge = tile.minWZ + (long) (gz * step) * pb;
+                double v = (sy + Math.min(texMax, z) + 0.5) / ATLAS;
+                double u0 = (sx + (double) Math.min(texMax + 1, gx * step)) / ATLAS;
+                double u1 = (sx + (double) Math.min(texMax + 1, (gx + run) * step)) / ATLAS;
+                voxWallZ(s, zEdge, ny, y, x0, x1, v, u0, u1, true);
+                minY = Math.min(minY, ny);
+                gx += run;
+            }
+        }
+        // ---- border skirt: hides cracks between neighbouring tiles with a different LOD step ----
+        for (int gz = 0; gz < grid; gz++) {
+            for (int gx = 0; gx < grid; gx++) {
+                int i = gz * grid + gx;
+                if (empty[i]) continue;
+                float y = h[i];
+                double x0 = tile.minWX + (long) (gx * step) * pb;
+                double x1 = tile.minWX + (long) ((gx + 1) * step) * pb;
+                double z0 = tile.minWZ + (long) (gz * step) * pb;
+                double z1 = tile.minWZ + (long) ((gz + 1) * step) * pb;
+                double u = (sx + Math.min(texMax, gx * step) + 0.5) / ATLAS;
+                double v = (sy + Math.min(texMax, gz * step) + 0.5) / ATLAS;
+                float low = (float) (y - skirt);
+                boolean any = false;
+                if (gx == 0) {
+                    voxWallX(s, x0, low, y, z0, z1, u, v, v, false);
+                    any = true;
+                }
+                if (gx == grid - 1) {
+                    voxWallX(s, x1, low, y, z0, z1, u, v, v, false);
+                    any = true;
+                }
+                if (gz == 0) {
+                    voxWallZ(s, z0, low, y, x0, x1, v, u, u, false);
+                    any = true;
+                }
+                if (gz == grid - 1) {
+                    voxWallZ(s, z1, low, y, x0, x1, v, u, u, false);
+                    any = true;
+                }
+                if (any) minY = Math.min(minY, low);
+            }
+        }
+        double cx = tile.minWX + LiveTileStore.TILE_PIXELS * pb * 0.5;
+        double cz = tile.minWZ + LiveTileStore.TILE_PIXELS * pb * 0.5;
+        if (s.ii == 0) {
+            return new BuildResult(gen, key, stamp, slot, null, null, 0, step,
+                    cx, cz, 0.0, 0.0, System.nanoTime() - buildStart);
+        }
+        VertexFormat format = BlazeCompat.vertexFormat(PIPELINE);
+        if (format == null) return null;
+        ByteBufferBuilder alloc = new ByteBufferBuilder(Math.max(1024, s.vi * format.getVertexSize()));
+        BufferBuilder bb = BlazeCompat.newBufferBuilder(alloc, format);
+        for (int i = 0; i < s.vi; i++) {
+            bb.addVertex(s.px[i], s.py[i], s.pz[i])
+                    .setColor(255, 255, 255, 255)
+                    .setUv(s.pu[i], s.pv[i])
+                    .setUv2(240, 240);
+        }
+        MeshData mesh = bb.buildOrThrow();
+        ByteBuffer vdata = copy(mesh.vertexBuffer());
+        mesh.close();
+        alloc.close();
+        ByteBuffer idata = ByteBuffer.allocateDirect(s.ii * Integer.BYTES).order(ByteOrder.nativeOrder());
+        for (int i = 0; i < s.ii; i++) idata.putInt(s.idx[i]);
+        idata.flip();
+        return new BuildResult(gen, key, stamp, slot, vdata, idata, s.ii, step,
+                cx, cz,
+                minY == Double.MAX_VALUE ? 0.0 : minY,
+                maxY == -Double.MAX_VALUE ? 0.0 : maxY,
+                System.nanoTime() - buildStart);
+    }
+
+    /** Neighbour cell height for a voxel wall; NaN when the cell is empty/unloaded. */
+    private static float voxNeighborY(LiveTileStore.LiveTile tile, long[] pixels, LiveTileStore live,
+                                      int x, int z, int sea, double vscale, int texMax) {
+        if (x < 0 || z < 0) return Float.NaN;
+        long packed = sampleBoundary(tile, pixels, x, z,
+                Math.min(texMax, x), Math.min(texMax, z), live);
+        int top = packed == VoxyMerge.LONG_EMPTY ? VoxyMerge.NO_TOP
+                : (int) ((packed >>> 24) & 0xFFFF) - 32768;
+        int floor = packed == VoxyMerge.LONG_EMPTY ? VoxyMerge.NO_SOLID
+                : (int) (packed & 0xFFFF) - 32768;
+        if (packed == VoxyMerge.LONG_EMPTY || (top == VoxyMerge.NO_TOP && floor == VoxyMerge.NO_SOLID)) {
+            return Float.NaN;
+        }
+        if ((packed & (1L << 52)) != 0) return (float) (sea * vscale);
+        return (float) ((top == VoxyMerge.NO_TOP ? floor : top) * vscale);
+    }
+
+    private static void voxAdd(VoxelScratch s, double x, double y, double z, double u, double v) {
+        s.ensureVerts(s.vi + 1);
+        s.px[s.vi] = (float) x;
+        s.py[s.vi] = (float) y;
+        s.pz[s.vi] = (float) z;
+        s.pu[s.vi] = (float) u;
+        s.pv[s.vi] = (float) v;
+        s.vi++;
+    }
+
+    private static void voxTri(VoxelScratch s, int a, int b, int c) {
+        s.ensureIndices(s.ii + 3);
+        s.idx[s.ii] = a;
+        s.idx[s.ii + 1] = b;
+        s.idx[s.ii + 2] = c;
+        s.ii += 3;
+    }
+
+    /** Vertical wall on a constant-X plane (east/west or a skirt face); both windings when cullSafe. */
+    private static void voxWallX(VoxelScratch s, double xEdge, float yLow, float yHigh,
+                                 double z0, double z1, double u, double v0, double v1, boolean cullSafe) {
+        int b = s.vi;
+        voxAdd(s, xEdge, yLow, z0, u, v0);
+        voxAdd(s, xEdge, yLow, z1, u, v1);
+        voxAdd(s, xEdge, yHigh, z0, u, v0);
+        voxAdd(s, xEdge, yHigh, z1, u, v1);
+        voxTri(s, b, b + 1, b + 2);
+        voxTri(s, b + 2, b + 1, b + 3);
+        if (cullSafe) {
+            voxTri(s, b + 2, b + 1, b);
+            voxTri(s, b + 3, b + 1, b + 2);
+        }
+    }
+
+    /** Vertical wall on a constant-Z plane (south/north or a skirt face); both windings when cullSafe. */
+    private static void voxWallZ(VoxelScratch s, double zEdge, float yLow, float yHigh,
+                                 double x0, double x1, double v, double u0, double u1, boolean cullSafe) {
+        int b = s.vi;
+        voxAdd(s, x0, yLow, zEdge, u0, v);
+        voxAdd(s, x1, yLow, zEdge, u1, v);
+        voxAdd(s, x0, yHigh, zEdge, u0, v);
+        voxAdd(s, x1, yHigh, zEdge, u1, v);
+        voxTri(s, b, b + 1, b + 2);
+        voxTri(s, b + 2, b + 1, b + 3);
+        if (cullSafe) {
+            voxTri(s, b + 2, b + 1, b);
+            voxTri(s, b + 3, b + 1, b + 2);
+        }
+    }
+
+    /** Growable per-thread scratch for the voxel mesher (vertex/index/level arrays). */
+    private static final class VoxelScratch {
+        private static final ThreadLocal<VoxelScratch> LOCAL = ThreadLocal.withInitial(VoxelScratch::new);
+        float[] px = new float[0], py = new float[0], pz = new float[0], pu = new float[0], pv = new float[0];
+        int[] idx = new int[0];
+        float[] h = new float[0];
+        boolean[] emptyCell = new boolean[0], waterCell = new boolean[0], visited = new boolean[0];
+        int vi, ii;
+
+        static VoxelScratch get(int cells) {
+            VoxelScratch s = LOCAL.get();
+            if (s.h.length < cells) {
+                s.h = new float[cells];
+                s.emptyCell = new boolean[cells];
+                s.waterCell = new boolean[cells];
+                s.visited = new boolean[cells];
+            }
+            s.vi = 0;
+            s.ii = 0;
+            return s;
+        }
+
+        void ensureVerts(int n) {
+            if (px.length >= n) return;
+            int cap = Math.max(4096, (int) (n * 1.5));
+            px = java.util.Arrays.copyOf(px, cap);
+            py = java.util.Arrays.copyOf(py, cap);
+            pz = java.util.Arrays.copyOf(pz, cap);
+            pu = java.util.Arrays.copyOf(pu, cap);
+            pv = java.util.Arrays.copyOf(pv, cap);
+        }
+
+        void ensureIndices(int n) {
+            if (idx.length >= n) return;
+            idx = java.util.Arrays.copyOf(idx, Math.max(4096, (int) (n * 1.5)));
+        }
+    }
+
     private static final class BuildScratch {
         private static final int MAX_CACHED_VERTS = 5000;
         private static final int MAX_CACHED_INDICES = 30000;
@@ -805,6 +1182,9 @@ public final class Gpu3DMap {
                                      LiveTileStore.LiveTile tile, long[] pixels, int[] rgb,
                                      LiveTileStore live, int pb, int sea, double vscale) {
         long buildStart = System.nanoTime();
+        if (VoxyMapConfig.GPU_TERRAIN_VOXEL.get()) {
+            return buildVoxel(gen, key, stamp, slot, step, tile, pixels, live, pb, sea, vscale, buildStart);
+        }
         int grid = LiveTileStore.TILE_PIXELS / step;
         int gw = grid + 1;
         int perim = 4 * grid;
