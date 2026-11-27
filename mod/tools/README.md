@@ -45,3 +45,29 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File mod/tools/launch-direct.ps1 -World
 2. **箭头半透明像素发黑**：1.21.1 `GuiGraphics.blit()` 的无 tint 路径不会自己 `enableBlend()`（带 tint 的才会），
    26.2 的 `GUI_TEXTURED` pipeline 自带混合。修复：`compat/GuiGraphicsExtractor.blit()` 里显式
    `RenderSystem.enableBlend(); defaultBlendFunc();`。
+
+## build-offline.ps1 — 离线编译/打包（网络受限时）
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File mod/tools/build-offline.ps1                 # 只编译
+pwsh -NoProfile -ExecutionPolicy Bypass -File mod/tools/build-offline.ps1 -PackJar       # 编译并打包
+```
+
+- 用途：Gradle 9.2.1 发行版下载不动 / `maven.neoforged.net` 连不上时，仍能验证 1.21.1 源码。
+- 原理：用 `mod/build/moddev/artifacts` 里的 patched MC + 启动器 `Data\meta\libraries` 的本地
+  jar 组 classpath（旧的 `build/compile-classpath.txt` 里缺的条目按 artifact+版本就近替换），
+  javac 编译后把 `com/voxymap/*.class` 覆盖进上一版 jar（资源、META-INF、jarJar 内的 zstd 保留）。
+- 这是**验证用**的临时构建路径；网络恢复后仍应跑 `cd mod; .\gradlew.bat build` 生成正式 jar。
+
+## run-selftest.ps1 — NeoForge 游戏内冒烟（临时）
+
+```powershell
+# 1) 临时把 selftest 源码拷进 src，并在 VoxyMapMod.clientTick 首行加 SelfTest.tick(mc)
+Copy-Item mod/tools/selftest/SelfTest.java mod/src/main/java/com/voxymap/
+# 2) 构建 + 跑（会临时替换实例 mod jar，结束后自动还原）
+pwsh -NoProfile -File mod/tools/run-selftest.ps1 -Build -World '<可玩世界文件夹名>' -ExtraJvmArgs '-Dvoxymap.debugFallback=true'
+```
+
+- 最后必须删除 `SelfTest.java` 和那行 hook 再出正式 jar（脚本会拒绝在 hook 缺失时运行，防止误测生产包）。
+- 已知本机问题：1.21.1 的 quickplay 对中文/残缺世界不可靠（会停在标题屏或报「加载世界失败」）；
+  实例里 `新的世界` 是残缺世界（无 level.dat），可玩的是 `新的世界 (1)`。自动化跑不通时请手动进世界验证。

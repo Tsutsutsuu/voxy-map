@@ -605,6 +605,13 @@ public class MapScreen extends Screen {
         double bottom = centerZ + (height / 2.0) * worldPerScreenPx;
         int tx0 = live.tileIndexX(left), tx1 = live.tileIndexX(right);
         int tz0 = live.tileIndexZ(top), tz1 = live.tileIndexZ(bottom);
+        // Live sections only materialise tiles inside this rectangle (+margin); off-screen data is
+        // recorded as dirty tiles instead of costing 512 KiB and decode time each. See
+        // LiveTileStore.applySection / setViewportHint.
+        live.setViewportHint(tx0, tz0, tx1, tz1);
+        // A zoomed-out viewport shows hundreds of small tiles; allow each of them to repaint less
+        // often so live updates cannot saturate the colour pool with jobs that immediately go stale.
+        live.setLiveRepaintIntervalMs(liveRepaintIntervalFor(LiveTileStore.TILE_PIXELS * mapZoomDevice()));
         maybeCancelStaleSource(live);
         String style = data.getStyle();
         int sea = data.seaLevel();
@@ -1646,6 +1653,20 @@ public class MapScreen extends Screen {
      */
     private double mapZoomDevice() {
         return zoom * REFERENCE_GUI_SCALE;
+    }
+
+    /**
+     * Live-update repaint interval for one 256-px map tile, from its on-screen size in device
+     * pixels. Zoomed in (a tile covers most of the screen) a fast repaint is worth it; zoomed out
+     * (tens of pixels per tile) hundreds of tiles would compete for the same colour threads, so
+     * each one is repainted only every few seconds.
+     */
+    private static int liveRepaintIntervalFor(double tileScreenPx) {
+        if (tileScreenPx >= 384) return 800;
+        if (tileScreenPx >= 192) return 1200;
+        if (tileScreenPx >= 96) return 1800;
+        if (tileScreenPx >= 48) return 2600;
+        return 4000;
     }
 
     /** GUI units per map pixel at the current scale (the value the GUI actually draws with). */

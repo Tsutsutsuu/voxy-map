@@ -33,6 +33,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.zip.GZIPInputStream;
 
 /**
@@ -56,6 +57,15 @@ public final class MapData {
     private static final int NO_SOLID = -32768;
     private static final int NO_TOP = -32767;
     private static final int BATCH = 2000;
+    /**
+     * Debug-only: paint unknown (FALLBACK slot 0) surface classes magenta, bypassing shading, so a
+     * screenshot can prove a grey patch is a missing mapping rather than legit stone/andesite
+     * terrain (those classes are grey too, and hillshade moves every colour).
+     */
+    private static final boolean DEBUG_FALLBACK = Boolean.getBoolean("voxymap.debugFallback");
+    /** Debug-only: reproduce the pre-fix behaviour so before/after runs share one jar. */
+    public static final boolean DEBUG_DISABLE_FALLBACK_FIX =
+            Boolean.getBoolean("voxymap.debugDisableFallbackFix");
     /**
      * World blocks of empty margin kept around a freshly built snapshot. Newly explored sections
      * landing inside this margin can be merged incrementally instead of forcing a full rebuild.
@@ -118,6 +128,12 @@ public final class MapData {
                 return t;
             });
     private final AtomicBoolean requested = new AtomicBoolean();
+    /** queued/running tile recolour jobs: live updates use this as backpressure (see LiveTileStore) */
+    private final AtomicInteger tileColorInFlight = new AtomicInteger();
+
+    public int tileColorJobsInFlight() {
+        return tileColorInFlight.get();
+    }
 
     private volatile Snapshot snap;
     /** per-section value hashes paired with {@link #snap}; null = incremental refresh unavailable */
@@ -142,12 +158,14 @@ public final class MapData {
     /** storage path the 2D tile store was created for (independent of the global snapshot) */
     private volatile Path tile2dStorage;
     /**
-     * Automatic source resyncs after first open. The source index is a snapshot of a read-only
-     * RocksDB handle and goes stale as soon as Voxy/SeedGen writes new sections, so it has to be
-     * rebuilt periodically (reopening the handle), not just three times at fixed delays.
+     * Next full section-index rebuild (RocksDB key scan). Expensive, so it is only used as a safety
+     * net now: a stale on-disk index after a world change, the live-key dedupe cap, or a 2-minute
+     * fallback. Routine freshness while the map is open comes from {@link #tileReopenAtMs}.
      */
     private volatile long tileResyncAtMs;
-    /** a live section arrived after the last rescan: the source index is known to be stale */
+    /** cheap snapshot refresh (reopen the read-only handle) is due at this time */
+    private volatile long tileReopenAtMs;
+    /** a live section arrived after the last refresh: the DB snapshot/index may be behind */
     private volatile boolean tileRescanNeeded;
     /**
      * Tiles touched while the map was closed (or before the mapping table was ready). Only tile
@@ -166,6 +184,11 @@ public final class MapData {
     private volatile Set<Long> waterIdsCache = Set.of();
     private volatile boolean waterIdsLoading;
     private volatile boolean waterIdsLoaded;
+    /** wall clock when the current id_mappings scan started (decode gate fallback after 5 s). */
+    private volatile long mappingScanStartedMs;
+    /** throttles symptom-triggered id_mappings reloads (unknown block states in decoded pixels). */
+    private volatile long lastMappingReloadMs;
+    private volatile boolean fallbackReloadPending;
 
     /**
      * Immutable rendered colour buffer. The pixels, their dimensions and the epoch are published as
@@ -2466,6 +2489,7 @@ public final class MapData {
         if (store != null) {
             // Keep memory resident for instant reopen, but persist the dirty tiles so moving away
             // and back (or restarting the game) can use the .vxt cache instead of Voxy storage.
+            store.clearViewportHint();
             store.persistDirtyTiles();
             store.persistMetadata();
         }
@@ -2540,49 +2564,52 @@ public final class MapData {
             ensureWaterIdsAsync();
             LiveTileStore store = ensure2DStore();
             long now = System.currentTimeMillis();
-            if (tileRescanNeeded) {
-                // A live section only marks the index dirty; do not let a previous long scan-cost
-                // backoff (up to 60 s) postpone the rescan that would actually show the new data.
-                // Pace it from the last scan cost, but cap the wait so the map feels live.
-                long scanMs = store.sourceIndexScanMs();
-                long delay = Math.max(3_000L, Math.min(15_000L, scanMs * 2L));
-                if (tileResyncAtMs == 0L || tileResyncAtMs > now + delay) {
-                    tileResyncAtMs = now + delay;
-                }
+            // A live-key dedupe overflow or an explicit request asks for one full index rebuild.
+            if (store.consumeSourceRescanRequest()
+                    && (tileResyncAtMs == 0L || tileResyncAtMs > now + 1_000L)) {
+                tileResyncAtMs = now + 1_000L;
             }
             if (tileResyncAtMs > 0 && now >= tileResyncAtMs) {
-                // The source index is a snapshot of a read-only RocksDB handle and does not see
-                // sections written after it was opened. Rescanning therefore reopens the handle
-                // (VoxyTileSource.invalidateIndex) and must keep happening WHILE SeedGen streams,
-                // otherwise a map opened during world creation freezes at the first snapshot
-                // (the reported "loads half then stops, refresh does nothing" bug).
-                // Cost control: live events mark the index dirty and we wait up to 3s between
-                // rescans; with no live events a 30s safety rescan picks up disk-side growth.
-                boolean liveRecent = now - lastLiveSectionMs < 1_500L;
-                boolean due = tileRescanNeeded || liveRecent || now - lastTileRescanMs >= 30_000L;
-                if (!due) {
-                    // nothing was written since the last rescan: check again shortly, but do not
-                    // skip the rest of the tile housekeeping
-                    tileResyncAtMs = now + 5_000L;
-                } else {
-                    tileResyncAtMs = 0;
-                    tileRescanNeeded = false;
-                    lastTileRescanMs = now;
-                    MapPerf.INSTANCE.resyncs.increment();
-                    // Drops the negatives produced by the old index and forces every not-yet-
-                    // coloured tile to re-query the (reopened) storage.
-                    store.invalidateSourceIndex();
-                    store.markAllSourceUnfilled();
-                    // Pace the next rescan by the previous scan cost: a huge world must not spend
-                    // more time rebuilding the index than showing the map. 3s floor, 60s ceiling.
-                    long scanMs = store.sourceIndexScanMs();
-                    long liveDelay = Math.max(3_000L, Math.min(60_000L, scanMs * 8L));
-                    tileResyncAtMs = now + (liveRecent ? liveDelay : 10_000L);
-                }
+                // Full index rebuild (RocksDB key scan). This is deliberately rare now: live
+                // sections feed the index incrementally (VoxyTileSource.addLiveKey), so routine
+                // freshness only needs the cheap snapshot reopen below. A full scan still runs at
+                // open when the on-disk index is stale and as a 2-minute safety net.
+                // The scan itself runs in the background on its own RocksDB handle; tiles are only
+                // re-queried after it swapped the new index in (see consumeIndexSwapped below).
+                tileResyncAtMs = 0;
+                lastTileRescanMs = now;
+                MapPerf.INSTANCE.resyncs.increment();
+                store.invalidateSourceIndex();
+                tileResyncAtMs = now + 120_000L;
+            } else if (tileRescanNeeded && now >= tileReopenAtMs) {
+                // Cheap snapshot refresh while Voxy is writing: reopen the read-only handle so new
+                // sections are readable, then re-query only the tiles whose section-key set changed
+                // (plus negative-cache misses). This replaced the old "rebuild everything every
+                // 3 seconds" loop that cancelled in-flight work and repainted the same tiles.
+                tileRescanNeeded = false;
+                tileReopenAtMs = now + 15_000L;
+                lastTileRescanMs = now;
+                MapPerf.INSTANCE.resyncs.increment();
+                store.reopenSourceDb();
+                store.markAllSourceStale(false);
+            } else if (now - lastLiveSectionMs >= 30_000L && now >= tileReopenAtMs) {
+                // No live stream: occasional refresh picks up sections written behind our back.
+                tileReopenAtMs = now + 30_000L;
+                store.reopenSourceDb();
+                store.markAllSourceStale(false);
+            }
+            // A background index rebuild finished: re-query only tiles whose section-key set
+            // actually changed. Closed-map writes are covered by processPendingDirtyTiles()
+            // (explicit forceSourceReplace), so forcing every resident tile here duplicated work:
+            // a warm open re-decoded all ~576 tiles even when their cached pixels were current.
+            if (store.consumeIndexSwapped()) {
+                store.markAllSourceStale(false);
             }
             maybeRecolorForTileRamp(store, now);
             maybeRefreshTileBiome(store, now);
-            if (now - lastTileCacheSaveMs >= 5_000L) {
+            // Do not compete with Voxy/SeedGen for the disk while it is streaming: defer .vxt writes
+            // to a quiet moment (map close/game exit always persists everything anyway).
+            if (now - lastLiveSectionMs > 3_000L && now - lastTileCacheSaveMs >= 5_000L) {
                 lastTileCacheSaveMs = now;
                 store.persistDirtyTiles(64);
             }
@@ -3237,6 +3264,7 @@ public final class MapData {
         int scale = 1 << (int) ((key >>> 60) & 0xF);
         long airMask = ((1L << 20) - 1) << 27;
         long[] cols = new long[1024];
+        int fallbackCols = 0;
         Arrays.fill(cols, LONG_EMPTY);
         for (int c = 0; c < 1024; c++) {
             int x = c & 31;
@@ -3279,9 +3307,17 @@ public final class MapData {
             // surface material class of the visible voxel (0 = unknown), see SurfaceClassTable
             if (topY >= 0) {
                 int slot = SurfaceClassTable.INSTANCE.slotOf((topVox >>> 27) & ((1L << 20) - 1));
+                if (slot == 0) fallbackCols++;
                 out |= ((long) (slot & 0xFF)) << 40;
             }
             cols[c] = out;
+        }
+        if (fallbackCols > 0) {
+            // Diagnostic: sections decoded before the id_mappings class table was published bake the
+            // FALLBACK grey slot into their pixels (recolouring cannot fix it, the tile must be
+            // decoded again). Should stay at 0 with the mapping-ready gate in LiveTileStore.
+            MapPerf.INSTANCE.fallbackSections.increment();
+            MapPerf.INSTANCE.fallbackColumns.add(fallbackCols);
         }
         return new Decoded(key, cols);
     }
@@ -3545,38 +3581,46 @@ public final class MapData {
         final int tileWorld = LiveTileStore.TILE_PIXELS * Math.max(1, pixelBlocks);
         final int traceTx = (int) Math.floorDiv(minWX + 8L * pixelBlocks, (long) tileWorld);
         final int traceTz = (int) Math.floorDiv(minWZ + 8L * pixelBlocks, (long) tileWorld);
-        colorPool.submit(() -> {
-            final long workStartNs = System.nanoTime();
-            if (TileTrace.enabled()) TileTrace.timed(traceTx, traceTz, "color_wait", submittedNs, "loader-queue");
-            try {
-                if (!stillValid.getAsBoolean()) {
-                    if (TileTrace.enabled()) TileTrace.timed(traceTx, traceTz, "color_cancelled", submittedNs, "stale-before-work");
-                    done.accept(null); // cancellation only clears colorPending; no main-thread UI work
-                    return;
+        tileColorInFlight.incrementAndGet();
+        try {
+            colorPool.submit(() -> {
+                final long workStartNs = System.nanoTime();
+                if (TileTrace.enabled()) TileTrace.timed(traceTx, traceTz, "color_wait", submittedNs, "loader-queue");
+                try {
+                    if (!stillValid.getAsBoolean()) {
+                        if (TileTrace.enabled()) TileTrace.timed(traceTx, traceTz, "color_cancelled", submittedNs, "stale-before-work");
+                        done.accept(null); // cancellation only clears colorPending; no main-thread UI work
+                        return;
+                    }
+                    final long haloStartNs = System.nanoTime();
+                    long[] pixels = haloSupplier.get();
+                    if (TileTrace.enabled()) {
+                        TileTrace.timed(traceTx, traceTz, "color_halo", haloStartNs,
+                                "px=" + (pixels == null ? -1 : pixels.length));
+                    }
+                    if (!stillValid.getAsBoolean()) {
+                        if (TileTrace.enabled()) TileTrace.timed(traceTx, traceTz, "color_cancelled", submittedNs, "stale-after-halo");
+                        done.accept(null);
+                        return;
+                    }
+                    int[] rgb = renderTileColor(pixels, width, height, minWX, minWZ, pixelBlocks);
+                    if (TileTrace.enabled()) {
+                        TileTrace.timed(traceTx, traceTz, "color_work", workStartNs,
+                                "px=" + (rgb == null ? -1 : rgb.length));
+                    }
+                    Minecraft.getInstance().execute(() -> done.accept(rgb));
+                } catch (Throwable t) {
+                    if (TileTrace.enabled()) TileTrace.stage(traceTx, traceTz, "color_error", t.getClass().getSimpleName());
+                    t.printStackTrace();
+                    Minecraft.getInstance().execute(() -> done.accept(null));
+                } finally {
+                    tileColorInFlight.decrementAndGet();
                 }
-                final long haloStartNs = System.nanoTime();
-                long[] pixels = haloSupplier.get();
-                if (TileTrace.enabled()) {
-                    TileTrace.timed(traceTx, traceTz, "color_halo", haloStartNs,
-                            "px=" + (pixels == null ? -1 : pixels.length));
-                }
-                if (!stillValid.getAsBoolean()) {
-                    if (TileTrace.enabled()) TileTrace.timed(traceTx, traceTz, "color_cancelled", submittedNs, "stale-after-halo");
-                    done.accept(null);
-                    return;
-                }
-                int[] rgb = renderTileColor(pixels, width, height, minWX, minWZ, pixelBlocks);
-                if (TileTrace.enabled()) {
-                    TileTrace.timed(traceTx, traceTz, "color_work", workStartNs,
-                            "px=" + (rgb == null ? -1 : rgb.length));
-                }
-                Minecraft.getInstance().execute(() -> done.accept(rgb));
-            } catch (Throwable t) {
-                if (TileTrace.enabled()) TileTrace.stage(traceTx, traceTz, "color_error", t.getClass().getSimpleName());
-                t.printStackTrace();
-                Minecraft.getInstance().execute(() -> done.accept(null));
-            }
-        });
+            });
+        } catch (java.util.concurrent.RejectedExecutionException rejected) {
+            tileColorInFlight.decrementAndGet();
+            done.accept(null);
+        }
     }
     /** Writes the most recently rendered map as a PNG. */
     public boolean exportPng(java.nio.file.Path out) {
@@ -3695,7 +3739,12 @@ public final class MapData {
                             String style, int sea, int colorEpoch) {
         if (!isTile2DMode()) return;
         LiveTileStore live = ensure2DStore();
-        if (live != null) live.pumpFor3D(centerX, centerZ, radiusTiles, style, sea, colorEpoch);
+        if (live != null) {
+            // 3D terrain tiles are small on screen even up close (and many at once): a moderate
+            // repaint interval keeps live recolours from queueing up behind the 3D mesh builds.
+            live.setLiveRepaintIntervalMs(1200);
+            live.pumpFor3D(centerX, centerZ, radiusTiles, style, sea, colorEpoch);
+        }
     }
 
     /**
@@ -3764,19 +3813,23 @@ public final class MapData {
         tile2dStorage = storage;
         if (storage != null) pruneCaches(worldCacheDir(storage));
         invalidateTileBiomeCache();
-        // Voxy/SeedGen may still be flushing sections: schedule rescans (each one reopens the
-        // read-only DB view, see tileResyncAtMs) starting shortly after the map opens.
-        tileResyncAtMs = System.currentTimeMillis() + 4_000L;
-        tileRescanNeeded = true;
+        // Freshness after open: the cheap snapshot reopen runs shortly after the first frames
+        // (new writes become readable). A full index rebuild is only scheduled when the on-disk
+        // index is stale; live sections keep the index current incrementally from then on.
+        long nowOpen = System.currentTimeMillis();
+        tileRescanNeeded = false;
+        tileReopenAtMs = nowOpen + 2_000L;
+        tileResyncAtMs = next.sourceIndexFromStaleCache() ? nowOpen + 3_000L : 0L;
         lastTileRescanMs = 0L;
         ensureWaterIdsAsync();
         return next;
     }
 
     /**
-     * When the highest known land point changes, every tile must be re-coloured with the new
-     * ramp. Debounce during loading so a rapidly increasing maximum does not cause a recolor
-     * storm; once the maximum has been stable for a moment, invalidate all tile colours.
+     * When the highest known land point changes, every resident tile must be re-coloured with the
+     * new ramp — an expensive full pass. Defer it until the map has stopped growing (no recent live
+     * sections) and coalesce bursts, so loading a new world does not re-colour everything several
+     * times per second.
      */
     private void maybeRecolorForTileRamp(LiveTileStore store, long now) {
         if (!(VoxyMapConfig.MIN_MAX_RAMP.get() || VoxyMapConfig.ADAPTIVE_COLOR_RAMP.get())) {
@@ -3785,8 +3838,11 @@ public final class MapData {
         }
         int version = store.rampVersion();
         if (version == appliedTileRampVersion) return;
-        if (now - store.lastRampChangeMs() < 750L) return;
-        if (now - lastTileRampRecolorMs < 1000L) return;
+        if (now - store.lastRampChangeMs() < 1_500L) return;
+        if (now - lastTileRampRecolorMs < 3_000L) return;
+        // While Voxy is still streaming new terrain, the maximum keeps moving: every full recolour
+        // done now would be thrown away by the next sample. Wait for a quiet moment instead.
+        if (now - lastLiveSectionMs < 1_500L) return;
         appliedTileRampVersion = version;
         lastTileRampRecolorMs = now;
         store.invalidateAllColors();
@@ -3855,6 +3911,7 @@ public final class MapData {
         Path storage = findStorage();
         if (storage == null) return;
         waterIdsLoading = true;
+        mappingScanStartedMs = System.currentTimeMillis();
         final boolean drop = dropAll;
         loader.submit(() -> {
             List<Object> handles = new ArrayList<>();
@@ -3871,24 +3928,31 @@ public final class MapData {
                     } else {
                         tileBiomeNames = names;
                         biomeKeyCache.clear();
-                        boolean hadWater = !waterIdsCache.isEmpty();
                         waterIdsCache = loaded;
                         waterIdsLoaded = true;
                         Minecraft.getInstance().execute(() -> {
                             LiveTileStore store = liveTiles;
                             if (store != null) {
-                                if (drop || !hadWater) {
-                                    // In-memory tiles created before the liquid ids/mapping were
-                                    // known are dry and/or grey; drop them. For a manual refresh
-                                    // also discard .vxt files and the source index, since both were
-                                    // decoded with the stale table.
+                                if (drop) {
+                                    // Manual refresh: discard every tile and both caches, since
+                                    // they may have been decoded with a stale mapping table.
                                     store.dropAllTiles(false);
-                                    if (drop) {
-                                        store.clearCacheFiles();
-                                        store.invalidateSourceIndex();
-                                    }
+                                    store.clearCacheFiles();
+                                    store.invalidateSourceIndex();
                                 }
+                                // A mapping-table load is NOT a reason to drop tiles: source decodes
+                                // already read their own liquid ids (VoxyTileSource.ensureIndex) and
+                                // live decoding is gated on isLiveDecodeReady(), so the old
+                                // "!hadWater -> dropAllTiles" threw away the whole first second of
+                                // loading for nothing on every new session/world.
                                 store.setCacheReady(true);
+                                if (fallbackReloadPending) {
+                                    // This scan was triggered by a decode that hit unknown block
+                                    // states (FALLBACK slot 0). The refreshed table may now know
+                                    // them: re-decode those tiles once so the grey patches go away.
+                                    fallbackReloadPending = false;
+                                    store.markFallbackTilesForRefresh();
+                                }
                             }
                             if (mapOpen) processPendingDirtyTiles();
                         });
@@ -3907,6 +3971,56 @@ public final class MapData {
     /** True once the mapping/biome scan has completed and live sections can be decoded safely. */
     public boolean isLiveDecodeReady() {
         return waterIdsLoaded;
+    }
+
+    /**
+     * True once the {@code id_mappings} scan has published the surface-class / biome tables. Source
+     * tile decoding MUST wait for this: a section decoded before it bakes the grey FALLBACK class
+     * slot into its pixels and only a re-decode can fix it.
+     */
+    public boolean isMappingReady() {
+        return waterIdsLoaded;
+    }
+
+    /**
+     * Gate for tile decoding and colouring. Opens when the mapping scan completed, or after a 5 s
+     * timeout so a failed scan cannot keep the map blank forever (the fallback then renders the
+     * same way the old code did, and a later refresh retries the scan).
+     */
+    public boolean isTileDecodeReady() {
+        if (DEBUG_DISABLE_FALLBACK_FIX) return true;
+        if (waterIdsLoaded) return true;
+        long started = mappingScanStartedMs;
+        return started > 0L && System.currentTimeMillis() - started > 5_000L;
+    }
+
+    /**
+     * Called when freshly decoded pixels contain unknown surface classes (slot 0). On a fresh world
+     * Voxy keeps adding new block states to {@code id_mappings} while it generates chunks, so a scan
+     * taken at map-open time goes stale within seconds and later decodes bake FALLBACK grey into
+     * their pixels. Reloading the mapping table and re-decoding the affected tiles fixes the patches
+     * instead of leaving them grey until a manual refresh.
+     */
+    public void onFallbackDecoded() {
+        if (DEBUG_DISABLE_FALLBACK_FIX) return;
+        long now = System.currentTimeMillis();
+        if (waterIdsLoading) return;
+        if (now - lastMappingReloadMs < 3_000L) return;
+        lastMappingReloadMs = now;
+        fallbackReloadPending = true;
+        ensureWaterIdsAsync(true, false);
+    }
+
+    /** Resident tiles whose pixels contain FALLBACK columns (0 when everything is resolved). */
+    public int fallbackTileCount() {
+        LiveTileStore store = liveTiles;
+        return store == null ? 0 : store.fallbackTileCount();
+    }
+
+    /** FALLBACK tiles visible in the last frame (what a screenshot can actually show). */
+    public int fallbackVisibleTileCount() {
+        LiveTileStore store = liveTiles;
+        return store == null ? 0 : store.fallbackVisibleTileCount();
     }
 
     /**
@@ -3959,8 +4073,11 @@ public final class MapData {
             } else {
                 store.markTilesForSourceRefresh(tiles);
             }
-            tileRescanNeeded = true;
+            // Do not re-query every tile here: the background rebuild swaps the new index in shortly
+            // and consumeIndexSwapped() then marks all resident tiles stale exactly once.
+            tileRescanNeeded = false;
             tileResyncAtMs = 0L;
+            tileReopenAtMs = System.currentTimeMillis();
         });
     }
 
@@ -3978,8 +4095,9 @@ public final class MapData {
         if (isTile2DMode()) {
             if (store == null || !store.matches(0L, 0L, effectivePixelBlocks())) return;
             store.applySection(key, raw, waterIdsCache);
-            // New sections are newer than the source index snapshot: schedule a rescan so the
-            // on-demand source (and its reopened read-only DB view) can fill the new area too.
+            // New sections are newer than the source snapshot: request one cheap reopen so the
+            // on-demand source can fill the new area too. Full index rescans are not needed any
+            // more (the live key was merged into the index by applySection).
             tileRescanNeeded = true;
             return;
         }
@@ -3996,6 +4114,7 @@ public final class MapData {
         liveTiles = null;
         tile2dStorage = null;
         tileResyncAtMs = 0;
+        tileReopenAtMs = 0;
         tileRescanNeeded = false;
         lastTileRescanMs = 0L;
         waterIdsLoaded = false;
@@ -5606,6 +5725,12 @@ public final class MapData {
                     : MapStyles.waterColor("current", depth);
         } else {
             int slot = (int) ((packed >>> 40) & SurfaceClassTable.SLOT_MASK);
+            if (slot == 0) MapPerf.INSTANCE.debugSlot0Pixels.increment();
+            if (DEBUG_FALLBACK && slot == 0) {
+                // unambiguous marker for missing id_mappings entries (grey is legit stone terrain)
+                MapPerf.INSTANCE.debugFallbackPixels.increment();
+                return 0xFFFF00FF;
+            }
             if (!biomeColors) {
                 rgb = SurfaceClassTable.INSTANCE.colorOf(slot);
             } else {
