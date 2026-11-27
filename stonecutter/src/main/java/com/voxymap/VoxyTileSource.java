@@ -82,8 +82,21 @@ public final class VoxyTileSource {
     /** bumped to discard queued/running decode work after the viewport moved */
     private final java.util.concurrent.atomic.AtomicInteger requestGeneration =
             new java.util.concurrent.atomic.AtomicInteger();
-    private final java.util.concurrent.ConcurrentHashMap<Long, KeyList> byTile =
+    /**
+     * tile -> section keys. Written by the index scan (replaced atomically as a whole map) and
+     * incrementally by live section events (see {@link #addLiveKey(long)}); a decode may read it
+     * concurrently, so every {@link KeyList} is internally synchronized.
+     */
+    private volatile java.util.concurrent.ConcurrentHashMap<Long, KeyList> byTile =
             new java.util.concurrent.ConcurrentHashMap<>();
+    /** live section keys received before the index was usable; merged when it becomes ready */
+    private final java.util.Set<Long> pendingLiveKeys = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    /** distinct live keys already merged into the current index (dedupe: live events repeat keys) */
+    private final java.util.Set<Long> liveKeys = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    /** set when live-key dedupe memory hits its cap; the owner should schedule one full rescan */
+    private volatile boolean rescanRequested;
+    /** true when the index came from the disk cache but its signature no longer matches the DB */
+    private volatile boolean indexFromStaleCache;
     private Object db;
     private final List<Object> handles = new ArrayList<>();
     private Object sectionsHandle;
@@ -104,9 +117,18 @@ public final class VoxyTileSource {
         long[] keys = new long[16];
         int size;
 
-        void add(long key) {
-            if (size == keys.length) keys = java.util.Arrays.copyOf(keys, size + size / 2 + 1);
+        synchronized void add(long key) {
+            grow();
             keys[size++] = key;
+        }
+
+        private void grow() {
+            if (size == keys.length) keys = java.util.Arrays.copyOf(keys, size + size / 2 + 1);
+        }
+
+        /** Copy of the current keys, safe against a concurrent live-key add. */
+        synchronized long[] snapshot() {
+            return java.util.Arrays.copyOf(keys, size);
         }
     }
 
@@ -197,33 +219,44 @@ public final class VoxyTileSource {
     }
 
     private synchronized void ensureIndex() throws Exception {
-        if (indexed) return;
-        final long indexStartNs = System.nanoTime();
-        if (TileTrace.enabled()) TileTrace.stage(-1, -1, "index_scan_start", "pb=" + pixelBlocks);
         if (!RocksBridge.available() || storage == null) {
             indexed = true;
+            pendingLiveKeys.clear();
             return;
         }
         if (db == null) {
             db = RocksBridge.openReadOnly(storage.toString(), handles);
             if (db == null || handles.size() < 3) {
                 indexed = true;
+                pendingLiveKeys.clear();
                 return;
             }
+            sectionsHandle = handles.get(1);
+            // The tile source must not decode water as solid just because the async global liquid-id
+            // load has not finished yet: read the same mapping table directly from this connection.
+            if (waterIds.get().isEmpty()) {
+                ownWaterIds = MapData.loadWaterIdsFromDb(db, handles.get(2));
+            }
         }
-        sectionsHandle = handles.get(1);
-        // The tile source must not decode water as solid just because the async global liquid-id
-        // load has not finished yet: read the same mapping table directly from this connection.
-        if (waterIds.get().isEmpty()) {
-            ownWaterIds = MapData.loadWaterIdsFromDb(db, handles.get(2));
+        if (indexed) {
+            // A cheap reopen (see reopenDb()) only replaces the snapshot; the index is still valid.
+            drainPendingLiveKeys();
+            return;
         }
+        final long indexStartNs = System.nanoTime();
+        if (TileTrace.enabled()) TileTrace.stage(-1, -1, "index_scan_start", "pb=" + pixelBlocks);
         long signature = RocksBridge.latestSequence(db);
         if (signature < 0) signature = storageSignature();
         if (loadIndexCache(signature)) {
             indexed = true;
             lastIndexScanNanos = 0L; // came from the disk cache: a fresh close/reopen is cheap
+            drainPendingLiveKeys();
             return;
         }
+        // Build the index into a fresh map and swap it in at the end: decodes in flight keep using
+        // the previous snapshot instead of being cancelled by an in-place clear().
+        final java.util.concurrent.ConcurrentHashMap<Long, KeyList> built =
+                new java.util.concurrent.ConcurrentHashMap<>();
         Object it = RocksBridge.newIterator(db, sectionsHandle);
         final long tileWorld = (long) LiveTileStore.TILE_PIXELS * pixelBlocks;
         try {
@@ -247,7 +280,7 @@ public final class VoxyTileSource {
                         int tz1 = (int) Math.floorDiv(wz1 - 1 - minWZ, tileWorld);
                         for (int tz = tz0; tz <= tz1; tz++) {
                             for (int tx = tx0; tx <= tx1; tx++) {
-                                byTile.computeIfAbsent(tileKey(tx, tz), k -> new KeyList()).add(key);
+                                built.computeIfAbsent(tileKey(tx, tz), k -> new KeyList()).add(key);
                             }
                         }
                     }
@@ -257,11 +290,52 @@ public final class VoxyTileSource {
         } finally {
             RocksBridge.close(it);
         }
+        byTile = built;
         indexed = true;
+        liveKeys.clear();
+        indexFromStaleCache = false;
+        drainPendingLiveKeys();
         lastIndexScanNanos = System.nanoTime() - indexStartNs;
         saveIndexCacheAsync(signature);
         if (TileTrace.enabled()) {
             TileTrace.timed(-1, -1, "index_scan_done", indexStartNs, "tiles=" + byTile.size());
+        }
+    }
+
+    /**
+     * Merges live section keys received while the index was not ready. Live events deliver exactly
+     * the section keys Voxy is writing, so an open-map session can keep its index current without
+     * rescanning RocksDB every few seconds.
+     */
+    private void drainPendingLiveKeys() {
+        if (pendingLiveKeys.isEmpty()) return;
+        java.util.Iterator<Long> it = pendingLiveKeys.iterator();
+        while (it.hasNext()) {
+            Long key = it.next();
+            it.remove();
+            mergeLiveKey(key);
+        }
+    }
+
+    private void mergeLiveKey(long key) {
+        if (key <= 0) return;
+        int lvl = (int) ((key >>> 60) & 0xF);
+        if (lvl > maxLod) return;
+        if (!liveKeys.add(key)) return;
+        int scale = 1 << lvl;
+        int sx = (int) ((key << 36) >> 40);
+        int sz = (int) ((key << 12) >> 40);
+        long tileWorld = (long) LiveTileStore.TILE_PIXELS * pixelBlocks;
+        long wx0 = (long) sx * 32 * scale;
+        long wz0 = (long) sz * 32 * scale;
+        int tx0 = (int) Math.floorDiv(wx0 - minWX, tileWorld);
+        int tx1 = (int) Math.floorDiv(wx0 + 32L * scale - 1 - minWX, tileWorld);
+        int tz0 = (int) Math.floorDiv(wz0 - minWZ, tileWorld);
+        int tz1 = (int) Math.floorDiv(wz0 + 32L * scale - 1 - minWZ, tileWorld);
+        for (int tz = tz0; tz <= tz1; tz++) {
+            for (int tx = tx0; tx <= tx1; tx++) {
+                byTile.computeIfAbsent(tileKey(tx, tz), k -> new KeyList()).add(key);
+            }
         }
     }
 
@@ -294,12 +368,14 @@ public final class VoxyTileSource {
             long cachedSignature = in.readLong();
             // RocksDB's latestSequence changes for background writes/compaction even when the
             // section key set is unchanged. The cached key set is still useful: use it
-            // immediately, and let the normal 4s/14s/34s resync replace it if the world changed.
+            // immediately, and let the deferred rescan replace it if the world changed.
             boolean stale = cachedSignature != signature;
             if (in.readLong() != minWX || in.readLong() != minWZ
                     || in.readInt() != pixelBlocks || in.readInt() != maxLod) return false;
             int count = in.readInt();
             if (count < 0 || count > 2_000_000) return false;
+            java.util.concurrent.ConcurrentHashMap<Long, KeyList> loaded =
+                    new java.util.concurrent.ConcurrentHashMap<>(Math.max(16, count * 2));
             for (int i = 0; i < count; i++) {
                 long key = in.readLong();
                 int n = in.readInt();
@@ -308,8 +384,10 @@ public final class VoxyTileSource {
                 list.keys = new long[Math.max(4, n)];
                 for (int k = 0; k < n; k++) list.keys[k] = in.readLong();
                 list.size = n;
-                byTile.put(key, list);
+                loaded.put(key, list);
             }
+            byTile = loaded;
+            indexFromStaleCache = stale;
             if (TileTrace.enabled()) {
                 TileTrace.stage(-1, -1, stale ? "index_cache_stale" : "index_cache_hit",
                         "tiles=" + byTile.size());
@@ -320,9 +398,75 @@ public final class VoxyTileSource {
                 Files.deleteIfExists(indexCache);
             } catch (Throwable ignored) {
             }
-            byTile.clear();
             return false;
         }
+    }
+
+    /** True when the index restored from disk no longer matches the database signature. */
+    public boolean indexFromStaleCache() {
+        return indexFromStaleCache;
+    }
+
+    /**
+     * Cheap refresh of the read-only snapshot: closes the handle so the next request reopens it and
+     * can see sections written since the last open. The section index (and its disk cache) is kept,
+     * so no full key scan and no in-flight decode cancellation is needed.
+     */
+    public void reopenDb() {
+        if (closed.get()) return;
+        if (TileTrace.enabled()) TileTrace.stage(-1, -1, "index_reopen", "keep-index");
+        try {
+            io.submit(() -> {
+                dbLock.writeLock().lock();
+                try {
+                    // decoded section values may have been refined in the DB: drop the shared decode
+                    // cache so a later refill sees the new values, but keep byTile (key set).
+                    sectionCache.clear();
+                    closeHandlesKeepIndex();
+                } finally {
+                    dbLock.writeLock().unlock();
+                }
+            });
+        } catch (java.util.concurrent.RejectedExecutionException rejected) {
+            // closing: nothing to refresh
+        }
+    }
+
+    /**
+     * Adds one live section key to the index. Called from Voxy's live-section worker; the index may
+     * not exist yet (queued) and duplicate keys are filtered (Voxy re-sends the same section many
+     * times while it refines LOD data).
+     */
+    public void addLiveKey(long key) {
+        if (closed.get()) return;
+        if (!indexed) {
+            pendingLiveKeys.add(key);
+            return;
+        }
+        if (liveKeys.size() >= 131_072) {
+            // dedupe memory bound reached: ask the owner for one full rescan and skip adding until
+            // it ran (the scan clears both sets)
+            rescanRequested = true;
+            return;
+        }
+        mergeLiveKey(key);
+    }
+
+    /** One-shot flag: the owner should schedule a full rescan (live-key dedupe cap reached). */
+    public boolean consumeRescanRequest() {
+        if (!rescanRequested) return false;
+        rescanRequested = false;
+        return true;
+    }
+
+    /** Cheap fingerprint of a tile's section-key set (used to skip no-op source refills). */
+    public long tileKeySignature(int tx, int tz) {
+        KeyList list = byTile.get(tileKey(tx, tz));
+        if (list == null) return 0L;
+        long[] keys = list.snapshot();
+        long h = 1125899906842597L;
+        for (long k : keys) h = h * 31 + k;
+        return h * 31 + keys.length;
     }
 
     private void saveIndexCacheAsync(long signature) {
@@ -343,10 +487,10 @@ public final class VoxyTileSource {
                 out.writeInt(maxLod);
                 out.writeInt(byTile.size());
                 for (java.util.Map.Entry<Long, KeyList> e : byTile.entrySet()) {
-                    KeyList list = e.getValue();
+                    long[] keys = e.getValue().snapshot();
                     out.writeLong(e.getKey());
-                    out.writeInt(list.size);
-                    for (int k = 0; k < list.size; k++) out.writeLong(list.keys[k]);
+                    out.writeInt(keys.length);
+                    for (long k : keys) out.writeLong(k);
                 }
             }
             Files.move(tmp, indexCache, StandardCopyOption.REPLACE_EXISTING,
@@ -372,6 +516,11 @@ public final class VoxyTileSource {
         boolean any = false;
         KeyList list = byTile.get(tileKey(tx, tz));
         if (list == null) return null;
+        // Snapshot the key set: live events may append keys concurrently, and the merge below must
+        // work on a stable array.
+        final long[] keys = list.snapshot();
+        final int keyCount = keys.length;
+        if (keyCount == 0) return null;
         Set<Long> ids = waterIds.get();
         if (ids.isEmpty()) ids = ownWaterIds;
         // optional split timing for the debug tile trace: how much of a tile build is section
@@ -383,15 +532,15 @@ public final class VoxyTileSource {
         // A coarse map scale puts thousands of sections in one tile. Decode each batch of sections
         // in parallel (the expensive part) and merge them in the original key order afterwards, so
         // the pixels are byte-for-byte what the sequential builder produced.
-        for (int base = 0; base < list.size; base += DECODE_BATCH_SECTIONS) {
+        for (int base = 0; base < keyCount; base += DECODE_BATCH_SECTIONS) {
             batches++;
-            int end = Math.min(list.size, base + DECODE_BATCH_SECTIONS);
+            int end = Math.min(keyCount, base + DECODE_BATCH_SECTIONS);
             int len = end - base;
             long[][] decoded = new long[len][];
             int[] misses = new int[len];
             int missCount = 0;
             for (int j = 0; j < len; j++) {
-                long key = list.keys[base + j];
+                long key = keys[base + j];
                 if (!intersectsTile(key, tileX0, tileX1, tileZ0, tileZ1)) continue;
                 long[] cols = sectionCache.get(key);
                 if (cols != null) {
@@ -402,7 +551,7 @@ public final class VoxyTileSource {
             }
             long decodeStartNs = trace ? System.nanoTime() : 0L;
             if (missCount > 0) {
-                decodeMisses(list, base, misses, missCount, decoded, ids);
+                decodeMisses(keys, base, misses, missCount, decoded, ids);
             }
             if (trace) decodeNs += System.nanoTime() - decodeStartNs;
             long mergeStartNs = trace ? System.nanoTime() : 0L;
@@ -410,7 +559,7 @@ public final class VoxyTileSource {
             for (int j = 0; j < len; j++) {
                 long[] cols = decoded[j];
                 if (cols == null) continue;
-                long key = list.keys[base + j];
+                long key = keys[base + j];
                 int lvl = (int) ((key >>> 60) & 0xF);
                 int scale = 1 << lvl;
                 int sy = (int) ((key << 4) >> 56);
@@ -468,7 +617,7 @@ public final class VoxyTileSource {
      * Decodes this batch's cache misses on the decode pool. Each task only writes its own slots of
      * {@code decoded} (and publishes into the thread-safe section cache), so no locking is needed.
      */
-    private void decodeMisses(KeyList list, int base, int[] misses, int missCount,
+    private void decodeMisses(long[] keys, int base, int[] misses, int missCount,
                               long[][] decoded, Set<Long> ids) throws Exception {
         List<Future<?>> futures = new ArrayList<>(
                 (missCount + DECODE_CHUNK_SECTIONS - 1) / DECODE_CHUNK_SECTIONS);
@@ -478,7 +627,7 @@ public final class VoxyTileSource {
             futures.add(decodePool.submit(() -> {
                 for (int q = from; q < to; q++) {
                     int j = misses[q];
-                    long key = list.keys[base + j];
+                    long key = keys[base + j];
                     long[] cols = decodeSection(key, ids);
                     if (cols != null) {
                         decoded[j] = cols;
@@ -549,13 +698,9 @@ public final class VoxyTileSource {
     }
 
     /**
-     * Rebuilds the section index on the next request (manual refresh, SeedGen resync).
-     *
-     * <p>A RocksDB instance opened with {@code openReadOnly} keeps its own version/memtable view
-     * and does not observe writes made after it was opened. That made every rescan on the same
-     * connection return the index as it was when the map was first opened, so a map opened while
-     * SeedGen was still writing froze at that first snapshot. The connection is therefore closed
-     * here and reopened (fresh view) by the next {@link #ensureIndex()}.</p>
+     * Requests a full index rebuild on the next request (manual refresh, closed-map dirty data or
+     * the live-key dedupe cap). The previous index stays usable for in-flight decodes until the new
+     * one is built and swapped in (see {@link #ensureIndex()}), so this no longer cancels work.
      */
     public void invalidateIndex() {
         if (closed.get()) return;
@@ -566,11 +711,12 @@ public final class VoxyTileSource {
             io.submit(() -> {
                 dbLock.writeLock().lock();
                 try {
-                    byTile.clear();
-                    sectionCache.clear();
                     indexed = false;
+                    indexFromStaleCache = false;
+                    pendingLiveKeys.clear();
+                    liveKeys.clear();
                     // waits for in-flight decodes (read lock) before closing the handle
-                    closeDb();
+                    closeHandlesKeepIndex();
                     try {
                         if (indexCache != null) Files.deleteIfExists(indexCache);
                     } catch (Throwable ignored) {
@@ -585,12 +731,17 @@ public final class VoxyTileSource {
         }
     }
 
-    private void closeDb() {
-        sectionCache.clear();
+    /** Closes the DB handle but keeps the in-memory index (used by reopen and before a rescan). */
+    private void closeHandlesKeepIndex() {
         for (Object h : handles) RocksBridge.close(h);
         handles.clear();
         RocksBridge.close(db);
         db = null;
         sectionsHandle = null;
+    }
+
+    private void closeDb() {
+        sectionCache.clear();
+        closeHandlesKeepIndex();
     }
 }

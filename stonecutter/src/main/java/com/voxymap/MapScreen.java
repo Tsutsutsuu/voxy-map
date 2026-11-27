@@ -860,6 +860,10 @@ public class MapScreen extends Screen {
         double bottom = centerZ + (height / 2.0) * worldPerScreenPx;
         int tx0 = live.tileIndexX(left), tx1 = live.tileIndexX(right);
         int tz0 = live.tileIndexZ(top), tz1 = live.tileIndexZ(bottom);
+        // Live sections only materialise tiles inside this rectangle (+margin); off-screen data is
+        // recorded as dirty tiles instead of costing 512 KiB and decode time each. See
+        // LiveTileStore.applySection / setViewportHint.
+        live.setViewportHint(tx0, tz0, tx1, tz1);
         maybeCancelStaleSource(live);
         String style = data.getStyle();
         int sea = data.seaLevel();

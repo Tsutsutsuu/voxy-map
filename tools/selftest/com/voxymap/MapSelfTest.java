@@ -42,6 +42,10 @@ import java.util.concurrent.atomic.AtomicInteger;
  *   voxymap.selftest.coldStyle=&lt;style&gt;    default style applied before the first map open
  *   voxymap.selftest.view3d=true            run the 2D-&gt;3D-&gt;2D and 3D screenshots phase
  *   voxymap.selftest.quietTicks=40          settle window: ticks without pipeline counter changes
+ *   voxymap.selftest.createWorld=&lt;name&gt;    create a fresh world with this folder name at the title
+ *   voxymap.selftest.openDelayMs=&lt;n&gt;       open the map n ms after the world is ready (skip quiet)
+ *   voxymap.selftest.probeMs=&lt;n&gt;          probe-only run: sample counters for n ms after opening,
+ *                                           screenshot, finish (no style cycle / 3D)
  * </pre>
  *
  * <p>Delete this class and the {@code MapSelfTest.install()} call before shipping.</p>
@@ -71,6 +75,24 @@ public final class MapSelfTest {
     private static boolean want3d;
     private static boolean expectBlocks;
     private static int quietTicks = 40;
+
+    /** > 0: force this 2D zoom when the map opens (reproduces a zoomed-out viewport). */
+    private static double zoomOverride = -1.0;
+    private static boolean zoomApplied;
+
+    // ---- fresh-world / probe mode (reproduces "first map open on a newly generated world") ----
+    /** When non-empty, create a fresh world with this folder/display name at the title screen. */
+    private static String createWorld = "";
+    /** >= 0: open the map this many ms after the world is ready instead of waiting for quiet. */
+    private static int openDelayMs = -1;
+    /** > 0: probe-only run: sample pipeline counters while loading, then finish (no style cycle). */
+    private static int probeMs = 0;
+    private static boolean createAttempted;
+    private static long titleSeenAtMs;
+    private static long worldReadyAtMs;
+    private static long firstPaintMs = -1L;
+    private static int probeTick;
+    private static final List<String> probeLines = Collections.synchronizedList(new ArrayList<>());
 
     private static long worldWaitTimeoutMs = 180_000L;
     private static long quietTimeoutMs = 150_000L;
@@ -143,6 +165,16 @@ public final class MapSelfTest {
         want3d = Boolean.getBoolean("voxymap.selftest.view3d");
         expectBlocks = !"false".equalsIgnoreCase(System.getProperty("voxymap.selftest.expectBlocks", "true"));
         quietTicks = Integer.getInteger("voxymap.selftest.quietTicks", 40);
+        createWorld = System.getProperty("voxymap.selftest.createWorld", "").trim();
+        openDelayMs = Integer.getInteger("voxymap.selftest.openDelayMs", -1);
+        probeMs = Integer.getInteger("voxymap.selftest.probeMs", 0);
+        try {
+            zoomOverride = Double.parseDouble(System.getProperty("voxymap.selftest.zoom", "-1"));
+        } catch (Throwable t) {
+            zoomOverride = -1.0;
+        }
+        // wait for the title screen to be interactive before asking it to create a world
+        if (!createWorld.isEmpty()) worldWaitTimeoutMs = Math.max(worldWaitTimeoutMs, 240_000L);
         worldWaitTimeoutMs = Long.getLong("voxymap.selftest.worldTimeoutMs", worldWaitTimeoutMs);
         try { Files.createDirectories(outDir); } catch (Throwable ignored) { }
         resolveStyles();
@@ -151,7 +183,8 @@ public final class MapSelfTest {
         log("installed outDir=" + outDir + " tag=" + tag + " world='" + worldName + "'"
                 + " cold=" + cold + " coldStyle='" + coldStyle + "' view3d=" + want3d
                 + " styles=" + requestedStyles + " runStyles=" + runStyles
-                + " missing=" + missingStyles + " quietTicks=" + quietTicks);
+                + " missing=" + missingStyles + " quietTicks=" + quietTicks
+                + " createWorld='" + createWorld + "' openDelayMs=" + openDelayMs + " probeMs=" + probeMs);
     }
 
     private static void resolveStyles() {
@@ -194,6 +227,11 @@ public final class MapSelfTest {
         if (!installed || finished) return;
         tick++;
         long now = System.currentTimeMillis();
+        if (titleSeenAtMs == 0 && mc.level == null && mc.gui.screen() != null
+                && mc.gui.screen().getClass().getSimpleName().equals("TitleScreen")) {
+            titleSeenAtMs = now;
+            log("title screen ready after " + (now - startMs) + "ms");
+        }
         try {
             if (now - startMs > totalTimeoutMs) {
                 fail(mc, "global timeout after " + (now - startMs) + "ms in phase " + phase);
@@ -225,44 +263,111 @@ public final class MapSelfTest {
 
     private static void waitWorld(Minecraft mc, long now) {
         if (mc.level == null || mc.player == null) {
+            // fresh-world mode: the wrapper never quickplays a world, so create one from the title
+            // screen once the client is up. This is the only way to reproduce "first map open on a
+            // newly generated world" (nothing stored yet, SeedGen streaming while the map loads).
+            // Creating too early crashes XaeroLib ("Registry is not frozen yet!"): other mods finish
+            // their client setup slightly after the first tick, so wait a moment on the title screen.
+            if (now - titleSeenAtMs >= 4_000L && titleSeenAtMs > 0
+                    && !createWorld.isEmpty() && !createAttempted) {
+                createAttempted = true;
+                createFreshWorld(mc);
+            }
             if (now - startMs > worldWaitTimeoutMs) fail(mc, "no world after " + (now - startMs) + "ms");
             return;
         }
         worldReadyMs = now - startMs;
-        log("world ready after " + worldReadyMs + "ms; waiting for the Voxy live stream to go quiet");
+        worldReadyAtMs = now;
+        if (openDelayMs >= 0) {
+            log("world ready after " + worldReadyMs + "ms; opening the map in " + openDelayMs + "ms");
+        } else {
+            log("world ready after " + worldReadyMs + "ms; waiting for the Voxy live stream to go quiet");
+        }
         enterPhase(PHASE_WAIT_QUIET);
+    }
+
+    /** Creates a brand-new world through the same vanilla path the "Create New World" button uses. */
+    private static void createFreshWorld(Minecraft mc) {
+        try {
+            log("creating fresh world folder='" + createWorld + "'");
+            net.minecraft.world.level.LevelSettings settings = new net.minecraft.world.level.LevelSettings(
+                    createWorld,
+                    net.minecraft.world.level.GameType.SURVIVAL,
+                    net.minecraft.world.level.LevelSettings.DifficultySettings.DEFAULT,
+                    true,
+                    net.minecraft.world.level.WorldDataConfiguration.DEFAULT);
+            mc.createWorldOpenFlows().createFreshLevel(
+                    createWorld,
+                    settings,
+                    net.minecraft.client.gui.screens.worldselection.SelectWorldScreen.TEST_OPTIONS,
+                    net.minecraft.world.level.levelgen.presets.WorldPresets::createNormalWorldDimensions,
+                    mc.gui.screen());
+        } catch (Throwable t) {
+            addError("createFreshWorld failed: " + t);
+            t.printStackTrace();
+        }
     }
 
     /** Quickplay streams the SeedGen/LiveProbe fill for a while; opening the map before it stops would
      *  pollute the first-open timing with unrelated live section updates. Both builds wait the same. */
     private static void waitQuiet(Minecraft mc, long now) {
+        // fresh-world probe: open the map while the live stream / SeedGen is still running, which is
+        // exactly the situation the user reports as slow.
+        if (openDelayMs >= 0) {
+            if (now - worldReadyAtMs >= openDelayMs) {
+                openMapScreen(mc, "openDelay=" + openDelayMs + "ms");
+            }
+            return;
+        }
         if (settleCountersOnly()) {
             worldQuietMs = now - startMs;
-            log("live stream quiet after " + worldQuietMs + "ms; enabling DEBUG_TILE_TRACE and opening map");
-            VoxyMapConfig.DEBUG_TILE_TRACE.set(true);
-            if (cold && !coldStyle.isEmpty()) {
-                // the per-world state file was removed by the wrapper script, so the map's first open
-                // falls back to the configured default style: make that fallback the measured style
-                VoxyMapConfig.DEFAULT_STYLE.set(coldStyle);
-                log("cold run: DEFAULT_STYLE=" + coldStyle);
-            }
-            Screen screen = mc.gui.screen();
-            if (!(screen instanceof MapScreen)) {
-                mc.setScreenAndShow(new MapScreen());
-            }
-            mapOpenMs = System.currentTimeMillis();
-            log("map screen opened; measuring first-open to settled");
-            enterPhase(PHASE_WAIT_FIRST);
+            openMapScreen(mc, "live stream quiet after " + worldQuietMs + "ms");
             return;
         }
         if (now - phaseStartMs > quietTimeoutMs) {
             warnings.add("live stream did not go quiet within " + (now - phaseStartMs) + "ms; opening map anyway");
             log(warnings.get(warnings.size() - 1));
-            VoxyMapConfig.DEBUG_TILE_TRACE.set(true);
-            if (cold && !coldStyle.isEmpty()) VoxyMapConfig.DEFAULT_STYLE.set(coldStyle);
+            openMapScreen(mc, "quiet timeout");
+        }
+    }
+
+    private static void openMapScreen(Minecraft mc, String why) {
+        log(why + "; enabling DEBUG_TILE_TRACE and opening map");
+        VoxyMapConfig.DEBUG_TILE_TRACE.set(true);
+        if (cold && !coldStyle.isEmpty()) {
+            // the per-world state file was removed by the wrapper script, so the map's first open
+            // falls back to the configured default style: make that fallback the measured style
+            VoxyMapConfig.DEFAULT_STYLE.set(coldStyle);
+            log("cold run: DEFAULT_STYLE=" + coldStyle);
+        }
+        Screen screen = mc.gui.screen();
+        if (!(screen instanceof MapScreen)) {
             mc.setScreenAndShow(new MapScreen());
-            mapOpenMs = System.currentTimeMillis();
-            enterPhase(PHASE_WAIT_FIRST);
+        }
+        applyZoomOverride(mc);
+        mapOpenMs = System.currentTimeMillis();
+        log("map screen opened; measuring first-open to settled"
+                + (zoomOverride > 0 ? " zoomOverride=" + zoomOverride : ""));
+        enterPhase(PHASE_WAIT_FIRST);
+    }
+
+    /** Forces MapScreen.zoom/targetZoom before the first frame so the viewport covers more tiles. */
+    private static void applyZoomOverride(Minecraft mc) {
+        if (zoomOverride <= 0 || zoomApplied) return;
+        MapScreen screen = mapScreen(mc);
+        if (screen == null) return;
+        try {
+            java.lang.reflect.Field f = MapScreen.class.getDeclaredField("zoom");
+            f.setAccessible(true);
+            f.setDouble(screen, zoomOverride);
+            java.lang.reflect.Field t = MapScreen.class.getDeclaredField("targetZoom");
+            t.setAccessible(true);
+            t.setDouble(screen, zoomOverride);
+            MapData.INSTANCE.setZoom(zoomOverride);
+            zoomApplied = true;
+            log("zoom override applied: " + zoomOverride);
+        } catch (Throwable e) {
+            addError("zoom override failed: " + e);
         }
     }
 
@@ -279,6 +384,24 @@ public final class MapSelfTest {
             return;
         }
         MapData data = MapData.INSTANCE;
+        if (firstPaintMs < 0 && data.isReady() && !data.isLoading()
+                && MapPerf.INSTANCE.lastVisibleTiles > 0 && MapPerf.INSTANCE.tilesDrawn.sum() > 0) {
+            firstPaintMs = now - mapOpenMs;
+            log("first paint in " + firstPaintMs + "ms"
+                    + " vis=" + MapPerf.INSTANCE.lastVisibleTiles
+                    + " res=" + MapPerf.INSTANCE.lastResidentTiles
+                    + " colorReq=" + MapPerf.INSTANCE.colorRequests.sum()
+                    + " colorDone=" + MapPerf.INSTANCE.colorDone.sum()
+                    + " tex=" + MapPerf.INSTANCE.textureBuilds.sum()
+                    + " cacheH=" + MapPerf.INSTANCE.cacheHits.sum()
+                    + " cacheM=" + MapPerf.INSTANCE.cacheMisses.sum()
+                    + " src=" + MapPerf.INSTANCE.sourceRequests.sum()
+                    + " live=" + MapPerf.INSTANCE.liveSections.sum());
+        }
+        if (probeMs > 0) {
+            probeFirstOpen(mc, data, now);
+            return;
+        }
         if (data.isReady() && !data.isLoading() && settle(mc)) {
             firstOpenMs = now - mapOpenMs;
             firstOpenStyle = data.getStyle();
@@ -297,6 +420,42 @@ public final class MapSelfTest {
                     + " (ready=" + data.isReady() + " loading=" + data.isLoading()
                     + " visible=" + MapPerf.INSTANCE.lastVisibleTiles + ")");
         }
+    }
+
+    /**
+     * Probe-only mode: sample every second until {@code probeMs}, then finish. The counters are
+     * cumulative; the deltas between samples are what the investigation report analyses.
+     */
+    private static void probeFirstOpen(Minecraft mc, MapData data, long now) {
+        if (tick - probeTick >= 20) {
+            probeTick = tick;
+            MapPerf p = MapPerf.INSTANCE;
+            long heapMb = (Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory()) >> 20;
+            probeLines.add(String.format(Locale.ROOT,
+                    "probe t=%dms zoom=%.3f resident=%d visible=%d drawn=%d cacheH=%d cacheM=%d"
+                            + " src=%d/%d/%d color=%d/%d/%d tex=%d inv=%d live=%d resync=%d evict=%d heap=%dMB"
+                            + " ready=%b loading=%b",
+                    now - mapOpenMs, data.getZoom(),
+                    p.lastResidentTiles, p.lastVisibleTiles, p.tilesDrawn.sum(),
+                    p.cacheHits.sum(), p.cacheMisses.sum(),
+                    p.sourceRequests.sum(), p.sourceHits.sum(), p.sourceEmpty.sum(),
+                    p.colorRequests.sum(), p.colorDone.sum(), p.colorStale.sum(),
+                    p.textureBuilds.sum(), p.colorInvalidations.sum(),
+                    p.liveSections.sum(), p.resyncs.sum(),
+                    p.evictions.sum(), heapMb, data.isReady(), data.isLoading()));
+        }
+        if (now - mapOpenMs < probeMs && now - phaseStartMs < firstOpenTimeoutMs) return;
+        if (firstPaintMs < 0) firstPaintMs = now - mapOpenMs;
+        firstOpenMs = firstPaintMs;
+        firstOpenStyle = data.getStyle();
+        log("probe finished at " + (now - mapOpenMs) + "ms; firstPaint=" + firstPaintMs + "ms"
+                + " resident=" + MapPerf.INSTANCE.lastResidentTiles
+                + " drawn=" + MapPerf.INSTANCE.tilesDrawn.sum()
+                + " color=" + MapPerf.INSTANCE.colorDone.sum() + "/" + MapPerf.INSTANCE.colorRequests.sum()
+                + " tex=" + MapPerf.INSTANCE.textureBuilds.sum()
+                + " resync=" + MapPerf.INSTANCE.resyncs.sum());
+        screenshot(mc, tag + "-probe.png");
+        enterPhase(PHASE_FINISH);
     }
 
     private static void styles(Minecraft mc, long now) {
@@ -638,7 +797,10 @@ public final class MapSelfTest {
         }
         if (tick - lastChangeTick < quietTicks) return false;
         if (screen.isGpu3dView()) {
-            return MapPerf.INSTANCE.rasterFrames.sum() > 0 && MapPerf.INSTANCE.colorFrameBuilds.sum() > 0;
+            // GPU terrain path: there is no CPU color frame any more, so a rendered 3D frame plus
+            // the shared quiet window is the "settled" signal. (The old CPU-raster condition
+            // colorFrameBuilds>0 can never become true and made this phase hang.)
+            return MapPerf.INSTANCE.rasterFrames.sum() > 0;
         }
         return MapPerf.INSTANCE.lastVisibleTiles > 0 || MapPerf.INSTANCE.tilesDrawn.sum() > 0;
     }
@@ -689,7 +851,12 @@ public final class MapSelfTest {
         field(b, "worldReadyMs", worldReadyMs, true);
         field(b, "worldQuietMs", worldQuietMs, true);
         field(b, "firstOpenMs", firstOpenMs, true);
+        field(b, "firstPaintMs", firstPaintMs, true);
         field(b, "firstOpenStyle", firstOpenStyle, true);
+        field(b, "createWorld", createWorld, true);
+        field(b, "openDelayMs", openDelayMs, true);
+        field(b, "probeMs", probeMs, true);
+        field(b, "zoomOverride", String.format(Locale.ROOT, "%.4f", zoomOverride), true);
         field(b, "quietTicks", quietTicks, true);
         b.append("  \"styles\": [");
         for (int i = 0; i < styleRecords.size(); i++) {
@@ -725,6 +892,7 @@ public final class MapSelfTest {
         field(b, "tileTraceFile", tileTraceFile, true);
         field(b, "result", result(), true);
         array(b, "log", snapshot(logLines), true);
+        array(b, "probe", snapshot(probeLines), true);
         b.append("  \"mapDataLines\": [");
         try {
             List<String> lines = MapData.INSTANCE.debugLines();
@@ -768,6 +936,7 @@ public final class MapSelfTest {
     }
 
     private static String result() {
+        if (probeMs > 0) return errors.isEmpty() ? "PASS" : "FAIL";
         if (errors.isEmpty() && styleRecords.size() == runStyles.size()) return "PASS";
         return "FAIL";
     }

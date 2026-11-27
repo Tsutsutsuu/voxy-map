@@ -27,6 +27,11 @@ param(
     [switch]$View3d,
     [switch]$Build,
     [switch]$BuildOnly,
+    [string]$CreateWorld = '',
+    [int]$OpenDelayMs = -1,
+    [int]$ProbeMs = 0,
+    [double]$Zoom = -1,
+    [switch]$DeleteWorld,
     [int]$TimeoutSec = 420,
     [int]$RunSeconds = 0,
     [int]$Width = 1280,
@@ -95,11 +100,22 @@ $worldTags = @{
     '新的世界4' = 'w4'
     '新的世界5' = 'w5'
 }
-if (-not $worldTags.ContainsKey($World)) { throw "unsupported world: $World (expected one of $($worldTags.Keys -join ', '))" }
-$worldTag = $worldTags[$World]
-if (-not $Tag) {
-    $Tag = $worldTag
-    if ($Cold) { $Tag += '-cold' }
+if ($CreateWorld) {
+    # fresh-world mode: the harness creates the world itself from the title screen, so no quickplay
+    if (-not $Tag) { $Tag = 'newworld' }
+} else {
+    if ($worldTags.ContainsKey($World)) {
+        $worldTag = $worldTags[$World]
+    } elseif (Test-Path -LiteralPath (Join-Path $savesDir $World)) {
+        # a world created by a previous -CreateWorld run: quickplay it by its folder name
+        $worldTag = 'custom'
+    } else {
+        throw "unsupported world: $World (expected one of $($worldTags.Keys -join ', ') or an existing world folder)"
+    }
+    if (-not $Tag) {
+        $Tag = $worldTag
+        if ($Cold) { $Tag += '-cold' }
+    }
 }
 
 $resultsRoot = Join-Path $RepoRoot 'tools\selftest-results'
@@ -216,7 +232,7 @@ $launchArgs = @{
     Instance     = $Instance
     VersionId    = $VersionId
     JavaHome     = $JavaHome
-    World        = $World
+    World        = $(if ($CreateWorld) { '' } else { $World })
     Width        = $Width
     Height       = $Height
     TimeoutSec   = $(if ($RunSeconds -gt 0) { $RunSeconds } else { $TimeoutSec })
@@ -224,13 +240,19 @@ $launchArgs = @{
 if ($RunSeconds -le 0) {
     $extraJvm.Add('-Dvoxymap.selftest=true')
     $extraJvm.Add("-Dvoxymap.selftest.out=$outDir")
-    $extraJvm.Add("-Dvoxymap.selftest.tag=$worldTag")
+    $extraJvm.Add("-Dvoxymap.selftest.tag=$Tag")
     $extraJvm.Add("-Dvoxymap.selftest.world=$World")
     $extraJvm.Add("-Dvoxymap.selftest.styles=$Styles")
     $extraJvm.Add("-Dvoxymap.selftest.expectBlocks=$(((-not $Baseline)).ToString().ToLower())")
     if ($View3d) { $extraJvm.Add('-Dvoxymap.selftest.view3d=true') }
     if ($Cold) { $extraJvm.Add('-Dvoxymap.selftest.cold=true') }
     if ($ColdStyle) { $extraJvm.Add("-Dvoxymap.selftest.coldStyle=$ColdStyle") }
+    if ($CreateWorld) {
+        $extraJvm.Add("-Dvoxymap.selftest.createWorld=$CreateWorld")
+    }
+    if ($OpenDelayMs -ge 0) { $extraJvm.Add("-Dvoxymap.selftest.openDelayMs=$OpenDelayMs") }
+    if ($ProbeMs -gt 0) { $extraJvm.Add("-Dvoxymap.selftest.probeMs=$ProbeMs") }
+    if ($Zoom -gt 0) { $extraJvm.Add("-Dvoxymap.selftest.zoom=$Zoom") }
 } else {
     Write-Host "Part A mode: no selftest properties, killing the process tree after ${RunSeconds}s"
 }
@@ -239,6 +261,13 @@ $launchArgs.ExtraJvmArgs = $extraJvm.ToArray()
 $exitCode = -1
 $launchFailed = $false
 try {
+    if ($CreateWorld) {
+        $freshWorldDir = Join-Path $savesDir $CreateWorld
+        if (Test-Path -LiteralPath $freshWorldDir) {
+            Write-Host "world: removing the previous fresh world '$CreateWorld'"
+            Remove-Item -LiteralPath $freshWorldDir -Recurse -Force
+        }
+    }
     Repair-Mods
     Install-TestJar
     if ($Cold) { Clear-TileCache }
@@ -300,6 +329,26 @@ if (Test-Path -LiteralPath $crashDir) {
     if ($newCrash) {
         Copy-Item -LiteralPath $newCrash.FullName -Destination (Join-Path $outDir 'crash.txt') -Force
         Write-Host "collected: crash.txt (from $($newCrash.Name))"
+    }
+}
+
+# ---- optional fresh-world cleanup -------------------------------------------
+if ($CreateWorld -and $DeleteWorld) {
+    $freshWorldDir = Join-Path $savesDir $CreateWorld
+    if (Test-Path -LiteralPath $freshWorldDir) {
+        # drop this world's voxymap cache dir too (named after the voxy storage hash)
+        $voxyDir = Join-Path $freshWorldDir 'voxy'
+        if (Test-Path -LiteralPath $voxyDir) {
+            Get-ChildItem -LiteralPath $voxyDir -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+                $cacheDir = Join-Path $cacheRoot $_.Name
+                if (Test-Path -LiteralPath $cacheDir) {
+                    Remove-Item -LiteralPath $cacheDir -Recurse -Force -ErrorAction SilentlyContinue
+                    Write-Host "world: removed cache $($_.Name)"
+                }
+            }
+        }
+        Remove-Item -LiteralPath $freshWorldDir -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Host "world: removed fresh world '$CreateWorld'"
     }
 }
 

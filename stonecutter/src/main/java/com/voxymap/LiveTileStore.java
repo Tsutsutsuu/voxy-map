@@ -96,6 +96,8 @@ public final class LiveTileStore {
         volatile boolean sourceStale;
         /** Source refresh requested for this tile (closed-map/live dirty): equal-LOD fills may win. */
         volatile boolean forceSourceReplace;
+        /** section-key fingerprint of the source index when this tile was last filled. */
+        volatile long sourceKeySig;
         /** true when this tile came from the complete .vxt cache (skip resync source scans) */
         volatile boolean fromCache;
         /** true when the on-disk .vxt file no longer reflects this tile's pixels */
@@ -170,6 +172,8 @@ public final class LiveTileStore {
     private final java.util.Set<LiveTile> visibleTiles = new java.util.HashSet<>();
     private final java.util.Set<LiveTile> visibleTextures = new java.util.HashSet<>();
     private long textureFrame;
+    /** wall clock of the last live section that actually changed pixels (debounce hint). */
+    private volatile long lastLiveApplyMs;
     private final AtomicLong sectionCount = new AtomicLong();
     private final AtomicInteger createdThisFrame = new AtomicInteger();
     private final AtomicInteger colorRequestsThisFrame = new AtomicInteger();
@@ -184,6 +188,17 @@ public final class LiveTileStore {
     private final AtomicInteger sourceEpoch = new AtomicInteger();
     private final AtomicInteger cacheEpoch = new AtomicInteger();
     private volatile VoxyTileSource source;
+    /**
+     * Visible tile rectangle of the last drawn frame (render thread writes, live worker reads).
+     * Live sections only create new tiles inside this rectangle + margin; everything else is
+     * recorded as a dirty tile and loaded from source on demand when it scrolls into view.
+     */
+    private volatile int vpMinTx = Integer.MIN_VALUE;
+    private volatile int vpMinTz = Integer.MIN_VALUE;
+    private volatile int vpMaxTx = Integer.MIN_VALUE;
+    private volatile int vpMaxTz = Integer.MIN_VALUE;
+    /** tiles of margin kept alive around the viewport so panning does not immediately reload. */
+    private static final int VIEWPORT_MARGIN_TILES = 2;
     private final AtomicInteger seedTileCount = new AtomicInteger();
     private final AtomicInteger liveOnlyTileCount = new AtomicInteger();
     private final AtomicInteger minTileX = new AtomicInteger(Integer.MAX_VALUE);
@@ -383,6 +398,7 @@ public final class LiveTileStore {
 
     /** Invalidates every tile colour/texture after a style or display-option change. */
     public void invalidateAllColors() {
+        MapPerf.INSTANCE.colorInvalidations.increment();
         for (LiveTile tile : tiles.values()) {
             tile.liveDirty = true;
             tile.colorPending = false;
@@ -555,7 +571,10 @@ public final class LiveTileStore {
                 t.coloredVersion = -1;
                 t.colorEpoch++;
                 t.colorDirtySinceMs = System.currentTimeMillis();
-                if (t.colorRetryAtMs == 0L) t.colorRetryAtMs = t.colorDirtySinceMs + 500L;
+                if (t.colorRetryAtMs == 0L) {
+                    long live = System.currentTimeMillis() - lastLiveApplyMs;
+                    t.colorRetryAtMs = t.colorDirtySinceMs + (live < 1_500L ? 800L : 500L);
+                }
                 // Do not clear colorPending: a job is already in flight. Clearing it queued another
                 // full colour job for the same tile on every neighbour arrival (the 26s backlog).
                 t.textureDirty = true;
@@ -754,6 +773,77 @@ public final class LiveTileStore {
         seedPending.clear();
     }
 
+    /**
+     * Soft counterpart of {@link #markAllSourceUnfilled()}: marks tiles whose section-key set
+     * actually changed (or that were explicitly marked) as stale, WITHOUT cancelling in-flight
+     * decodes, clearing negative caches wholesale or bumping the request generations.
+     *
+     * <p>Used after a cheap DB reopen: most tiles are unchanged, so skipping them removes the
+     * "every visible tile is re-decoded after every rescan" churn that dominated first-open time.</p>
+     */
+    public void markAllSourceStale() {
+        markAllSourceStale(false);
+    }
+
+    /**
+     * @param forceAll when true every tile is re-queried (full index rebuild); otherwise only tiles
+     *                 whose section-key set changed, which keeps periodic snapshot refreshes cheap.
+     */
+    public void markAllSourceStale(boolean forceAll) {
+        VoxyTileSource src = source;
+        for (LiveTile tile : tiles.values()) {
+            long sig = src == null ? 0L : src.tileKeySignature(tile.tx, tile.tz);
+            if (!forceAll && !tile.sourceStale && sig == tile.sourceKeySig) continue;
+            tile.sourceStale = true;
+            if (tile.rgb == null) tile.sourceFilled = false;
+        }
+        // Negative results are only a cache hint; a tile that was empty when first probed may have
+        // data now (new world / SeedGen). Dropping them is cheap and lets the next visible frame
+        // re-probe instead of freezing the map edge.
+        sourceEmpty.clear();
+    }
+
+    /** Cheap snapshot refresh: new writes become readable, the index (and its disk cache) is kept. */
+    public void reopenSourceDb() {
+        VoxyTileSource src = source;
+        if (src != null) src.reopenDb();
+    }
+
+    /** True when the index restored from disk no longer matches the database signature. */
+    public boolean sourceIndexFromStaleCache() {
+        VoxyTileSource src = source;
+        return src != null && src.indexFromStaleCache();
+    }
+
+    /** One-shot: the source asks for a full rescan (live-key dedupe cap reached). */
+    public boolean consumeSourceRescanRequest() {
+        VoxyTileSource src = source;
+        return src != null && src.consumeRescanRequest();
+    }
+
+    /** Visible tile rectangle of the last drawn frame; limits live-tile creation to the viewport. */
+    public void setViewportHint(int minTx, int minTz, int maxTx, int maxTz) {
+        vpMinTx = minTx;
+        vpMinTz = minTz;
+        vpMaxTx = maxTx;
+        vpMaxTz = maxTz;
+    }
+
+    public void clearViewportHint() {
+        vpMinTx = Integer.MIN_VALUE;
+        vpMinTz = Integer.MIN_VALUE;
+        vpMaxTx = Integer.MIN_VALUE;
+        vpMaxTz = Integer.MIN_VALUE;
+    }
+
+    private boolean liveTileInViewport(int tx, int tz) {
+        int minTx = vpMinTx;
+        if (minTx == Integer.MIN_VALUE) return true; // first frame not drawn yet: do not lose data
+        int margin = VIEWPORT_MARGIN_TILES;
+        return tx >= minTx - margin && tx <= vpMaxTx + margin
+                && tz >= vpMinTz - margin && tz <= vpMaxTz + margin;
+    }
+
     /** Lets the next visible pass re-query storage and replace any coarse LOD pixels. */
     public void markAllSourceUnfilled() {
         // Cancel/forget in-flight source requests from the old index. Without this, a request
@@ -823,6 +913,7 @@ public final class LiveTileStore {
             LiveTile tile = new LiveTile(tx, tz, tileMinWX(tx), tileMinWZ(tz), pixels);
             tile.liveDirty = true;
             tile.sourceFilled = true;
+            tile.sourceKeySig = src.tileKeySignature(tx, tz);
             LiveTile previous = tiles.putIfAbsent(key, tile);
             if (previous == null) {
                 liveOnlyTileCount.incrementAndGet();
@@ -834,6 +925,7 @@ public final class LiveTileStore {
                 scheduleSave(tile);
             } else {
                 previous.sourceFilled = true;
+                previous.sourceKeySig = src.tileKeySignature(tx, tz);
                 fillMissing(previous, pixels);
                 invalidateNeighborColors(tx, tz);
                 scheduleSave(previous);
@@ -891,6 +983,7 @@ public final class LiveTileStore {
                 LiveTile created = new LiveTile(tx, tz, tileMinWX(tx), tileMinWZ(tz), pixels);
                 created.liveDirty = true;
                 created.sourceFilled = true;
+                created.sourceKeySig = src.tileKeySignature(tx, tz);
                 if (tiles.putIfAbsent(key, created) == null) {
                     liveOnlyTileCount.incrementAndGet();
                     markBounds(tx, tz);
@@ -905,6 +998,7 @@ public final class LiveTileStore {
                 current.forceSourceReplace = false;
                 return;
             }
+            current.sourceKeySig = src.tileKeySignature(tx, tz);
             fillMissing(current, pixels);
             scheduleSave(current);
         });
@@ -1028,6 +1122,7 @@ public final class LiveTileStore {
         int ccx = tileIndexX(centerX);
         int ccz = tileIndexZ(centerZ);
         int radius = Math.max(1, Math.min(32, radiusTiles));
+        setViewportHint(ccx - radius, ccz - radius, ccx + radius, ccz + radius);
         // same colour identity as textureFor(): 3D never bakes textures, so no texture hash here
         int colorHash = tileColorHash(style, sea, colorEpoch);
         for (int r = 0; r <= radius; r++) {
@@ -1247,6 +1342,10 @@ public final class LiveTileStore {
             tile.fromCache = true;
             tile.cacheDirty = false;
             tile.cacheSavedVersion = tile.version;
+            // remember which section-key set the cached pixels correspond to, so a later soft-stale
+            // pass only re-queries tiles whose source keys actually changed
+            VoxyTileSource src = source;
+            tile.sourceKeySig = src == null ? 0L : src.tileKeySignature(tx, tz);
             return tile;
         } catch (Throwable t) {
             if (TileTrace.enabled()) TileTrace.stage(tx, tz, "cache_read_error", t.getClass().getSimpleName());
@@ -1378,6 +1477,14 @@ public final class LiveTileStore {
         int sz = (int) ((key << 12) >> 40);
         int sy = (int) ((key << 4) >> 56);
         int sectionMinY = sy * 32 * scale;
+        // Feed the section index incrementally: the live callback is exactly the set of keys Voxy
+        // wrote, so the map no longer needs a full RocksDB key scan every few seconds to learn them.
+        VoxyTileSource src = source;
+        if (src != null) src.addLiveKey(key);
+        // The ramp (highest land) is learned from the decoded columns directly, so limiting live
+        // tile creation to the viewport does not make the colour ramp drift while panning.
+        observeLiveColumns(cols);
+        lastLiveApplyMs = System.currentTimeMillis();
         java.util.Set<LiveTile> touched = new java.util.HashSet<>();
         for (int c = 0; c < 1024; c++) {
             long packed = cols[c];
@@ -1400,6 +1507,13 @@ public final class LiveTileStore {
                     LiveTile tile = tiles.get(key(tx, tz));
                     if (tile == null) {
                         if (empty) continue;
+                        if (!liveTileInViewport(tx, tz)) {
+                            // Off-screen: do not materialise a 512 KiB tile for it. The section key
+                            // is in the index (added above) and the negative cache is dropped, so a
+                            // later scroll into view loads it through the normal source path.
+                            sourceEmpty.remove(key(tx, tz));
+                            continue;
+                        }
                         LiveTile created = new LiveTile(tx, tz, tileMinWX(tx), tileMinWZ(tz));
                         tile = tiles.putIfAbsent(key(tx, tz), created);
                         if (tile == null) {
@@ -1410,28 +1524,40 @@ public final class LiveTileStore {
                     }
                     int idx = localZ * TILE_PIXELS + localX;
                     long prev = tile.pixels[idx];
+                    long merged;
                     if (empty) {
-                        tile.pixels[idx] = VoxyMerge.mergeEmptyColumn(prev, lvl, sectionMinY);
+                        merged = VoxyMerge.mergeEmptyColumn(prev, lvl, sectionMinY);
                     } else {
-                        tile.pixels[idx] = VoxyMerge.mergeColumn(prev, lvl,
+                        merged = VoxyMerge.mergeColumn(prev, lvl,
                                 (int) ((packed >>> 24) & 0xFFFF) - 32768,
                                 (int) (packed & 0xFFFF) - 32768,
                                 (packed & (1L << 52)) != 0,
                                 (int) ((packed >>> 53) & 0x1FF),
                                 (int) ((packed >>> 40) & 0xFF));
                     }
-                    touched.add(tile);
+                    if (merged != prev) {
+                        // Voxy re-sends sections while it refines LOD data; only a real pixel change
+                        // may invalidate the tile colour/texture (otherwise every duplicate event
+                        // repainted the same tile for nothing).
+                        tile.pixels[idx] = merged;
+                        touched.add(tile);
+                    }
                 }
             }
         }
+        long nowLive = System.currentTimeMillis();
         for (LiveTile t : touched) {
             t.liveDirty = true;
             t.version++;
             t.fromCache = false;
             t.cacheDirty = true;
             t.colorEpoch++;
-            t.colorDirtySinceMs = System.currentTimeMillis();
-            if (t.colorRetryAtMs == 0L) t.colorRetryAtMs = t.colorDirtySinceMs + 300L;
+            t.colorDirtySinceMs = nowLive;
+            if (t.colorRetryAtMs == 0L) {
+                // While Voxy is streaming, live events arrive much faster than a colour job takes:
+                // coalesce to roughly one recolour per second instead of cancelling every job.
+                t.colorRetryAtMs = nowLive + (nowLive - lastLiveApplyMs < 1_500L ? 800L : 300L);
+            }
             t.textureDirty = true;
             t.tileMaxLandKnown = false;
             t.borderHashKnown = false;
@@ -1440,6 +1566,27 @@ public final class LiveTileStore {
             biomeVersion.incrementAndGet();
             invalidateNeighborColors(t.tx, t.tz);
         }
+    }
+
+    /**
+     * Learns the highest dry land from a decoded live section without materialising a tile. Coarse
+     * columns are allowed to raise the ramp; the value is monotonic per session like the tile path.
+     */
+    private void observeLiveColumns(long[] cols) {
+        int max = Integer.MIN_VALUE;
+        for (long packed : cols) {
+            if (packed == VoxyMerge.LONG_EMPTY || packed == VoxyMerge.EMPTY_COLUMN) continue;
+            int top = landTopOfPacked(packed);
+            if (top > max) max = top;
+        }
+        if (max == Integer.MIN_VALUE || max <= maxLandY.get()) return;
+        maxLandY.set(max);
+        if (max > persistedMaxLand) {
+            persistedMaxLand = max;
+            persistMaxLand();
+        }
+        rampVersion.incrementAndGet();
+        lastRampChangeMs = System.currentTimeMillis();
     }
 
     /**
@@ -1777,6 +1924,7 @@ public final class LiveTileStore {
 
     public void dispose() {
         resetGeneration.incrementAndGet();
+        clearViewportHint();
         for (LiveTile tile : tiles.values()) {
             if (tile.seedEpoch < 0) scheduleSave(tile);
             tile.dispose();
