@@ -18,10 +18,12 @@ import java.util.List;
  */
 public final class SelfTest {
     private static boolean enabled = Boolean.getBoolean("voxymap.selftest");
+    static { if (enabled) VoxyMapConfig.SHOW_START_NOTICE.set(false); }
     private static int t;
     private static int phase;
     private static long startedAt = System.currentTimeMillis();
     private static boolean shot3d;
+    private static boolean opened;
 
     private SelfTest() {
     }
@@ -41,17 +43,34 @@ public final class SelfTest {
 
     private static void step(Minecraft mc) throws Exception {
         switch (phase) {
-            case 0 -> { // wait for the world, open the map in 2D
+            case 0 -> { // open the test world programmatically (quickplay is blocked by the pack's warning screen), then open the map in 2D
+                String worldName = System.getProperty("voxymap.selftest.world", "");
                 if (mc.level == null || mc.player == null) {
-                    if (t > 1200) {
-                        log("no level after 60s, giving up");
+                    if (!opened && t >= 80 && !worldName.isEmpty()) {
+                        opened = true;
+                        log("opening world via WorldOpenFlows: " + worldName
+                                + " (screen before=" + (mc.screen == null ? "null" : mc.screen.getClass().getName()) + ")");
+                        mc.setScreen(null);
+                        try {
+                            mc.createWorldOpenFlows().openWorld(worldName, () -> log("openWorld abort/error callback"));
+                            log("openWorld requested");
+                        } catch (Throwable e) {
+                            log("openWorld failed: " + e);
+                            e.printStackTrace();
+                        }
+                    }
+                    if (t % 200 == 0) {
+                        log("waiting for level, t=" + t + " screen="
+                                + (mc.screen == null ? "null" : mc.screen.getClass().getSimpleName()));
+                    }
+                    if (t > 6000) {
+                        log("no level after 300s, giving up");
                         enabled = false;
                         quit(mc);
                     }
                     return;
                 }
-                log("level ready after " + t + " ticks, opening MapScreen");
-                mc.setScreen(new MapScreen());
+                log("level ready after " + t + " ticks, opening MapScreen");                mc.setScreen(new MapScreen());
                 phase = 1;
                 t = 0;
             }

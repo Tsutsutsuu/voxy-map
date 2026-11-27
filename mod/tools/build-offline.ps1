@@ -122,7 +122,10 @@ if ($exit -ne 0) { exit $exit }
 # ---- 5. optional pack: replace com/voxymap classes inside the last built jar -------------------
 if ($PackJar) {
     if (-not $BaseJar) {
+        # never chain off a previously packed jar: pick the newest NON-offline production jar so the
+        # output has no stale classes (e.g. a temporary SelfTest harness from an earlier build)
         $BaseJar = @(Get-ChildItem -LiteralPath (Join-Path $buildDir 'libs') -Filter 'voxy-map-*.jar' -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -notlike '*-offline*' } |
             Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName
     }
     if (-not $BaseJar -or -not (Test-Path -LiteralPath $BaseJar)) { throw 'no base jar for -PackJar' }

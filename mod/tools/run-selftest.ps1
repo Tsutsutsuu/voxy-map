@@ -109,6 +109,7 @@ function Repair-Mods {
 
 $startedAt = Get-Date
 $selftestJvm = @('-Dvoxymap.selftest=true')
+if ($ExtraJvmArgs.Count -eq 1 -and $ExtraJvmArgs[0] -like '*,*') { $ExtraJvmArgs = $ExtraJvmArgs[0] -split ',' }
 if ($ExtraJvmArgs) { $selftestJvm += $ExtraJvmArgs }
 $exitCode = -1
 try {
@@ -145,7 +146,8 @@ try {
 
 # ---- collect + verdict -------------------------------------------------------
 $shots = @()
-Get-ChildItem -LiteralPath $instance -Filter 'selftest-*.png' -File -ErrorAction SilentlyContinue |
+$shotDirs = @((Join-Path $instance 'screenshots'), $instance)
+Get-ChildItem -LiteralPath $shotDirs -Filter 'selftest-*.png' -File -ErrorAction SilentlyContinue |
     Where-Object { $_.LastWriteTime -ge $startedAt.AddSeconds(-5) } |
     ForEach-Object {
         $dest = Join-Path $logsDir "neoforge-selftest-$Tag-$stamp-$($_.Name)"
@@ -156,7 +158,7 @@ $latestLog = Join-Path $instance 'logs\latest.log'
 $selftestLines = @()
 $failed = $false
 if (Test-Path -LiteralPath $latestLog) {
-    $selftestLines = @(Select-String -LiteralPath $latestLog -Pattern '\[selftest\]' -SimpleMatch -Encoding UTF8 |
+    $selftestLines = @(Select-String -LiteralPath $latestLog -Pattern 'selftest' -Encoding UTF8 |
         Select-Object -Last 60 | ForEach-Object { $_.Line })
     $selftestLines | Add-Content -LiteralPath $consoleLog -Encoding UTF8
     if ($selftestLines | Where-Object { $_ -match 'FAILED|no level after|WARNING: no 3D' }) { $failed = $true }
