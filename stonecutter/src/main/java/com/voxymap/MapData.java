@@ -2800,7 +2800,7 @@ public final class MapData {
      * 15: palette v7 changed every block slot, so colours must re-render.
      * 16: palette v8 (dry foliage) and the biome attribution fix change the rendered colours.
      */
-    private static final int COLOR_CACHE_VERSION = 17;
+    private static final int COLOR_CACHE_VERSION = 18;
 
     /** everything that changes the produced pixels; changing any of these invalidates the .vxc */
     private static String colorCacheKey(String style, int sea) {
@@ -4866,6 +4866,7 @@ public final class MapData {
         final int sea;
         final String fingerprint;
         final int[] topArr;
+        final int[] floorArr;
         final int[] smoothTop;
         final int[] smoothFloor;
         final boolean[] isWaterPix;
@@ -4881,7 +4882,7 @@ public final class MapData {
         final int height;
         final int pixelBlocks;
 
-        TerrainCache(Snapshot snapshot, int sea, String fingerprint, int[] topArr,
+        TerrainCache(Snapshot snapshot, int sea, String fingerprint, int[] topArr, int[] floorArr,
                      int[] smoothTop, int[] smoothFloor, boolean[] isWaterPix, boolean[] contour,
                      float[] depthMap, int lo, int hi, int rampLo, int rampHi,
                      boolean adaptive, int width, int height, int pixelBlocks) {
@@ -4889,6 +4890,7 @@ public final class MapData {
             this.sea = sea;
             this.fingerprint = fingerprint;
             this.topArr = topArr;
+            this.floorArr = floorArr;
             this.smoothTop = smoothTop;
             this.smoothFloor = smoothFloor;
             this.isWaterPix = isWaterPix;
@@ -5377,7 +5379,7 @@ public final class MapData {
         boolean drawContours = contourOverride != null ? contourOverride : VoxyMapConfig.DRAW_CONTOURS.get();
         boolean[] contour = computeContour(topArr, isWaterPix, smoothTop, lo, hi, w, h, drawContours, next);
 
-        TerrainCache built = new TerrainCache(s, sea, fp, topArr, smoothTop, smoothFloor,
+        TerrainCache built = new TerrainCache(s, sea, fp, topArr, floorArr, smoothTop, smoothFloor,
                 isWaterPix, contour, depthMap, lo, hi, rampLo, rampHi,
                 adaptive || VoxyMapConfig.MIN_MAX_RAMP.get(), w, h, pixelBlocks);
         built.contourEnabled = drawContours;
@@ -5621,7 +5623,7 @@ public final class MapData {
             return null;
         }
         tc.contour = newContour;
-        TerrainCache updated = new TerrainCache(built, sea, tc.fingerprint, tc.topArr, tc.smoothTop,
+        TerrainCache updated = new TerrainCache(built, sea, tc.fingerprint, tc.topArr, tc.floorArr, tc.smoothTop,
                 tc.smoothFloor, tc.isWaterPix, tc.contour, tc.depthMap, tc.lo, tc.hi, tc.rampLo, tc.rampHi,
                 tc.adaptive, w, h, built.pixelBlocks);
         updated.contourEnabled = contours;
@@ -5766,16 +5768,19 @@ public final class MapData {
         float shade = 1f;
         if (drawHillshade && x > 0 && z > 0 && x < fw - 1 && z < fh - 1) {
             int nb0, nb1, nb2, nb3;
+            // Raw (unsmoothed) heights: the 3D mesher derives its normals from the raw surface, so
+            // using the 3x3-smoothed field here averaged small relief away and made the 2D map look
+            // flatter than the 3D view.
             if (water) {
-                nb0 = tc.smoothFloor[idx - 1];
-                nb1 = tc.smoothFloor[idx + 1];
-                nb2 = tc.smoothFloor[idx - fw];
-                nb3 = tc.smoothFloor[idx + fw];
+                nb0 = tc.floorArr[idx - 1];
+                nb1 = tc.floorArr[idx + 1];
+                nb2 = tc.floorArr[idx - fw];
+                nb3 = tc.floorArr[idx + fw];
             } else {
-                nb0 = tc.smoothTop[idx - 1];
-                nb1 = tc.smoothTop[idx + 1];
-                nb2 = tc.smoothTop[idx - fw];
-                nb3 = tc.smoothTop[idx + fw];
+                nb0 = tc.topArr[idx - 1];
+                nb1 = tc.topArr[idx + 1];
+                nb2 = tc.topArr[idx - fw];
+                nb3 = tc.topArr[idx + fw];
             }
             if (nb0 != Integer.MIN_VALUE && nb1 != Integer.MIN_VALUE
                     && nb2 != Integer.MIN_VALUE && nb3 != Integer.MIN_VALUE) {
@@ -5872,7 +5877,6 @@ public final class MapData {
         return out;
     }
 }
-
 
 
 
