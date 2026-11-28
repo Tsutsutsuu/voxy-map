@@ -69,7 +69,7 @@ public final class VoxyMapConfig {
     public static final Value<Boolean> MIN_MAX_RAMP = new Value<>("landMaxRamp", true);
     public static final Value<Boolean> WATER_BLUR = new Value<>("waterBlur", true);
     public static final Value<Integer> WATER_BLUR_RADIUS = new Value<>("waterBlurRadius", 4);
-    public static final Value<Integer> WATER_BLUR_PASSES = new Value<>("waterBlurPasses", 2);
+    public static final Value<Integer> WATER_BLUR_PASSES = new Value<>("waterBlurPasses", 1);
     public static final Value<Boolean> DENOISE = new Value<>("denoise", false);
     public static final Value<Boolean> FILL_HOLES = new Value<>("fillHoles", false);
     public static final Value<Boolean> DRAW_CONTOURS = new Value<>("drawContours", true);
@@ -106,13 +106,13 @@ public final class VoxyMapConfig {
     /** Soft resident tile cap; eviction only happens above this, down to ~70%. */
     public static final Value<Integer> TILE_RESIDENT_CAP = new Value<>("tileResidentCap", 1024);
     /** Estimated VRAM budget for tile textures (256×256 RGBA ≈ 256 KiB each). */
-    public static final Value<Integer> GPU_TEXTURE_BUDGET_MB = new Value<>("gpuTextureBudgetMb", 472);
+    public static final Value<Integer> GPU_TEXTURE_BUDGET_MB = new Value<>("gpuTextureBudgetMb", 512);
     /** Experimental: build 3D mesh per map tile and rebuild only changed tiles. */
     /** Disk .vxt cache soft limit. Oldest files are removed first. */
     public static final Value<Integer> DISK_CACHE_MAX_MB = new Value<>("diskCacheMaxMb", 8192);
     public static final Value<Boolean> SKIP_WORLD_RENDER = new Value<>("skipWorldRender", true);
     public static final Value<Integer> CACHE_KEEP_COUNT = new Value<>("cacheKeepCount", 5);
-    public static final Value<Integer> MIN_CONTOUR_AREA = new Value<>("minContourArea", 40);
+    public static final Value<Integer> MIN_CONTOUR_AREA = new Value<>("minContourArea", 256);
     public static final Value<Integer> CONTOUR_DENSITY = new Value<>("contourDensity", 12);
     public static final Value<Boolean> SHOW_BIOMES = new Value<>("showBiomes", false);
     public static final Value<String> ARROW_STYLE = new Value<>("arrowStyle", "clean");
@@ -126,12 +126,12 @@ public final class VoxyMapConfig {
     /** Hide the game HUD (hotbar / chat / overlays) while the map is open, exactly like F1. */
     public static final Value<Boolean> HIDE_HUD = new Value<>("hideHud", true);
     /** Show the early-development / feedback notice when the map opens. */
-    public static final Value<Boolean> SHOW_START_NOTICE = new Value<>("showStartNotice", true);
+    public static final Value<Boolean> SHOW_START_NOTICE = new Value<>("showStartNotice", false);
 
     // ---- 3D map view ----
     public static final Value<Double> VERTICAL_SCALE_3D = new Value<>("verticalScale3d", 1.0);
     /** GPU terrain mesh precision (not Minecraft's chunk LOD). */
-    public static final Value<Integer> GPU_TERRAIN_NEAR_DISTANCE = new Value<>("gpuTerrainNearDistance", 512);
+    public static final Value<Integer> GPU_TERRAIN_NEAR_DISTANCE = new Value<>("gpuTerrainNearDistance", 768);
     public static final Value<Integer> GPU_TERRAIN_MID_DISTANCE = new Value<>("gpuTerrainMidDistance", 2048);
     public static final Value<Integer> GPU_TERRAIN_NEAR_STEP = new Value<>("gpuTerrainNearStep", 1);
     public static final Value<Integer> GPU_TERRAIN_MID_STEP = new Value<>("gpuTerrainMidStep", 4);
@@ -151,7 +151,7 @@ public final class VoxyMapConfig {
     /** Ambient-occlusion strength (0-100) for the experimental advanced 3D features; 0 = off. */
     public static final Value<Integer> ADVANCED_3D_AO = new Value<>("advanced3dAo", 50);
     /** Fixed far distance of the advanced 3D blocks-style fog, in world blocks. */
-    public static final Value<Integer> FOG_DISTANCE_3D = new Value<>("fogDistance3d", 20000);
+    public static final Value<Integer> FOG_DISTANCE_3D = new Value<>("fogDistance3d", 7000);
     /**
      * Directional-light strength (0-100) shared by the 2D map shading and the advanced 3D
      * renderer; 0 = completely flat. Moving this recolours the 2D map and re-lights 3D.
@@ -160,7 +160,7 @@ public final class VoxyMapConfig {
     /** Ambient fraction (0-100) mixed into the shared directional light; higher = flatter. */
     public static final Value<Integer> LIGHT_AMBIENT = new Value<>("lightAmbient", 20);
     public static final Value<Integer> GPU3D_BUILD_THREADS = new Value<>("gpu3dBuildThreads", 0);
-    public static final Value<Integer> GPU3D_BATCH_BUILD = new Value<>("gpu3dBatchBuild", 10);
+    public static final Value<Integer> GPU3D_BATCH_BUILD = new Value<>("gpu3dBatchBuild", 16);
     public static final Value<Boolean> KEEP_3D_TILES_IN_2D = new Value<>("keep3dTilesIn2d", true);
     public static final Value<Integer> FOV_3D = new Value<>("fov3d", 55);
     public static final Value<Integer> MIN_DISTANCE_3D = new Value<>("minDistance3d", 64);
@@ -169,7 +169,7 @@ public final class VoxyMapConfig {
     public static final Value<Double> PAN_SENS_3D = new Value<>("panSens3d", 2.0);
     public static final Value<Double> ZOOM_SENS_3D = new Value<>("zoomSens3d", 1.0);
     public static final Value<Boolean> REMEMBER_3D_VIEW = new Value<>("remember3dView", true);
-    public static final Value<Boolean> AUTO_HIDE_CONTOURS_3D = new Value<>("autoHideContours3d", false);
+    public static final Value<Boolean> AUTO_HIDE_CONTOURS_3D = new Value<>("autoHideContours3d", true);
     public static final Value<Double> PLAYER_MARKER_HEIGHT_3D = new Value<>("playerMarkerHeight3d", 50.0);
     public static final Value<Double> PLAYER_MARKER_SCALE_3D = new Value<>("playerMarkerScale3d", 2.5);
     /** pixel count above which the map asks before loading (memory guard) */
