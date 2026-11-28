@@ -172,10 +172,11 @@ public final class Gpu3DMap {
         try {
             return RenderPipelines.register(RenderPipeline.builder(RenderPipelines.DEBUG_FILLED_SNIPPET)
                     .withLocation("pipeline/voxymap_sky")
-                    // Depth test + write: the sphere is drawn before the terrain at a radius just
-                    // inside the far plane, so every screen ray keeps only its NEAREST sphere
-                    // surface. This avoids self-overlap without relying on winding/culling.
+                    // Depth test + write at a far radius: only the nearest sphere surface survives
+                    // per pixel. Explicit triangle topology: the quad topology needs an index
+                    // buffer, and drawing the sky non-indexed left every other triangle missing.
                     .withDepthStencilState(DepthStencilState.DEFAULT)
+                    .withPrimitiveTopology(com.mojang.blaze3d.PrimitiveTopology.TRIANGLES)
                     .withCull(false)
                     .build());
         } catch (Throwable t) {
@@ -2324,7 +2325,7 @@ public final class Gpu3DMap {
         final int lonSteps = 72;
         float radius = SKY_RADIUS;
         ByteBufferBuilder alloc = new ByteBufferBuilder(1 << 16);
-        BufferBuilder bb = BlazeCompat.newQuadBufferBuilder(alloc, DefaultVertexFormat.POSITION_COLOR);
+        BufferBuilder bb = BlazeCompat.newBufferBuilder(alloc, DefaultVertexFormat.POSITION_COLOR);
         int vertices = 0;
         for (int i = 0; i < latSteps; i++) {
             double pa = Math.toRadians(-90.0 + i * 180.0 / latSteps);
@@ -2341,12 +2342,14 @@ public final class Gpu3DMap {
                 float xb1 = (float) (rb * Math.sin(tb)), zb1 = (float) (rb * Math.cos(tb));
                 int ca = below ? SKY_BLACK : skyVertexColor(ya, skyColor, fogColor);
                 int cb = below ? SKY_BLACK : skyVertexColor(yb, skyColor, fogColor);
-                // Inward winding: from inside the sphere only the near surface survives culling.
+                // Two explicit triangles per grid cell (no index buffer needed).
                 addSkyVertex(bb, xb0 * radius, yb * radius, zb0 * radius, cb);
                 addSkyVertex(bb, xb1 * radius, yb * radius, zb1 * radius, cb);
                 addSkyVertex(bb, xa1 * radius, ya * radius, za1 * radius, ca);
+                addSkyVertex(bb, xb0 * radius, yb * radius, zb0 * radius, cb);
+                addSkyVertex(bb, xa1 * radius, ya * radius, za1 * radius, ca);
                 addSkyVertex(bb, xa0 * radius, ya * radius, za0 * radius, ca);
-                vertices += 4;
+                vertices += 6;
             }
         }
         MeshData mesh = bb.buildOrThrow();
