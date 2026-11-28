@@ -2800,7 +2800,7 @@ public final class MapData {
      * 15: palette v7 changed every block slot, so colours must re-render.
      * 16: palette v8 (dry foliage) and the biome attribution fix change the rendered colours.
      */
-    private static final int COLOR_CACHE_VERSION = 18;
+    private static final int COLOR_CACHE_VERSION = 19;
 
     /** everything that changes the produced pixels; changing any of these invalidates the .vxc */
     private static String colorCacheKey(String style, int sea) {
@@ -5768,14 +5768,31 @@ public final class MapData {
         float shade = 1f;
         if (drawHillshade && x > 0 && z > 0 && x < fw - 1 && z < fh - 1) {
             int nb0, nb1, nb2, nb3;
-            // Raw (unsmoothed) heights: the 3D mesher derives its normals from the raw surface, so
-            // using the 3x3-smoothed field here averaged small relief away and made the 2D map look
-            // flatter than the 3D view.
+            // Land uses the raw (unsmoothed) heights: the 3D mesher derives its normals from the raw
+            // surface, so using the 3x3-smoothed field here averaged small relief away and made the
+            // 2D map look flatter than the 3D view.
+            // Water is different: its colour comes from the blurred depthMap (water blur), so the
+            // shading must use the same blurred depth field, otherwise the smooth water colour got
+            // a sharp, noisy hillshade. Depth acts as -height for the normal gradient.
             if (water) {
-                nb0 = tc.floorArr[idx - 1];
-                nb1 = tc.floorArr[idx + 1];
-                nb2 = tc.floorArr[idx - fw];
-                nb3 = tc.floorArr[idx + fw];
+                float d0 = tc.depthMap[idx - 1];
+                float d1 = tc.depthMap[idx + 1];
+                float d2 = tc.depthMap[idx - fw];
+                float d3 = tc.depthMap[idx + fw];
+                float wstep = 2f * tc.pixelBlocks;
+                float wnx = (d1 - d0) / wstep;
+                float wnz = (d3 - d2) / wstep;
+                float wl = (float) Math.sqrt(wnx * wnx + 1f + wnz * wnz);
+                float lx2 = -0.55f, ly2 = 0.70f, lz2 = -0.55f;
+                float ll2 = (float) Math.sqrt(lx2 * lx2 + ly2 * ly2 + lz2 * lz2);
+                float dw = (wnx * lx2 + ly2 + wnz * lz2) / (wl * ll2);
+                float strengthW = VoxyMapConfig.LIGHT_STRENGTH.get() / 100f;
+                float ambientW = VoxyMapConfig.LIGHT_AMBIENT.get() / 100f;
+                float scaleW = lightStyleFactor(style, true);
+                float directionalW = 1f + strengthW * scaleW * 1.9f * (dw - ly2 / ll2);
+                directionalW = Math.max(0.42f, Math.min(1.38f, directionalW));
+                shade = ambientW + (1f - ambientW) * directionalW;
+                return shade;
             } else {
                 nb0 = tc.topArr[idx - 1];
                 nb1 = tc.topArr[idx + 1];
