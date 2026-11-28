@@ -2,6 +2,7 @@ package com.voxymap;
 
 import com.mojang.blaze3d.buffers.GpuBuffer;
 import com.mojang.blaze3d.buffers.GpuBufferSlice;
+import com.mojang.blaze3d.buffers.Std140Builder;
 import com.mojang.blaze3d.pipeline.DepthStencilState;
 import com.mojang.blaze3d.ProjectionType;
 import com.mojang.blaze3d.pipeline.RenderPipeline;
@@ -19,11 +20,15 @@ import com.mojang.blaze3d.vertex.ByteBufferBuilder;
 import com.mojang.blaze3d.vertex.DefaultVertexFormat;
 import com.mojang.blaze3d.vertex.MeshData;
 import com.mojang.blaze3d.vertex.VertexFormat;
+import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.renderer.MappableRingBuffer;
 import net.minecraft.client.renderer.Projection;
 import net.minecraft.client.renderer.ProjectionMatrixBuffer;
 import net.minecraft.client.renderer.RenderPipelines;
+import net.minecraft.client.renderer.fog.FogRenderer;
 import net.minecraft.client.renderer.texture.AbstractTexture;
+import net.minecraft.world.attribute.EnvironmentAttributes;
 import org.joml.Matrix4f;
 import org.joml.Vector3f;
 import org.joml.Vector4f;
@@ -73,6 +78,18 @@ public final class Gpu3DMap {
     private static final RenderPipeline MARKER_PIPELINE = markerPipeline();
     /** Textured world-space pipeline for the player arrow (POSITION_TEX, no depth test). */
     private static final RenderPipeline ARROW_PIPELINE = arrowPipeline();
+    /** Blocks-style advanced 3D sky/fog: horizontal-fog terrain pipeline and sky sphere. */
+    private static RenderPipeline terrain3dPipeline;
+    private static GpuBuffer skyMesh;
+    private static int skyVertexCount;
+    private static int skyMeshSkyColor = Integer.MIN_VALUE;
+    private static int skyMeshFogColor = Integer.MIN_VALUE;
+    private static MappableRingBuffer fogRing;
+    private static GpuBufferSlice fogSlice;
+    private static GpuBufferSlice fogPrevious;
+    private static ByteBuffer fogStaging;
+    private static final float SKY_RADIUS = 20000f;
+    private static final int SKY_BLACK = 0xFF050508;
     private static final int OVERLAY_SEGMENTS = 64;
     /** Upper bound on the marker tick-line segments (the buffer is sized for this). */
     private static final int MARKER_MAX_SEGMENTS = 96;
@@ -2217,6 +2234,147 @@ public final class Gpu3DMap {
     }
 
 
+    // ------------------------------------------------------------ blocks-style sky / fog (advanced 3D)
+
+    private static RenderPipeline terrain3dPipeline() {
+        RenderPipeline p = terrain3dPipeline;
+        if (p == null) {
+            p = BlazeCompat.advancedTerrain3dPipeline();
+            terrain3dPipeline = p;
+        }
+        return p;
+    }
+
+    /** Sky sphere + horizontal fog only exist for the experimental renderer and the blocks style. */
+    private static boolean skyFogActive() {
+        return VoxyMapConfig.ADVANCED_3D_RENDER.get()
+                && BlazeCompat.advanced3dSupported()
+                && "blocks".equals(MapData.INSTANCE.getStyle());
+    }
+
+    /** Clear-day vanilla colours, deliberately without weather/time/sun mixing. */
+    private static int[] skyFogColors(Minecraft mc) {
+        Camera camera = BlazeCompat.mainCamera(mc);
+        float partial = mc.getDeltaTracker().getGameTimeDeltaPartialTick(false);
+        int sky = camera.attributeProbe().getValue(EnvironmentAttributes.SKY_COLOR, partial);
+        int fog = camera.attributeProbe().getValue(EnvironmentAttributes.FOG_COLOR, partial);
+        return new int[] {sky, fog};
+    }
+
+    private static int lerpColor(int from, int to, float t) {
+        int r0 = (from >> 16) & 0xFF, g0 = (from >> 8) & 0xFF, b0 = from & 0xFF;
+        int r1 = (to >> 16) & 0xFF, g1 = (to >> 8) & 0xFF, b1 = to & 0xFF;
+        int r = Math.round(r0 + (r1 - r0) * t);
+        int g = Math.round(g0 + (g1 - g0) * t);
+        int b = Math.round(b0 + (b1 - b0) * t);
+        return 0xFF000000 | (r << 16) | (g << 8) | b;
+    }
+
+    /** Horizon colour at y=0, fading into the zenith sky colour above a ~10 degree band. */
+    private static int skyVertexColor(float y, int skyColor, int fogColor) {
+        if (y <= 0f) return SKY_BLACK;
+        float t = Math.min(1f, y / 0.18f);
+        t = t * t * (3f - 2f * t);
+        return lerpColor(fogColor, skyColor, t);
+    }
+
+    private static void addSkyVertex(BufferBuilder bb, float x, float y, float z, int argb) {
+        bb.addVertex(x, y, z).setColor((argb >> 16) & 0xFF, (argb >> 8) & 0xFF, argb & 0xFF, 255);
+    }
+
+    private static void ensureSkyMesh(CommandEncoder encoder, int skyColor, int fogColor) {
+        if (skyMesh != null && skyColor == skyMeshSkyColor && fogColor == skyMeshFogColor) return;
+        if (skyMesh != null) {
+            skyMesh.close();
+            skyMesh = null;
+        }
+        final int latSteps = 36;
+        final int lonSteps = 48;
+        float radius = SKY_RADIUS;
+        ByteBufferBuilder alloc = new ByteBufferBuilder(1 << 16);
+        BufferBuilder bb = BlazeCompat.newQuadBufferBuilder(alloc, DefaultVertexFormat.POSITION_COLOR);
+        int vertices = 0;
+        for (int i = 0; i < latSteps; i++) {
+            double pa = Math.toRadians(-90.0 + i * 180.0 / latSteps);
+            double pb = Math.toRadians(-90.0 + (i + 1) * 180.0 / latSteps);
+            float ya = (float) Math.sin(pa), yb = (float) Math.sin(pb);
+            float ra = (float) Math.cos(pa), rb = (float) Math.cos(pb);
+            boolean below = Math.toDegrees(pb) <= 0.0;
+            for (int j = 0; j < lonSteps; j++) {
+                double ta = Math.PI * 2.0 * j / lonSteps;
+                double tb = Math.PI * 2.0 * (j + 1) / lonSteps;
+                float xa0 = (float) (ra * Math.sin(ta)), za0 = (float) (ra * Math.cos(ta));
+                float xa1 = (float) (ra * Math.sin(tb)), za1 = (float) (ra * Math.cos(tb));
+                float xb0 = (float) (rb * Math.sin(ta)), zb0 = (float) (rb * Math.cos(ta));
+                float xb1 = (float) (rb * Math.sin(tb)), zb1 = (float) (rb * Math.cos(tb));
+                int ca = below ? SKY_BLACK : skyVertexColor(ya, skyColor, fogColor);
+                int cb = below ? SKY_BLACK : skyVertexColor(yb, skyColor, fogColor);
+                addSkyVertex(bb, xa0 * radius, ya * radius, za0 * radius, ca);
+                addSkyVertex(bb, xa1 * radius, ya * radius, za1 * radius, ca);
+                addSkyVertex(bb, xb1 * radius, yb * radius, zb1 * radius, cb);
+                addSkyVertex(bb, xb0 * radius, yb * radius, zb0 * radius, cb);
+                vertices += 4;
+            }
+        }
+        MeshData mesh = bb.buildOrThrow();
+        ByteBuffer data = copy(mesh.vertexBuffer());
+        mesh.close();
+        alloc.close();
+        skyMesh = upload(encoder, "voxymap_3d_sky", GpuBuffer.USAGE_VERTEX, data);
+        skyVertexCount = vertices;
+        skyMeshSkyColor = skyColor;
+        skyMeshFogColor = fogColor;
+    }
+
+    private static void drawSky(RenderPass pass, Matrix4f view, Map3D.Camera cam) {
+        if (skyMesh == null || MARKER_PIPELINE == null) return;
+        pass.setPipeline(MARKER_PIPELINE);
+        RenderSystem.bindDefaultUniforms(pass);
+        Vector3f offset = new Vector3f((float) cam.eyeX(), (float) cam.eyeY(), (float) cam.eyeZ());
+        GpuBufferSlice skyTransforms = RenderSystem.getDynamicUniforms()
+                .writeTransform(view, COLOR_MODULATOR, offset, TEXTURE_MATRIX);
+        pass.setUniform("DynamicTransforms", skyTransforms);
+        BlazeCompat.setVertexBuffer(pass, 0, skyMesh);
+        BlazeCompat.drawNonIndexed(pass, skyVertexCount);
+    }
+
+    private static void beginFog(float start, float end, int color) {
+        if (fogRing == null) {
+            fogRing = new MappableRingBuffer(() -> "voxymap_3d_fog", 130, FogRenderer.FOG_UBO_SIZE);
+        }
+        if (fogStaging == null) {
+            fogStaging = ByteBuffer.allocateDirect(FogRenderer.FOG_UBO_SIZE).order(ByteOrder.nativeOrder());
+        }
+        fogStaging.clear();
+        Std140Builder.intoBuffer(fogStaging)
+                .putVec4(new Vector4f(((color >> 16) & 0xFF) / 255f,
+                        ((color >> 8) & 0xFF) / 255f, (color & 0xFF) / 255f, 1f))
+                .putFloat(start).putFloat(end)
+                .putFloat(Float.MAX_VALUE).putFloat(Float.MAX_VALUE)
+                .putFloat(Float.MAX_VALUE).putFloat(Float.MAX_VALUE);
+        fogStaging.flip();
+        //? if >=26.2 {
+        GpuBuffer buffer = fogRing.currentBuffer();
+        try (GpuBufferSlice.MappedView view = buffer.map(false, true)) {
+            view.data().clear();
+            view.data().put(fogStaging);
+        }
+        fogPrevious = RenderSystem.getShaderFog();
+        fogSlice = buffer.slice(0L, FogRenderer.FOG_UBO_SIZE);
+        RenderSystem.setShaderFog(fogSlice);
+        //?} else {
+        /*fogSlice = null;*/
+        //?}
+
+    }
+
+    private static void endFog() {
+        if (fogPrevious != null) {
+            RenderSystem.setShaderFog(fogPrevious);
+            fogPrevious = null;
+        }
+        if (fogRing != null) fogRing.rotate();
+    }
     public static void render() {
         Minecraft mc = Minecraft.getInstance();
         // Stonecutter rewrites this to Minecraft.screen on 26.1.2 (26.2 moved it behind Gui).
@@ -2252,6 +2410,22 @@ public final class Gpu3DMap {
         Matrix4f view = cam.viewMatrix();
         Matrix4f viewProj = new Matrix4f(proj).mul(view);
         ensureDepth(target.width, target.height);
+        boolean skyFog = skyFogActive();
+        int skyColor = 0;
+        int horizonColor = 0;
+        float fogStart = 0f;
+        float fogEnd = 0f;
+        if (skyFog) {
+            int[] colors = skyFogColors(mc);
+            skyColor = colors[0];
+            horizonColor = colors[1];
+            // Fog is horizontal only; scale the distances with the camera height/distance so
+            // zooming out never hides the terrain edge behind fog.
+            float camHeight = Math.max(1f, (float) (cam.eyeY() - cam.targetY));
+            float fogScale = Math.max(cam.distance, camHeight * 1.6f);
+            fogEnd = Math.max(1500f, Math.min(20000f, fogScale * 5f));
+            fogStart = fogEnd * 0.35f;
+        }
         overlayIndexCount = 0;
         // One encoder for the whole 3D frame: the overlay upload, the terrain pass and the
         // ring fence all ride in it, so the mod does not add a submit of its own.
@@ -2259,6 +2433,7 @@ public final class Gpu3DMap {
         boolean drawOverlay = prepareOverlay(frameEncoder, screen);
         ensureTrackMesh();
 
+        boolean fogStarted = false;
         RenderSystem.backupProjectionMatrix();
         try {
             RenderSystem.setProjectionMatrix(projection.getBuffer(proj),
@@ -2266,7 +2441,13 @@ public final class Gpu3DMap {
             GpuBufferSlice transforms = RenderSystem.getDynamicUniforms()
                     .writeTransform(view, COLOR_MODULATOR, MODEL_OFFSET, TEXTURE_MATRIX);
             try (RenderPass pass = BlazeCompat.beginTerrainPass(frameEncoder, target, depthView)) {
-                pass.setPipeline(PIPELINE);
+                if (skyFog) {
+                    ensureSkyMesh(frameEncoder, skyColor, horizonColor);
+                    beginFog(fogStart, fogEnd, horizonColor);
+                    fogStarted = true;
+                    drawSky(pass, view, cam);
+                }
+                pass.setPipeline(skyFog ? terrain3dPipeline() : PIPELINE);
                 RenderSystem.bindDefaultUniforms(pass);
                 pass.setUniform("DynamicTransforms", transforms);
                 // Full-bright is intentional: the terrain re-uses the 2D map colours, which are
@@ -2313,6 +2494,9 @@ public final class Gpu3DMap {
                 overlaySlotInUse = -1;
             }
         } finally {
+            if (fogStarted) {
+                endFog();
+            }
             RenderSystem.restoreProjectionMatrix();
         }
         // frame counter for the perf panel / the scripted acceptance test's 3D settle detection
@@ -2415,6 +2599,19 @@ public final class Gpu3DMap {
         lastTotal = 0;
         lastBuildNanos = 0;
         lastUploadNanos = 0;
+        if (skyMesh != null) {
+            skyMesh.close();
+            skyMesh = null;
+        }
+        skyVertexCount = 0;
+        skyMeshSkyColor = Integer.MIN_VALUE;
+        skyMeshFogColor = Integer.MIN_VALUE;
+        if (fogRing != null) {
+            fogRing.close();
+            fogRing = null;
+        }
+        fogSlice = null;
+        fogPrevious = null;
         // overlay/arrow ring: close every slot and its fence
         for (int slot = 0; slot < OVERLAY_SLOTS; slot++) {
             BlazeCompat.awaitAndCloseFence(overlayFences[slot]);

@@ -1,22 +1,29 @@
 #version 330
 
-// Experimental advanced 3D terrain shader (Fabric 26.2).
-// The atlas already contains base colour, coastline shading, water depth and contour lines (the
-// 3D view disables hillshade while colouring); the shader only applies per-vertex tint for now and
-// is the place where lighting / ambient occlusion will be added in the next task.
+// Small terrain shader for the advanced 3D view (26.2): identical colour math to the vanilla block
+// shader, but the fog distance is horizontal (XZ in view space) so height/pitch never adds fog.
 
-#moj_import <minecraft:dynamictransforms.glsl>
 #moj_import <minecraft:projection.glsl>
+#moj_import <minecraft:dynamictransforms.glsl>
+#moj_import <minecraft:sample_lightmap.glsl>
 
 in vec3 Position;
 in vec4 Color;
 in vec2 UV0;
+in ivec2 UV2;
 
-out vec2 texCoord0;
+uniform sampler2D Sampler2;
+
 out vec4 vertexColor;
+out vec2 texCoord0;
+out float horizontalFogDistance;
 
 void main() {
-    gl_Position = ProjMat * ModelViewMat * vec4(Position, 1.0);
+    vec3 pos = Position + ModelOffset;
+    vec4 viewPos = ModelViewMat * vec4(pos, 1.0);
+    gl_Position = ProjMat * viewPos;
+    vertexColor = Color * sample_lightmap(Sampler2, UV2);
     texCoord0 = UV0;
-    vertexColor = Color;
+    // Camera-relative horizontal distance only: no vertical fog.
+    horizontalFogDistance = length(viewPos.xz);
 }

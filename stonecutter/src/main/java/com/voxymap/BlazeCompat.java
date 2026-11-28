@@ -299,6 +299,37 @@ public final class BlazeCompat {
      * run there. Registered once; the shader lives in {@code assets/voxymap/shaders/core/terrain3d}.
      */
     /**
+     * Terrain pipeline with the mod's small shader, used by the advanced 3D view for the
+     * blocks-style sky/fog (horizontal fog only). Same BLOCK vertex format and draw state as the
+     * vanilla solid-block pipeline; falls back to SOLID_BLOCK where the shader is not supported.
+     */
+    public static RenderPipeline advancedTerrain3dPipeline() {
+        //? if >=26.2 {
+        return RenderPipelines.register(RenderPipeline.builder(RenderPipelines.GLOBALS_SNIPPET)
+                .withBindGroupLayout(net.minecraft.client.renderer.BindGroupLayouts.MATRICES_PROJECTION)
+                .withBindGroupLayout(net.minecraft.client.renderer.BindGroupLayouts.FOG)
+                .withBindGroupLayout(net.minecraft.client.renderer.BindGroupLayouts.SAMPLER0)
+                .withBindGroupLayout(net.minecraft.client.renderer.BindGroupLayouts.SAMPLER2)
+                .withLocation("pipeline/voxymap_terrain3d")
+                .withVertexShader(net.minecraft.resources.Identifier.fromNamespaceAndPath("voxymap", "core/terrain3d"))
+                .withFragmentShader(net.minecraft.resources.Identifier.fromNamespaceAndPath("voxymap", "core/terrain3d"))
+                .withVertexBinding(0, DefaultVertexFormat.BLOCK)
+                .withPrimitiveTopology(com.mojang.blaze3d.PrimitiveTopology.QUADS)
+                .withDepthStencilState(DepthStencilState.DEFAULT)
+                .build());
+        //?} else {
+        /*return RenderPipelines.SOLID_BLOCK;*/
+        //?}
+    }
+    /** Main camera accessor (moved onto Gui/renderer between 26.1.2 and 26.2). */
+    public static net.minecraft.client.Camera mainCamera(Minecraft mc) {
+        //? if >=26.2 {
+        return mc.gameRenderer.mainCamera();
+        //?} else {
+        /*return mc.gameRenderer.getMainCamera();*/
+        //?}
+    }
+    /**
      * Current screen: 26.2 moved the accessor onto {@code Gui}, 26.1.2 still exposes it directly on
      * {@code Minecraft}. Test-only code (tools/selftest) is compiled per version but is not run
      * through Stonecutter preprocessing, so it must use this helper instead of either form.
