@@ -84,7 +84,11 @@ public final class BlazeCompat {
         //? if >=26.2 {
         pass.draw(vertexCount, 1, 0, 0);
         //?} else {
-        /*pass.draw(vertexCount, 1);*/
+        /*// 26.1.2's draw(firstVertex, vertexCount) is the REVERSE of 26.2's
+        // draw(vertexCount, instanceCount, firstVertex, firstInstance). Passing (vertexCount, 1)
+        // here drew one vertex starting at vertex 12 - i.e. nothing - which is why the procedural
+        // sky was invisible on 26.1.2 while the rest of the pass was fine.
+        pass.draw(0, vertexCount);*/
         //?}
     }
 
@@ -282,15 +286,16 @@ public final class BlazeCompat {
     }
 
     /**
-     * True when this version can run the experimental advanced 3D rendering path (offscreen layer,
-     * custom terrain shader). 26.2 only for now; 26.1.2/NeoForge are wired up in a later task.
+     * True when this version can run the experimental advanced 3D rendering path: the mod's own
+     * terrain shader with the fog UBO, the procedural screen-space sky, AO and voxel meshes.
+     *
+     * <p>Both Fabric nodes support it. 26.1.2 only needs different call shapes, all isolated in
+     * this class: {@code RenderPipelines.BLOCK_SNIPPET} instead of bind-group layouts and
+     * {@code CommandEncoder.mapBuffer} instead of {@code GpuBuffer.map}. Flip this to {@code false}
+     * if a node ever regresses, or turn {@code advanced3dRender} off in the config.</p>
      */
     public static boolean advanced3dSupported() {
-        //? if >=26.2 {
         return true;
-        //?} else {
-        /*return false;*/
-        //?}
     }
 
     /**
@@ -312,7 +317,17 @@ public final class BlazeCompat {
                 .withCull(false)
                 .build());
         //?} else {
-        /*return null;*/
+        /*// 26.1.2 has withVertexFormat(format, mode) instead of withVertexBinding + topology, and
+        // no snippet is needed: the sky shader declares no uniform block and no sampler.
+        return RenderPipelines.register(RenderPipeline.builder()
+                .withLocation("pipeline/voxymap_sky")
+                .withVertexShader(net.minecraft.resources.Identifier.fromNamespaceAndPath("voxymap", "core/sky"))
+                .withFragmentShader(net.minecraft.resources.Identifier.fromNamespaceAndPath("voxymap", "core/sky"))
+                .withVertexFormat(DefaultVertexFormat.POSITION_COLOR, VertexFormat.Mode.TRIANGLES)
+                .withColorTargetState(new ColorTargetState(BlendFunction.TRANSLUCENT))
+                .withDepthStencilState(new DepthStencilState(CompareOp.ALWAYS_PASS, false))
+                .withCull(false)
+                .build());*/
         //?}
     }
     /**
@@ -335,7 +350,15 @@ public final class BlazeCompat {
                 .withDepthStencilState(DepthStencilState.DEFAULT)
                 .build());
         //?} else {
-        /*return RenderPipelines.SOLID_BLOCK;*/
+        /*// 26.1.2 has no bind-group layouts. BLOCK_SNIPPET already declares exactly what the
+        // voxymap:core/terrain3d shader reads: DynamicTransforms + Projection + Fog, Sampler0 and
+        // Sampler2, the BLOCK vertex format in QUADS mode and the default depth state. Only the
+        // shaders and the location are overridden, the same way vanilla builds its cutout variants.
+        return RenderPipelines.register(RenderPipeline.builder(RenderPipelines.BLOCK_SNIPPET)
+                .withLocation("pipeline/voxymap_terrain3d")
+                .withVertexShader(net.minecraft.resources.Identifier.fromNamespaceAndPath("voxymap", "core/terrain3d"))
+                .withFragmentShader(net.minecraft.resources.Identifier.fromNamespaceAndPath("voxymap", "core/terrain3d"))
+                .build());*/
         //?}
     }
     /** Main camera accessor (moved onto Gui/renderer between 26.1.2 and 26.2). */

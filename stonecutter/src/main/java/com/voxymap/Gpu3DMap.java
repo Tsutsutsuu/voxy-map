@@ -2418,7 +2418,18 @@ public final class Gpu3DMap {
         fogSlice = buffer.slice(0L, FogRenderer.FOG_UBO_SIZE);
         RenderSystem.setShaderFog(fogSlice);
         //?} else {
-        /*fogSlice = null;*/
+        /*// 26.1.2 has no GpuBuffer.map: vanilla's own FogRenderer maps the ring buffer through the
+        // command encoder, which is the same thing. The layout above (vec4 + 6 floats) is exactly the
+        // one FogRenderer.FOG_UBO_SIZE describes.
+        GpuBuffer buffer = fogRing.currentBuffer();
+        try (GpuBuffer.MappedView view = RenderSystem.getDevice().createCommandEncoder()
+                .mapBuffer(buffer, false, true)) {
+            view.data().clear();
+            view.data().put(fogStaging);
+        }
+        fogPrevious = RenderSystem.getShaderFog();
+        fogSlice = buffer.slice(0L, FogRenderer.FOG_UBO_SIZE);
+        RenderSystem.setShaderFog(fogSlice);*/
         //?}
 
     }
