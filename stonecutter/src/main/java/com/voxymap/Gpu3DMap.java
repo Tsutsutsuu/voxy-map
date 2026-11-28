@@ -2322,21 +2322,24 @@ public final class Gpu3DMap {
             skyStaging = ByteBuffer.allocateDirect(SKY_MAX_VERTS * SKY_VERTEX_BYTES)
                     .order(ByteOrder.nativeOrder());
         }
+        // Straight down (near top-down): keep the previous black backdrop, no sky.
+        if (cam.pitch <= Math.toRadians(-80.0)) return;
         double tanHalfFov = Math.tan(Math.toRadians(fov * 0.5));
         double horizon = -Math.tan(cam.pitch) / Math.max(1e-4, tanHalfFov);
-        // Looking down far enough that the horizon is above the screen: no sky is visible.
-        if (horizon >= 1.0) return;
         skyStaging.clear();
-        if (horizon <= -1.0) {
+        if (horizon >= 1.0) {
+            // Horizon is above the screen: everything visible is below it, so fill the whole
+            // screen with the horizon colour instead of leaving a big black band.
+            skyBand(skyStaging, 1f, -1f, fogColor, fogColor);
+        } else if (horizon <= -1.0) {
             // Whole screen is above the horizon: fade sky -> horizon colour top to bottom.
             skyBand(skyStaging, 1f, -1f, skyColor, fogColor);
         } else {
             float hz = (float) horizon;
             skyBand(skyStaging, 1f, hz, skyColor, fogColor);
-            float low = Math.max(-1f, hz - 0.15f);
-            if (low < hz) {
-                skyBand(skyStaging, hz, low, fogColor, SKY_BLACK);
-            }
+            // Below the horizon keep the horizon colour (terrain is drawn over it), so there is
+            // no hard black gap between the sky and the terrain silhouette.
+            skyBand(skyStaging, hz, -1f, fogColor, fogColor);
         }
         skyStaging.flip();
         int bytes = skyStaging.remaining();
