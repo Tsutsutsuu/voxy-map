@@ -2277,7 +2277,10 @@ public final class Gpu3DMap {
         alloc.close();
         advancedQuad = upload(encoder, "voxymap_adv3d_quad_v", GpuBuffer.USAGE_VERTEX, vdata);
         ByteBuffer idata = ByteBuffer.allocateDirect(6 * Integer.BYTES).order(ByteOrder.nativeOrder());
-        idata.putInt(0).putInt(1).putInt(2).putInt(2).putInt(1).putInt(3);
+        // Two triangles that share the tl-br diagonal: (tl, bl, br) + (tl, br, tr). The previous
+        // order used the bl-tr diagonal for the second triangle, which overlapped the first one and
+        // left a V-shaped hole where the keepalive world frame flashed through.
+        idata.putInt(0).putInt(1).putInt(2).putInt(0).putInt(2).putInt(3);
         idata.flip();
         advancedQuadIndices = upload(encoder, "voxymap_adv3d_quad_i", GpuBuffer.USAGE_INDEX, idata);
         advancedQuadWidth = width;
