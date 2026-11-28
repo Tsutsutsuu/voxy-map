@@ -78,7 +78,7 @@ public final class Gpu3DMap {
     private static final RenderPipeline MARKER_PIPELINE = markerPipeline();
     /** Textured world-space pipeline for the player arrow (POSITION_TEX, no depth test). */
     private static final RenderPipeline ARROW_PIPELINE = arrowPipeline();
-    /** Sky sphere: no depth test/write, back-face culling so only the near inner surface draws. */
+    /** Sky sphere: depth test+write at a far radius, so the nearest surface wins per pixel. */
     private static final RenderPipeline SKY_PIPELINE = skyPipeline();
     /** Blocks-style advanced 3D sky/fog: horizontal-fog terrain pipeline and sky sphere. */
     private static RenderPipeline terrain3dPipeline;
@@ -90,7 +90,7 @@ public final class Gpu3DMap {
     private static GpuBufferSlice fogSlice;
     private static GpuBufferSlice fogPrevious;
     private static ByteBuffer fogStaging;
-    private static final float SKY_RADIUS = 20000f;
+    private static final float SKY_RADIUS = 50000f;
     private static final int SKY_BLACK = 0xFF050508;
     private static final int OVERLAY_SEGMENTS = 64;
     /** Upper bound on the marker tick-line segments (the buffer is sized for this). */
@@ -172,8 +172,11 @@ public final class Gpu3DMap {
         try {
             return RenderPipelines.register(RenderPipeline.builder(RenderPipelines.DEBUG_FILLED_SNIPPET)
                     .withLocation("pipeline/voxymap_sky")
-                    .withDepthStencilState(new DepthStencilState(CompareOp.ALWAYS_PASS, false))
-                    .withCull(true)
+                    // Depth test + write: the sphere is drawn before the terrain at a radius just
+                    // inside the far plane, so every screen ray keeps only its NEAREST sphere
+                    // surface. This avoids self-overlap without relying on winding/culling.
+                    .withDepthStencilState(DepthStencilState.DEFAULT)
+                    .withCull(false)
                     .build());
         } catch (Throwable t) {
             System.out.println("[voxymap] sky pipeline unavailable: " + t);
