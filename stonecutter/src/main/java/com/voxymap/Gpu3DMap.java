@@ -871,7 +871,7 @@ public final class Gpu3DMap {
                 voxTri(s, b + 2, b + 1, b + 3);
             }
         }
-        // ---- vertical side walls (land only; water stays a flat plane) ----
+        // ---- vertical side walls (every column, water included: its stored surface can be above or below sea level) ----
         for (int gx = 0; gx < grid; gx++) {
             int x = gx * step;
             // east faces (constant X, merged along Z); the west face of the neighbour tile is skipped,
@@ -879,14 +879,14 @@ public final class Gpu3DMap {
             int gz = 0;
             while (gz < grid) {
                 int i = gz * grid + gx;
-                if (empty[i] || water[i]) { gz++; continue; }
+                if (empty[i]) { gz++; continue; }
                 float y = h[i];
                 float ny = voxNeighborY(tile, pixels, live, x + step, gz * step, sea, vscale, texMax);
                 if (Float.isNaN(ny) || ny >= y) { gz++; continue; }
                 int run = 1;
                 while (gz + run < grid) {
                     int j = (gz + run) * grid + gx;
-                    if (empty[j] || water[j] || h[j] != y) break;
+                    if (empty[j] || h[j] != y) break;
                     float n2 = voxNeighborY(tile, pixels, live, x + step, (gz + run) * step, sea, vscale, texMax);
                     if (!(Float.isNaN(n2) || n2 != ny) && n2 < y) { run++; } else { break; }
                 }
@@ -904,14 +904,14 @@ public final class Gpu3DMap {
             gz = 0;
             while (gz < grid) {
                 int i = gz * grid + gx;
-                if (empty[i] || water[i]) { gz++; continue; }
+                if (empty[i]) { gz++; continue; }
                 float y = h[i];
                 float ny = voxNeighborY(tile, pixels, live, x - step, gz * step, sea, vscale, texMax);
                 if (Float.isNaN(ny) || ny >= y) { gz++; continue; }
                 int run = 1;
                 while (gz + run < grid) {
                     int j = (gz + run) * grid + gx;
-                    if (empty[j] || water[j] || h[j] != y) break;
+                    if (empty[j] || h[j] != y) break;
                     float n2 = voxNeighborY(tile, pixels, live, x - step, (gz + run) * step, sea, vscale, texMax);
                     if (!(Float.isNaN(n2) || n2 != ny) && n2 < y) { run++; } else { break; }
                 }
@@ -932,14 +932,14 @@ public final class Gpu3DMap {
             int gx = 0;
             while (gx < grid) {
                 int i = gz * grid + gx;
-                if (empty[i] || water[i]) { gx++; continue; }
+                if (empty[i]) { gx++; continue; }
                 float y = h[i];
                 float ny = voxNeighborY(tile, pixels, live, gx * step, z + step, sea, vscale, texMax);
                 if (Float.isNaN(ny) || ny >= y) { gx++; continue; }
                 int run = 1;
                 while (gx + run < grid) {
                     int j = gz * grid + gx + run;
-                    if (empty[j] || water[j] || h[j] != y) break;
+                    if (empty[j] || h[j] != y) break;
                     float n2 = voxNeighborY(tile, pixels, live, (gx + run) * step, z + step, sea, vscale, texMax);
                     if (!(Float.isNaN(n2) || n2 != ny) && n2 < y) { run++; } else { break; }
                 }
@@ -957,14 +957,14 @@ public final class Gpu3DMap {
             gx = 0;
             while (gx < grid) {
                 int i = gz * grid + gx;
-                if (empty[i] || water[i]) { gx++; continue; }
+                if (empty[i]) { gx++; continue; }
                 float y = h[i];
                 float ny = voxNeighborY(tile, pixels, live, gx * step, z - step, sea, vscale, texMax);
                 if (Float.isNaN(ny) || ny >= y) { gx++; continue; }
                 int run = 1;
                 while (gx + run < grid) {
                     int j = gz * grid + gx + run;
-                    if (empty[j] || water[j] || h[j] != y) break;
+                    if (empty[j] || h[j] != y) break;
                     float n2 = voxNeighborY(tile, pixels, live, (gx + run) * step, z - step, sea, vscale, texMax);
                     if (!(Float.isNaN(n2) || n2 != ny) && n2 < y) { run++; } else { break; }
                 }
@@ -1425,8 +1425,7 @@ public final class Gpu3DMap {
                                           Slot slot, int[] rgb, LiveTileStore.LiveTile tile,
                                           LiveTileStore live) {
         MapData data = MapData.INSTANCE;
-        boolean advanced = VoxyMapConfig.ADVANCED_3D_RENDER.get() && BlazeCompat.advanced3dSupported();
-        boolean biomes = !advanced && data.isBiomeOverlay();
+        boolean biomes = data.isBiomeOverlay();
         long[] pixels = tile.pixels;
 
         LiveTileStore.LiveTile right = biomes && live != null ? live.get(tile.tx + 1, tile.tz) : null;
