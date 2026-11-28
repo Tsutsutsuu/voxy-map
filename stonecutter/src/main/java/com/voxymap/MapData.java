@@ -886,6 +886,21 @@ public final class MapData {
         return contourOverlay;
     }
 
+    /** Effective contour visibility (the 3D auto-hide override wins; the button shows this). */
+    public boolean isContourEffective() {
+        return contourOverride != null ? contourOverride : contourOverlay;
+    }
+
+    /**
+     * Session-only contour override used while auto-hide-contours-3D is active. Does NOT touch the
+     * saved per-world overlay state, so toggling contours inside 3D is never persisted.
+     */
+    public void setTemporaryContour(boolean value) {
+        if (Boolean.valueOf(value).equals(contourOverride)) return;
+        contourOverride = value;
+        requestColorRerender();
+    }
+
     /** Contour lines are a per-world overlay now (bottom-left button), persisted in state.properties. */
     public void setContourOverlay(boolean value) {
         if (value == contourOverlay) return;
@@ -916,7 +931,7 @@ public final class MapData {
 
     /** The contour visibility used by the colour pipeline (3D auto-hide override wins). */
     private boolean effectiveContours() {
-        return contourOverride != null ? contourOverride : contourOverlay;
+        return isContourEffective();
     }
     /** Blocks per pixel for the current world: 1 (1:1, sharpest) .. 8 (1:8, coarsest). */
     public double getZoom() {

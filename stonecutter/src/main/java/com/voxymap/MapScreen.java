@@ -1255,11 +1255,16 @@ public class MapScreen extends Screen {
         // 3D now renders the normal 2D coloured texture (baked hillshade included) and only adds
         // per-vertex AO + side-face darkening, so the hillshade no longer needs a 3D-only override.
         // The optional "hide contours in 3D" still needs a temporary colour-only re-render.
-        if (VoxyMapConfig.AUTO_HIDE_CONTOURS_3D.get() && data.isContourOverlay()) {
+        if (VoxyMapConfig.AUTO_HIDE_CONTOURS_3D.get()) {
+            // Auto-hide is a session-only override: the saved per-world contour state is untouched
+            // and the bottom-left button shows "off" while this override is active.
             if (!Boolean.FALSE.equals(MapData.contourOverride)) {
                 MapData.contourOverride = Boolean.FALSE;
                 data.requestColorRerender();
             }
+        } else if (MapData.contourOverride != null) {
+            MapData.contourOverride = null;
+            data.requestColorRerender();
         }
     }
     /**
@@ -1899,7 +1904,7 @@ public class MapScreen extends Screen {
         // bottom-left overlay toggles, top to bottom: track, distance, biomes, contours
         boolean biomesOn = data.isBiomeOverlay();
         boolean distanceOn = data.isRenderDistanceOverlay();
-        boolean contoursOn = data.isContourOverlay();
+        boolean contoursOn = data.isContourEffective();
         int bx = 8;
         int by = height - 30;
         Component coText = Component.translatable("voxymap.ui.contours");
@@ -2725,7 +2730,12 @@ public class MapScreen extends Screen {
         int cow = font.width(coText) + 12;
         if (button == 0 && mx >= bx && mx <= bx + cow && my >= by && my <= by + 20) {
             if (!data.isLoading() && !data.isStyleChanging()) {
-                data.setContourOverlay(!data.isContourOverlay());
+                if (view3d && VoxyMapConfig.AUTO_HIDE_CONTOURS_3D.get()) {
+                    // Session-only toggle; must not be written to state.properties.
+                    data.setTemporaryContour(!data.isContourEffective());
+                } else {
+                    data.setContourOverlay(!data.isContourOverlay());
+                }
             }
             return true;
         }
