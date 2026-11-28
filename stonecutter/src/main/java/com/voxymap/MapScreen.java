@@ -1239,8 +1239,11 @@ public class MapScreen extends Screen {
         MapData data = MapData.INSTANCE;
         data.skipBiomeLabels = false;
         if (MapData.contourOverride != null) {
+            boolean before = data.isContourEffective();
             MapData.contourOverride = null;
-            data.requestColorRerender();
+            // A recolour now also invalidates the 3D colour identity (each tile is rebuilt), so only
+            // do it when the effective contour state actually flips.
+            if (before != data.isContourEffective()) data.requestColorRerender();
         }
     }
 
@@ -1259,12 +1262,16 @@ public class MapScreen extends Screen {
             // Auto-hide is a session-only override: the saved per-world contour state is untouched
             // and the bottom-left button shows "off" while this override is active.
             if (!Boolean.FALSE.equals(MapData.contourOverride)) {
+                boolean before = data.isContourEffective();
                 MapData.contourOverride = Boolean.FALSE;
-                data.requestColorRerender();
+                // Only a real change needs the recolour: entering 3D while contours are already off
+                // must not invalidate (and therefore re-mesh + re-upload) every resident tile.
+                if (before) data.requestColorRerender();
             }
         } else if (MapData.contourOverride != null) {
+            boolean before = data.isContourEffective();
             MapData.contourOverride = null;
-            data.requestColorRerender();
+            if (before != data.isContourEffective()) data.requestColorRerender();
         }
     }
     /**
