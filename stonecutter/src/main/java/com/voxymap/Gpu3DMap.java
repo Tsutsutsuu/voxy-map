@@ -2350,7 +2350,7 @@ public final class Gpu3DMap {
         BlazeCompat.setVertexBuffer(pass, 0, skyVbo);
         BlazeCompat.drawNonIndexed(pass, skyVertexCount);
     }
-    private static void beginFog(float start, float end, int color) {
+    private static void beginFog(float start, float end, int color, float alpha) {
         if (fogRing == null) {
             fogRing = new MappableRingBuffer(() -> "voxymap_3d_fog", 130, FogRenderer.FOG_UBO_SIZE);
         }
@@ -2360,7 +2360,7 @@ public final class Gpu3DMap {
         fogStaging.clear();
         Std140Builder.intoBuffer(fogStaging)
                 .putVec4(new Vector4f(((color >> 16) & 0xFF) / 255f,
-                        ((color >> 8) & 0xFF) / 255f, (color & 0xFF) / 255f, 1f))
+                        ((color >> 8) & 0xFF) / 255f, (color & 0xFF) / 255f, alpha))
                 .putFloat(start).putFloat(end)
                 .putFloat(Float.MAX_VALUE).putFloat(Float.MAX_VALUE)
                 .putFloat(Float.MAX_VALUE).putFloat(Float.MAX_VALUE);
@@ -2427,13 +2427,20 @@ public final class Gpu3DMap {
         int horizonColor = CLEAR_FOG_COLOR;
         float fogStart = 0f;
         float fogEnd = 0f;
+        float fogStrength = 0f;
         if (skyFog) {
-            // Fog is horizontal only; scale the distances with the camera height/distance so
-            // zooming out never hides the terrain edge behind fog.
+            // 3D-map fog: purely a horizon/depth cue. It is completely disabled when looking down
+            // (a top-down map has no horizon and must stay crisp), and fades in gradually as the
+            // camera tilts towards the horizon.
+            float lookDownDeg = (float) Math.toDegrees(-cam.pitch);
+            float tilt = (85f - lookDownDeg) / 35f;
+            tilt = Math.max(0f, Math.min(1f, tilt));
+            fogStrength = tilt * tilt * (3f - 2f * tilt);
+            // Keep the fog far away: the map is for seeing distance, not for shrinking the view.
             float camHeight = Math.max(1f, (float) (cam.eyeY() - cam.targetY));
             float fogScale = Math.max(cam.distance, camHeight * 1.6f);
-            fogEnd = Math.max(1500f, Math.min(20000f, fogScale * 5f));
-            fogStart = fogEnd * 0.35f;
+            fogStart = Math.max(3000f, fogScale * 2.5f);
+            fogEnd = Math.min(45000f, Math.max(9000f, fogScale * 8f));
         }
         overlayIndexCount = 0;
         // One encoder for the whole 3D frame: the overlay upload, the terrain pass and the
@@ -2449,19 +2456,23 @@ public final class Gpu3DMap {
                     com.mojang.blaze3d.ProjectionType.PERSPECTIVE);
             GpuBufferSlice transforms = RenderSystem.getDynamicUniforms()
                     .writeTransform(view, COLOR_MODULATOR, MODEL_OFFSET, TEXTURE_MATRIX);
+            boolean skyReady = false;
             if (skyFog) {
                 // The sky buffer upload and the fog-buffer map must happen BEFORE the render pass:
                 // writing/mapping GPU buffers while a pass is open is illegal and aborted the pass.
                 try {
                     prepareSky(frameEncoder, fov, cam, skyColor, horizonColor);
-                    beginFog(fogStart, fogEnd, horizonColor);
-                    fogStarted = true;
+                    skyReady = true;
+                    if (fogStrength > 0.01f) {
+                        beginFog(fogStart, fogEnd, horizonColor, fogStrength);
+                        fogStarted = true;
+                    }
                 } catch (Throwable t) {
                     System.out.println("[voxymap] 3d sky/fog setup failed, continuing without it: " + t);
                 }
             }
             try (RenderPass pass = BlazeCompat.beginTerrainPass(frameEncoder, target, depthView)) {
-                if (fogStarted) {
+                if (skyReady) {
                     drawSky(pass);
                 }
                 pass.setPipeline(skyFog ? terrain3dPipeline() : PIPELINE);
