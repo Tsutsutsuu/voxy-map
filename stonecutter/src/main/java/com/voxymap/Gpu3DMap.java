@@ -80,6 +80,8 @@ public final class Gpu3DMap {
     private static int advancedHeight;
     private static ProjectionMatrixBuffer advancedProjection;
     private static GpuBuffer advancedQuad;
+    private static GpuBuffer advancedQuadIndices;
+    private static RenderPipeline advancedComposite;
     private static int advancedQuadWidth;
     private static int advancedQuadHeight;
     private static GpuSampler advancedSampler;
@@ -2244,37 +2246,57 @@ public final class Gpu3DMap {
         }
     }
 
-    /** Fullscreen composite quad in GUI coordinates (POSITION_TEX_COLOR, built once per size). */
-    private static void ensureAdvancedQuad(int width, int height) {
-        if (advancedQuad != null && advancedQuadWidth == width && advancedQuadHeight == height) return;
+    /** Fullscreen composite quad (4 vertices + 6 indices) in GUI coordinates. */
+    private static void ensureAdvancedQuad(CommandEncoder encoder, int width, int height) {
+        if (advancedQuad != null && advancedQuadIndices != null
+                && advancedQuadWidth == width && advancedQuadHeight == height) return;
         if (advancedQuad != null) {
             advancedQuad.close();
             advancedQuad = null;
         }
+        if (advancedQuadIndices != null) {
+            advancedQuadIndices.close();
+            advancedQuadIndices = null;
+        }
+        if (advancedQuadIndices != null) {
+            advancedQuadIndices.close();
+            advancedQuadIndices = null;
+        }
         ByteBufferBuilder alloc = new ByteBufferBuilder(256);
-        BufferBuilder bb = BlazeCompat.newQuadBufferBuilder(alloc,
-                DefaultVertexFormat.POSITION_TEX_COLOR);
+        BufferBuilder bb = BlazeCompat.newBufferBuilder(alloc, DefaultVertexFormat.POSITION_TEX_COLOR);
         float w = width;
         float h = height;
-        // GUI coordinates grow downwards; render-target textures are sampled with v=1 at the top.
+        // GUI coordinates grow downwards; render-target textures have v=1 at the top.
         bb.addVertex(0.0f, 0.0f, 0.0f).setUv(0.0f, 1.0f).setColor(255, 255, 255, 255);
         bb.addVertex(0.0f, h, 0.0f).setUv(0.0f, 0.0f).setColor(255, 255, 255, 255);
         bb.addVertex(w, h, 0.0f).setUv(1.0f, 0.0f).setColor(255, 255, 255, 255);
         bb.addVertex(w, 0.0f, 0.0f).setUv(1.0f, 1.0f).setColor(255, 255, 255, 255);
         MeshData mesh = bb.buildOrThrow();
-        ByteBuffer data = copy(mesh.vertexBuffer());
+        ByteBuffer vdata = copy(mesh.vertexBuffer());
         mesh.close();
         alloc.close();
-        advancedQuad = RenderSystem.getDevice().createBuffer(
-                () -> "voxymap_adv3d_quad", GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_COPY_DST, data);
+        advancedQuad = upload(encoder, "voxymap_adv3d_quad_v", GpuBuffer.USAGE_VERTEX, vdata);
+        ByteBuffer idata = ByteBuffer.allocateDirect(6 * Integer.BYTES).order(ByteOrder.nativeOrder());
+        idata.putInt(0).putInt(1).putInt(2).putInt(2).putInt(1).putInt(3);
+        idata.flip();
+        advancedQuadIndices = upload(encoder, "voxymap_adv3d_quad_i", GpuBuffer.USAGE_INDEX, idata);
         advancedQuadWidth = width;
         advancedQuadHeight = height;
+    }
+
+    private static RenderPipeline advancedCompositePipeline() {
+        RenderPipeline p = advancedComposite;
+        if (p == null) {
+            p = BlazeCompat.advancedCompositePipeline();
+            advancedComposite = p;
+        }
+        return p;
     }
 
     /** Draws the offscreen advanced 3D layer over the main target (GUI projection, no depth). */
     private static void compositeAdvanced(CommandEncoder encoder, RenderTarget target, int width, int height) {
         if (advancedColorView == null || width <= 0 || height <= 0) return;
-        ensureAdvancedQuad(width, height);
+        ensureAdvancedQuad(encoder, width, height);
         RenderSystem.backupProjectionMatrix();
         try {
             Projection projection = new Projection();
@@ -2282,7 +2304,7 @@ public final class Gpu3DMap {
             RenderSystem.setProjectionMatrix(advancedProjection.getBuffer(projection),
                     ProjectionType.ORTHOGRAPHIC);
             try (RenderPass pass = BlazeCompat.beginCompositePass(encoder, target.getColorTextureView())) {
-                pass.setPipeline(RenderPipelines.GUI_TEXTURED);
+                pass.setPipeline(advancedCompositePipeline());
                 RenderSystem.bindDefaultUniforms(pass);
                 GpuBufferSlice transforms = RenderSystem.getDynamicUniforms()
                         .writeTransform(new Matrix4f().setTranslation(0.0f, 0.0f, -11000.0f),
@@ -2290,13 +2312,13 @@ public final class Gpu3DMap {
                 pass.setUniform("DynamicTransforms", transforms);
                 pass.bindTexture("Sampler0", advancedColorView, advancedSampler);
                 BlazeCompat.setVertexBuffer(pass, 0, advancedQuad);
-                BlazeCompat.drawNonIndexed(pass, 4);
+                BlazeCompat.setIndexBuffer(pass, advancedQuadIndices);
+                BlazeCompat.drawIndexed(pass, 6);
             }
         } finally {
             RenderSystem.restoreProjectionMatrix();
         }
     }
-
     private static boolean boxVisible(Matrix4f m, double centerX, double centerZ,
                                       double minY, double maxY, float half) {
         // Six clip planes from projection * view. Both depth conventions used by these versions
@@ -2406,6 +2428,10 @@ public final class Gpu3DMap {
         if (advancedQuad != null) {
             advancedQuad.close();
             advancedQuad = null;
+        }
+        if (advancedQuadIndices != null) {
+            advancedQuadIndices.close();
+            advancedQuadIndices = null;
         }
         advancedQuadWidth = 0;
         advancedQuadHeight = 0;

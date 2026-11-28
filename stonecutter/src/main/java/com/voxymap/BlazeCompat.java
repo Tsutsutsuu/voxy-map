@@ -315,6 +315,30 @@ public final class BlazeCompat {
         //?}
     }
 
+    /**
+     * Fullscreen composite pipeline for the advanced 3D layer: textured, blended, no depth. Uses
+     * TRIANGLES with an explicit index buffer (the vanilla GUI pipeline's non-indexed QUADS draw
+     * only produced half of the screen).
+     */
+    public static RenderPipeline advancedCompositePipeline() {
+        //? if >=26.2 {
+        return RenderPipelines.register(RenderPipeline.builder(RenderPipelines.GLOBALS_SNIPPET)
+                .withBindGroupLayout(net.minecraft.client.renderer.BindGroupLayouts.MATRICES_PROJECTION)
+                .withBindGroupLayout(net.minecraft.client.renderer.BindGroupLayouts.SAMPLER0)
+                .withLocation("pipeline/voxymap_adv3d_composite")
+                .withVertexShader("core/position_tex_color")
+                .withFragmentShader("core/position_tex_color")
+                .withColorTargetState(new ColorTargetState(BlendFunction.TRANSLUCENT))
+                .withVertexBinding(0, DefaultVertexFormat.POSITION_TEX_COLOR)
+                .withPrimitiveTopology(com.mojang.blaze3d.PrimitiveTopology.TRIANGLES)
+                .withDepthStencilState(new DepthStencilState(CompareOp.ALWAYS_PASS, false))
+                .withCull(false)
+                .build());
+        //?} else {
+        /*return RenderPipelines.GUI_TEXTURED;*/
+        //?}
+    }
+
     /** Colour target for the offscreen advanced 3D layer (sampled by the composite pass). */
     public static GpuTexture createOffscreenColorTexture(String label, int width, int height) {
         //? if >=26.2 {
