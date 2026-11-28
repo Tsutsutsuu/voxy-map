@@ -149,6 +149,7 @@ public final class MapData {
     /** Per-world overlay toggles, persisted in the world's cache sidecar file (see loadUiState). */
     private volatile boolean biomeOverlay;
     private volatile boolean renderDistanceOverlay;
+    private volatile boolean contourOverlay;
     /** Per-world map scale: 1..8 blocks per pixel (1:1 to 1:8). */
     private volatile int mapScale = 1;
     /** Per-world zoom level, restored on reopen when rememberZoom is on. */
@@ -881,6 +882,18 @@ public final class MapData {
         return renderDistanceOverlay;
     }
 
+    public boolean isContourOverlay() {
+        return contourOverlay;
+    }
+
+    /** Contour lines are a per-world overlay now (bottom-left button), persisted in state.properties. */
+    public void setContourOverlay(boolean value) {
+        if (value == contourOverlay) return;
+        contourOverlay = value;
+        saveUiState();
+        requestColorRerender();
+    }
+
     public void setBiomeOverlay(boolean value) {
         if (value && !biomeOverlay && isTile2DMode()) {
             invalidateTileBiomeCache();
@@ -901,6 +914,10 @@ public final class MapData {
         saveUiState();
     }
 
+    /** The contour visibility used by the colour pipeline (3D auto-hide override wins). */
+    private boolean effectiveContours() {
+        return contourOverride != null ? contourOverride : contourOverlay;
+    }
     /** Blocks per pixel for the current world: 1 (1:1, sharpest) .. 8 (1:8, coarsest). */
     public double getZoom() {
         return zoom;
@@ -958,6 +975,8 @@ public final class MapData {
                     if (biomes != null) biomeOverlay = Boolean.parseBoolean(biomes);
                     String distance = props.getProperty("renderDistance");
                     if (distance != null) renderDistanceOverlay = Boolean.parseBoolean(distance);
+                    String contours = props.getProperty("contours");
+                    if (contours != null) contourOverlay = Boolean.parseBoolean(contours);
                     String scale = props.getProperty("mapScale");
                     if (scale != null) {
                         try {
@@ -1006,6 +1025,7 @@ public final class MapData {
         }
         biomeOverlay = VoxyMapConfig.SHOW_BIOMES.get();
         renderDistanceOverlay = VoxyMapConfig.SHOW_RENDER_DISTANCE.get();
+        contourOverlay = VoxyMapConfig.DRAW_CONTOURS.get();
         mapScale = VoxyMapConfig.MAP_SCALE.get();
         zoom = VoxyMapConfig.DEFAULT_ZOOM.get();
     }
@@ -1035,6 +1055,7 @@ public final class MapData {
             props.setProperty("style", style);
             props.setProperty("biomes", Boolean.toString(biomeOverlay));
             props.setProperty("renderDistance", Boolean.toString(renderDistanceOverlay));
+            props.setProperty("contours", Boolean.toString(contourOverlay));
             props.setProperty("mapScale", Integer.toString(mapScale));
             props.setProperty("view3d", Boolean.toString(view3d));
             if (view3dCameraSaved) {
@@ -2802,7 +2823,7 @@ public final class MapData {
     /** everything that changes the produced pixels; changing any of these invalidates the .vxc */
     private static String colorCacheKey(String style, int sea) {
         return style + "|" + sea + "|" + VoxyMapConfig.MAP_SCALE.get() + "|"
-                + (contourOverride != null ? contourOverride : VoxyMapConfig.DRAW_CONTOURS.get()) + "|"
+                + (contourOverride != null ? contourOverride : INSTANCE.contourOverlay) + "|"
                 + VoxyMapConfig.MIN_CONTOUR_AREA.get() + "|"
                 + VoxyMapConfig.CONTOUR_DENSITY.get() + "|"
                 + VoxyMapConfig.DRAW_HILLSHADE.get() + "|"
@@ -4842,7 +4863,7 @@ public final class MapData {
 
     private int[] renderColor(Snapshot s, String style, int sea, boolean rebuildLabels) {
         TerrainCache tc = terrainFor(s, sea);
-        boolean wantContour = contourOverride != null ? contourOverride : VoxyMapConfig.DRAW_CONTOURS.get();
+        boolean wantContour = effectiveContours();
         if (tc.contourEnabled != wantContour) {
             // contour visibility is a separate switch: rebuild only the mask, keep the terrain cache
             tc.contour = computeContour(tc.topArr, tc.isWaterPix, tc.lo, tc.hi,
@@ -4930,7 +4951,7 @@ public final class MapData {
     public static String colorSettingsSignature() {
         return VoxyMapConfig.DRAW_HILLSHADE.get() + "|"
                 + VoxyMapConfig.LIGHT_STRENGTH.get() + "|" + VoxyMapConfig.LIGHT_AMBIENT.get() + "|"
-                + VoxyMapConfig.DRAW_CONTOURS.get() + "|" + VoxyMapConfig.CONTOUR_DENSITY.get() + "|"
+                + VoxyMapConfig.CONTOUR_DENSITY.get() + "|"
                 + VoxyMapConfig.MIN_CONTOUR_AREA.get() + "|"
                 + VoxyMapConfig.WATER_BLUR.get() + "|" + VoxyMapConfig.WATER_BLUR_RADIUS.get() + "|"
                 + VoxyMapConfig.WATER_BLUR_PASSES.get() + "|" + VoxyMapConfig.DRAW_WATER_DEPTH.get() + "|"
@@ -5382,7 +5403,7 @@ public final class MapData {
         }
         // contour mask from the smoothed land height, then drop small fragments by connected-area size
         int contourInterval = Math.max(10, (hi - lo) / Math.max(1, VoxyMapConfig.CONTOUR_DENSITY.get()));
-        boolean drawContours = contourOverride != null ? contourOverride : VoxyMapConfig.DRAW_CONTOURS.get();
+        boolean drawContours = effectiveContours();
         boolean[] contour = computeContour(topArr, isWaterPix, lo, hi, w, h, drawContours, next);
 
         TerrainCache built = new TerrainCache(s, sea, fp, topArr,
@@ -5540,7 +5561,7 @@ public final class MapData {
             report.colorFallback = "dirty area too large";
             return null;
         }
-        boolean contours = contourOverride != null ? contourOverride : VoxyMapConfig.DRAW_CONTOURS.get();
+        boolean contours = effectiveContours();
         if (contours != tc.contourEnabled) {
             report.colorFallback = "contour mode changed";
             return null;

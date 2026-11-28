@@ -110,6 +110,7 @@
   "voxymap.config.showBiomes": "群系边界",
   "voxymap.config.biomeLabelMinArea": "群系标签最小面积（像素）",
   "voxymap.ui.biomes": "群系",
+"voxymap.ui.contours": "等高",
   "voxymap.config.arrowStyle": "玩家箭头样式",
   "voxymap.ui.styleButton": "地图样式：%s",
   "voxymap.style.current": "自然地形",

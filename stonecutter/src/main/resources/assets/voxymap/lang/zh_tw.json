@@ -47,6 +47,7 @@
   "voxymap.config.showBiomes": "生態域疊加層",
   "voxymap.config.biomeLabelMinArea": "生態域標籤最小面積",
   "voxymap.ui.biomes": "生態域",
+"voxymap.ui.contours": "等高",
   "voxymap.config.arrowStyle": "箭頭樣式",
   "voxymap.ui.styleButton": "地圖樣式：%s",
   "voxymap.style.current": "自然地形",

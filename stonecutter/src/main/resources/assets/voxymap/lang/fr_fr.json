@@ -47,6 +47,7 @@
   "voxymap.config.showBiomes": "Calque des biomes",
   "voxymap.config.biomeLabelMinArea": "Aire minimale des noms de biome",
   "voxymap.ui.biomes": "Biomes",
+"voxymap.ui.contours": "Courbes",
   "voxymap.config.arrowStyle": "Style de la flèche",
   "voxymap.ui.styleButton": "Style de carte : %s",
   "voxymap.style.current": "Terrain naturel",

@@ -1255,7 +1255,7 @@ public class MapScreen extends Screen {
         // 3D now renders the normal 2D coloured texture (baked hillshade included) and only adds
         // per-vertex AO + side-face darkening, so the hillshade no longer needs a 3D-only override.
         // The optional "hide contours in 3D" still needs a temporary colour-only re-render.
-        if (VoxyMapConfig.AUTO_HIDE_CONTOURS_3D.get() && VoxyMapConfig.DRAW_CONTOURS.get()) {
+        if (VoxyMapConfig.AUTO_HIDE_CONTOURS_3D.get() && data.isContourOverlay()) {
             if (!Boolean.FALSE.equals(MapData.contourOverride)) {
                 MapData.contourOverride = Boolean.FALSE;
                 data.requestColorRerender();
@@ -1441,6 +1441,10 @@ public class MapScreen extends Screen {
 
     private int trackWidth() {
         return font.width(Component.translatable("voxymap.ui.track")) + 12;
+    }
+
+    private int contoursWidth() {
+        return font.width(Component.translatable("voxymap.ui.contours")) + 12;
     }
 
     private int styleSelWidth() {
@@ -1892,25 +1896,30 @@ public class MapScreen extends Screen {
             }
         }
 
-        // biome / render distance toggles bottom-left
+        // bottom-left overlay toggles, top to bottom: track, distance, biomes, contours
         boolean biomesOn = data.isBiomeOverlay();
         boolean distanceOn = data.isRenderDistanceOverlay();
-        Component biomeText = Component.translatable("voxymap.ui.biomes");
-        int bw = font.width(biomeText) + 12;
+        boolean contoursOn = data.isContourOverlay();
         int bx = 8;
         int by = height - 30;
-        drawToggle(g, "biomes", bx, by, bw, biomeText, biomesOn,
-                mouseX >= bx && mouseX <= bx + bw && mouseY >= by && mouseY <= by + 20, !busy);
+        Component coText = Component.translatable("voxymap.ui.contours");
+        int cow = font.width(coText) + 12;
+        drawToggle(g, "contours", bx, by, cow, coText, contoursOn,
+                mouseX >= bx && mouseX <= bx + cow && mouseY >= by && mouseY <= by + 20, !busy);
+        Component biomeText = Component.translatable("voxymap.ui.biomes");
+        int bw = font.width(biomeText) + 12;
+        int biomeY = by - 24;
+        drawToggle(g, "biomes", bx, biomeY, bw, biomeText, biomesOn,
+                mouseX >= bx && mouseX <= bx + bw && mouseY >= biomeY && mouseY <= biomeY + 20, !busy);
         Component rdText = Component.translatable("voxymap.ui.renderDistance");
         int rdw = font.width(rdText) + 12;
-        int ry2 = by - 24;
-        drawToggle(g, "distance", bx, ry2, rdw, rdText, distanceOn,
-                mouseX >= bx && mouseX <= bx + rdw && mouseY >= ry2 && mouseY <= ry2 + 20, !busy);
-
-        // track overlay toggle, above the two above (session state: switching it off clears the path)
+        int rdY = by - 48;
+        drawToggle(g, "distance", bx, rdY, rdw, rdText, distanceOn,
+                mouseX >= bx && mouseX <= bx + rdw && mouseY >= rdY && mouseY <= rdY + 20, !busy);
+        // track overlay toggle (session state: switching it off clears the path)
         Component trText = Component.translatable("voxymap.ui.track");
         int trw = font.width(trText) + 12;
-        int trY = by - 48;
+        int trY = by - 72;
         drawToggle(g, "track", bx, trY, trw, trText, TrackOverlay.enabled(),
                 mouseX >= bx && mouseX <= bx + trw && mouseY >= trY && mouseY <= trY + 20, !busy);
 
@@ -2191,10 +2200,11 @@ public class MapScreen extends Screen {
                     STYLE_ROW_Y + 24 + MapStyles.NAMES.length * 20 + 6});
         }
         // biome / distance toggles (bottom-left)
-        labelBlockers.add(new int[]{6, height - 32, 8 + biomesWidth() + 2, height - 8});
-        labelBlockers.add(new int[]{6, height - 56, 8 + distanceWidth() + 2, height - 32});
-        // track overlay toggle (above them)
-        labelBlockers.add(new int[]{6, height - 80, 8 + trackWidth() + 2, height - 56});
+        labelBlockers.add(new int[]{6, height - 32, 8 + contoursWidth() + 2, height - 8});
+        labelBlockers.add(new int[]{6, height - 56, 8 + biomesWidth() + 2, height - 32});
+        labelBlockers.add(new int[]{6, height - 80, 8 + distanceWidth() + 2, height - 56});
+        // track overlay toggle (top of the stack)
+        labelBlockers.add(new int[]{6, height - 104, 8 + trackWidth() + 2, height - 80});
         // refresh (bottom-right)
         Component refresh = refreshComponent();
         int rw = font.width(refresh) + 12;
@@ -2709,11 +2719,20 @@ public class MapScreen extends Screen {
             }
             return true;
         }
-        Component biomeText = Component.translatable("voxymap.ui.biomes");
-        int bw = font.width(biomeText) + 12;
         int bx = 8;
         int by = height - 30;
-        if (button == 0 && mx >= bx && mx <= bx + bw && my >= by && my <= by + 20) {
+        Component coText = Component.translatable("voxymap.ui.contours");
+        int cow = font.width(coText) + 12;
+        if (button == 0 && mx >= bx && mx <= bx + cow && my >= by && my <= by + 20) {
+            if (!data.isLoading() && !data.isStyleChanging()) {
+                data.setContourOverlay(!data.isContourOverlay());
+            }
+            return true;
+        }
+        Component biomeText = Component.translatable("voxymap.ui.biomes");
+        int bw = font.width(biomeText) + 12;
+        int biomeY = by - 24;
+        if (button == 0 && mx >= bx && mx <= bx + bw && my >= biomeY && my <= biomeY + 20) {
             if (!data.isLoading() && !data.isStyleChanging()) {
                 data.setBiomeOverlay(!data.isBiomeOverlay());
             }
@@ -2721,9 +2740,8 @@ public class MapScreen extends Screen {
         }
         Component rdText = Component.translatable("voxymap.ui.renderDistance");
         int rdw = font.width(rdText) + 12;
-        int rx2 = bx;
-        int ry2 = by - 24;
-        if (button == 0 && mx >= rx2 && mx <= rx2 + rdw && my >= ry2 && my <= ry2 + 20) {
+        int rdY = by - 48;
+        if (button == 0 && mx >= bx && mx <= bx + rdw && my >= rdY && my <= rdY + 20) {
             if (!data.isLoading() && !data.isStyleChanging()) {
                 data.setRenderDistanceOverlay(!data.isRenderDistanceOverlay());
             }
@@ -2731,7 +2749,7 @@ public class MapScreen extends Screen {
         }
         Component trText = Component.translatable("voxymap.ui.track");
         int trw = font.width(trText) + 12;
-        int trY = by - 48;
+        int trY = by - 72;
         if (button == 0 && mx >= bx && mx <= bx + trw && my >= trY && my <= trY + 20) {
             // session-only: enabling starts a fresh path, disabling stops sampling and clears it
             TrackOverlay.toggle();

@@ -47,6 +47,7 @@
   "voxymap.config.showBiomes": "Capa de biomas",
   "voxymap.config.biomeLabelMinArea": "Área mínima de etiqueta de bioma",
   "voxymap.ui.biomes": "Biomas",
+"voxymap.ui.contours": "Curvas",
   "voxymap.config.arrowStyle": "Estilo de flecha",
   "voxymap.ui.styleButton": "Estilo del mapa: %s",
   "voxymap.style.current": "Terreno natural",

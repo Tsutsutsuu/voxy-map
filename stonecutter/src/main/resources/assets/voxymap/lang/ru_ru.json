@@ -47,6 +47,7 @@
   "voxymap.config.showBiomes": "Слой биомов",
   "voxymap.config.biomeLabelMinArea": "Мин. площадь названия биома",
   "voxymap.ui.biomes": "Биомы",
+"voxymap.ui.contours": "Изолинии",
   "voxymap.config.arrowStyle": "Стиль стрелки",
   "voxymap.ui.styleButton": "Стиль карты: %s",
   "voxymap.style.current": "Природный рельеф",

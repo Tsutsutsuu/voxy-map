@@ -110,6 +110,7 @@
   "voxymap.config.showBiomes": "Biome borders",
   "voxymap.config.biomeLabelMinArea": "Min biome label area (px)",
   "voxymap.ui.biomes": "Biomes",
+"voxymap.ui.contours": "Contours",
   "voxymap.config.arrowStyle": "Player arrow style",
   "voxymap.ui.styleButton": "Map style: %s",
   "voxymap.style.current": "Current",

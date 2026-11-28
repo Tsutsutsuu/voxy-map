@@ -47,6 +47,7 @@
   "voxymap.config.showBiomes": "バイオームのオーバーレイ",
   "voxymap.config.biomeLabelMinArea": "バイオーム名の最小面積",
   "voxymap.ui.biomes": "バイオーム",
+"voxymap.ui.contours": "等高線",
   "voxymap.config.arrowStyle": "矢印スタイル",
   "voxymap.ui.styleButton": "マップスタイル：%s",
   "voxymap.style.current": "自然地形",

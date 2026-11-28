@@ -47,6 +47,7 @@
   "voxymap.config.showBiomes": "Biom-Überlagerung",
   "voxymap.config.biomeLabelMinArea": "Min. Fläche für Biomnamen",
   "voxymap.ui.biomes": "Biome",
+"voxymap.ui.contours": "Höhenlinien",
   "voxymap.config.arrowStyle": "Pfeilstil",
   "voxymap.ui.styleButton": "Kartenstil: %s",
   "voxymap.style.current": "Natürliches Gelände",

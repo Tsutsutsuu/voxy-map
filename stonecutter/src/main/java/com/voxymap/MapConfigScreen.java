@@ -154,7 +154,6 @@ public class MapConfigScreen extends Screen {
         add(Group.MAP, "autoSeaLevel", VoxyMapConfig.AUTO_SEA_LEVEL, 0, 0, null);
         add(Group.MAP, "seaLevelOverride", VoxyMapConfig.SEA_LEVEL_OVERRIDE, -2048, 2048, null);
         section(Group.MAP, "voxymap.config.section.contours");
-        add(Group.MAP, "drawContours", VoxyMapConfig.DRAW_CONTOURS, 0, 0, null);
         add(Group.MAP, "contourDensity", VoxyMapConfig.CONTOUR_DENSITY, 1, 24, null);
         add(Group.MAP, "minContourArea", VoxyMapConfig.MIN_CONTOUR_AREA, 0, 1000, null);
         section(Group.MAP, "voxymap.config.section.waterPost");
