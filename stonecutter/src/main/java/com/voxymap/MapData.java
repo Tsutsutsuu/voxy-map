@@ -650,6 +650,19 @@ public final class MapData {
     }
 
 
+    /**
+     * Top-face ("surface") Y at a world position: the water surface for water columns and the top
+     * face of the highest solid block for land. This is the coordinate a player standing there would
+     * report (their feet Y), unlike {@link #heightAt} which returns the top block's own Y (its bottom
+     * face). The 3D mesh, picking, cursor readout and teleport/waypoint actions all use this
+     * convention so land and water agree.
+     */
+    public int surfaceYAt(int worldX, int worldZ) {
+        if (isEmptyAt(worldX, worldZ)) return seaLevel();
+        if (isWaterAt(worldX, worldZ)) return seaLevel();
+        return heightAt(worldX, worldZ) + 1;
+    }
+
     /** True when the map snapshot has no data at this position (unexplored). */
     public boolean isEmptyAt(int worldX, int worldZ) {
         Snapshot s = snap;

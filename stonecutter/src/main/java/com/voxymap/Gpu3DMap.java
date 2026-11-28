@@ -660,7 +660,7 @@ public final class Gpu3DMap {
                                        double vscale, int pb) {
         double cx = tile.minWX + LiveTileStore.TILE_PIXELS * pb * 0.5;
         double cz = tile.minWZ + LiveTileStore.TILE_PIXELS * pb * 0.5;
-        double cy = MapData.INSTANCE.heightAt((int) cx, (int) cz) * vscale;
+        double cy = MapData.INSTANCE.surfaceYAt((int) cx, (int) cz) * vscale;
         double dx = cx - ex;
         double dy = cy - ey;
         double dz = cz - ez;
@@ -795,9 +795,11 @@ public final class Gpu3DMap {
                 } else if (w) {
                     y = (float) seaY;
                 } else if (top == VoxyMerge.NO_TOP) {
-                    y = (float) (floor * vscale);
+                    // top-face convention, same as the smooth mesher (land is one block above the
+                    // stored block Y; water already uses its surface level)
+                    y = (float) ((floor + 1) * vscale);
                 } else {
-                    y = (float) (top * vscale);
+                    y = (float) ((top + 1) * vscale);
                 }
                 empty[i] = e;
                 water[i] = w;
@@ -1036,7 +1038,7 @@ public final class Gpu3DMap {
             return Float.NaN;
         }
         if ((packed & (1L << 52)) != 0) return (float) (sea * vscale);
-        return (float) ((top == VoxyMerge.NO_TOP ? floor : top) * vscale);
+        return (float) ((top == VoxyMerge.NO_TOP ? floor + 1 : top + 1) * vscale);
     }
 
     private static void voxAdd(VoxelScratch s, double x, double y, double z, double u, double v) {
@@ -1229,9 +1231,13 @@ public final class Gpu3DMap {
                 } else if ((packed & (1L << 52)) != 0) {
                     y = (float) (sea * vscale);
                 } else if (top == VoxyMerge.NO_TOP) {
-                    y = (float) (floor * vscale);
+                    // heightAt()/Voxy "top" is the top block's own Y; the mesh draws the surface at
+                    // its top face, so land is one block above the stored block coordinate (water
+                    // already uses its surface level, hence the old mixed convention showed land one
+                    // block below water and one below the player's feet).
+                    y = (float) ((floor + 1) * vscale);
                 } else {
-                    y = (float) (top * vscale);
+                    y = (float) ((top + 1) * vscale);
                 }
                 px[vi] = wx;
                 py[vi] = y;
@@ -1515,7 +1521,7 @@ public final class Gpu3DMap {
                         case 2 -> { wx = cx + dist - 2 * dist * t; wz = cz + dist; nx = 0; nz = 1; }
                         default -> { wx = cx - dist; wz = cz + dist - 2 * dist * t; nx = -1; nz = 0; }
                     }
-                    double y = data.heightAt((int) Math.floor(wx), (int) Math.floor(wz)) * vscale + 1.05;
+                    double y = data.surfaceYAt((int) Math.floor(wx), (int) Math.floor(wz)) * vscale + 0.05;
                     float ax = (float) (wx + nx * width * 0.5);
                     float az = (float) (wz + nz * width * 0.5);
                     float bx = (float) (wx - nx * width * 0.5);
@@ -1739,7 +1745,7 @@ public final class Gpu3DMap {
             int bx = (int) Math.floor(x);
             int bz = (int) Math.floor(z);
             if (data.isEmptyAt(bx, bz)) continue;
-            if (y <= data.heightAt(bx, bz) * vscale) return true;
+            if (y <= data.surfaceYAt(bx, bz) * vscale) return true;
         }
         return false;
     }

@@ -1039,7 +1039,7 @@ public class MapScreen extends Screen {
         double wx = screenToWorldX(mouseX);
         double wz = screenToWorldZ(mouseY);
         secondary.add(String.format(Locale.ROOT, "hover: %.0f %.0f h=%d b=%d",
-                wx, wz, data.heightAt((int) Math.round(wx), (int) Math.round(wz)),
+                wx, wz, data.surfaceYAt((int) Math.round(wx), (int) Math.round(wz)),
                 data.biomeAt((int) Math.round(wx), (int) Math.round(wz))));
         secondary.add("labels: " + labelPanelState(data, mapZoomDevice()) + " / "
                 + (data.getBiomeLabelsFlat().length / 3) + " total");
@@ -1524,7 +1524,7 @@ public class MapScreen extends Screen {
         } else {
             wx = screenToWorldX(mouseX);
             wz = screenToWorldZ(mouseY);
-            wy = md.heightAt((int) Math.round(wx), (int) Math.round(wz));
+            wy = md.surfaceYAt((int) Math.round(wx), (int) Math.round(wz));
         }
         int gy = (int) Math.round(wy);
         int biomeId = md.biomeAt((int) Math.round(wx), (int) Math.round(wz));
@@ -1671,7 +1671,7 @@ public class MapScreen extends Screen {
         MapData d = MapData.INSTANCE;
         int ix = (int) Math.round(wx);
         int iz = (int) Math.round(wz);
-        return d.isWaterAt(ix, iz) ? d.seaLevel() : d.heightAt(ix, iz);
+        return d.surfaceYAt(ix, iz);
     }
 
     /** Vertical stretch applied to the mesh: the camera, picking and overlays work in this space. */
@@ -2066,8 +2066,9 @@ public class MapScreen extends Screen {
      *
      * <p>Only two inputs are consulted: the player's own position and the map mesh. No game-world
      * data (heightmap, block states, onGround) — the mesh is an LOD approximation of the world and
-     * the two disagree by design. The mesh draws the surface at {@code heightAt} (the top block's
-     * Y), while a player standing on that block is one block higher, hence {@code surfaceTop}.</p>
+     * the two disagree by design. Since the surface-Y fix the mesh draws land at the top face of the
+     * highest block, which equals the Y a player standing there reports; {@code surfaceTop} stays
+     * equal to {@code surface} and is kept for the airborne/occlusion checks.</p>
      *
      * @return {@code {px, pz, feet, surface, surfaceTop, markY, hasModel?1:0}}, or null
      */
@@ -2082,8 +2083,9 @@ public class MapScreen extends Screen {
         int bz = (int) Math.floor(pz);
         boolean hasModel = !data.isEmptyAt(bx, bz);
         double scale = meshScale();
+        // The mesh draws land at its top face now, so this already is the standing surface Y.
         double surface = groundMeshY(bx, bz);
-        double surfaceTop = surface + scale;
+        double surfaceTop = surface;
         double feet = player.getY() * scale;
         double anchor = Math.max(feet, surfaceTop);
         // Fixed height in blocks: the marker line is a world-space annotation, so its length must
@@ -2802,7 +2804,7 @@ public class MapScreen extends Screen {
             double wz = screenToWorldZ(my);
             menuWorldX = (int) Math.round(wx);
             menuWorldZ = (int) Math.round(wz);
-            menuWorldY = data.heightAt(menuWorldX, menuWorldZ);
+            menuWorldY = data.surfaceYAt(menuWorldX, menuWorldZ);
             return true;
         }
         return super.mouseClicked(e, doubleClick);
