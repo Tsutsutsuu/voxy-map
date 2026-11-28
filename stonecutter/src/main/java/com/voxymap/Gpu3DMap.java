@@ -31,6 +31,7 @@ import org.joml.Vector4f;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
@@ -72,20 +73,6 @@ public final class Gpu3DMap {
     private static final RenderPipeline MARKER_PIPELINE = markerPipeline();
     /** Textured world-space pipeline for the player arrow (POSITION_TEX, no depth test). */
     private static final RenderPipeline ARROW_PIPELINE = arrowPipeline();
-    /** Experimental advanced 3D rendering: custom terrain shader, offscreen layer + composite. */
-    private static RenderPipeline advancedPipeline;
-    private static GpuTexture advancedColor;
-    private static GpuTextureView advancedColorView;
-    private static int advancedWidth;
-    private static int advancedHeight;
-    private static ProjectionMatrixBuffer advancedProjection;
-    private static GpuBuffer advancedQuad;
-    private static GpuBuffer advancedQuadIndices;
-    private static RenderPipeline advancedComposite;
-    private static int advancedQuadWidth;
-    private static int advancedQuadHeight;
-    private static GpuSampler advancedSampler;
-    private static boolean lastAdvancedMode;
     private static final int OVERLAY_SEGMENTS = 64;
     /** Upper bound on the marker tick-line segments (the buffer is sized for this). */
     private static final int MARKER_MAX_SEGMENTS = 96;
@@ -835,57 +822,62 @@ public final class Gpu3DMap {
         // Corner brightness is derived from the columns around the shared grid-vertex position, so
         // the two cells that meet at a vertex compute the same value and the interpolation across
         // each face is continuous. Water stays at full brightness for now.
-        int gw2 = grid + 2;
-        float[] hb = s.hb;
-        if (hb.length < gw2 * gw2) {
-            hb = new float[gw2 * gw2];
-            s.hb = hb;
-        }
-        for (int bgz = 0; bgz < gw2; bgz++) {
-            int bz = (bgz - 1) * step;
-            for (int bgx = 0; bgx < gw2; bgx++) {
-                int bx = (bgx - 1) * step;
-                float hv;
-                if (bgx >= 1 && bgx <= grid && bgz >= 1 && bgz <= grid) {
-                    hv = h[(bgz - 1) * grid + (bgx - 1)];
-                } else {
-                    hv = voxNeighborY(tile, pixels, live, bx, bz, sea, vscale, texMax);
-                }
-                hb[bgz * gw2 + bgx] = Float.isNaN(hv) ? Float.NEGATIVE_INFINITY : hv;
-            }
-        }
+        int aoStrength = VoxyMapConfig.ADVANCED_3D_AO.get();
+        boolean useAo = VoxyMapConfig.ADVANCED_3D_RENDER.get() && aoStrength > 0;
         byte[] vao = s.vao;
         if (vao.length < cells * 4) {
             vao = new byte[cells * 4];
             s.vao = vao;
         }
-        int aoStrength = VoxyMapConfig.ADVANCED_3D_AO.get();
-        boolean useAo = VoxyMapConfig.ADVANCED_3D_RENDER.get() && aoStrength > 0;
-        for (int gz = 0; gz < grid; gz++) {
-            for (int gx = 0; gx < grid; gx++) {
-                int i = gz * grid + gx;
-                int base = i * 4;
-                if (!useAo || empty[i] || water[i]) {
-                    vao[base] = (byte) 0xFF;
-                    vao[base + 1] = (byte) 0xFF;
-                    vao[base + 2] = (byte) 0xFF;
-                    vao[base + 3] = (byte) 0xFF;
-                    aoCell[i] = 255;
-                    continue;
-                }
-                float cy = h[i];
-                int c0 = cornerAo(hb, gw2, gx, gz, 0, cy, aoStrength);
-                int c1 = cornerAo(hb, gw2, gx, gz, 1, cy, aoStrength);
-                int c2 = cornerAo(hb, gw2, gx, gz, 2, cy, aoStrength);
-                int c3 = cornerAo(hb, gw2, gx, gz, 3, cy, aoStrength);
-                vao[base] = (byte) c0;
-                vao[base + 1] = (byte) c1;
-                vao[base + 2] = (byte) c2;
-                vao[base + 3] = (byte) c3;
-                aoCell[i] = (c0 + c1 + c2 + c3) / 4;
+        if (!useAo) {
+            // No AO requested: skip the border height ring and the per-cell corner pass entirely.
+            Arrays.fill(vao, 0, cells * 4, (byte) 0xFF);
+            Arrays.fill(aoCell, 0, cells, 255);
+        } else {
+            int gw2 = grid + 2;
+            float[] hb = s.hb;
+            if (hb.length < gw2 * gw2) {
+                hb = new float[gw2 * gw2];
+                s.hb = hb;
             }
-        }
-        // ---- flat tops, greedily merged over equal-height cells ----
+            for (int bgz = 0; bgz < gw2; bgz++) {
+                int bz = (bgz - 1) * step;
+                for (int bgx = 0; bgx < gw2; bgx++) {
+                    int bx = (bgx - 1) * step;
+                    float hv;
+                    if (bgx >= 1 && bgx <= grid && bgz >= 1 && bgz <= grid) {
+                        hv = h[(bgz - 1) * grid + (bgx - 1)];
+                    } else {
+                        hv = voxNeighborY(tile, pixels, live, bx, bz, sea, vscale, texMax);
+                    }
+                    hb[bgz * gw2 + bgx] = Float.isNaN(hv) ? Float.NEGATIVE_INFINITY : hv;
+                }
+            }
+            for (int gz = 0; gz < grid; gz++) {
+                for (int gx = 0; gx < grid; gx++) {
+                    int i = gz * grid + gx;
+                    int base = i * 4;
+                    if (empty[i] || water[i]) {
+                        vao[base] = (byte) 0xFF;
+                        vao[base + 1] = (byte) 0xFF;
+                        vao[base + 2] = (byte) 0xFF;
+                        vao[base + 3] = (byte) 0xFF;
+                        aoCell[i] = 255;
+                        continue;
+                    }
+                    float cy = h[i];
+                    int c0 = cornerAo(hb, gw2, gx, gz, 0, cy, aoStrength);
+                    int c1 = cornerAo(hb, gw2, gx, gz, 1, cy, aoStrength);
+                    int c2 = cornerAo(hb, gw2, gx, gz, 2, cy, aoStrength);
+                    int c3 = cornerAo(hb, gw2, gx, gz, 3, cy, aoStrength);
+                    vao[base] = (byte) c0;
+                    vao[base + 1] = (byte) c1;
+                    vao[base + 2] = (byte) c2;
+                    vao[base + 3] = (byte) c3;
+                    aoCell[i] = (c0 + c1 + c2 + c3) / 4;
+                }
+            }
+        }        // ---- flat tops, greedily merged over equal-height cells ----
         for (int gz = 0; gz < grid; gz++) {
             for (int gx = 0; gx < grid; gx++) {
                 int i0 = gz * grid + gx;
@@ -1189,28 +1181,11 @@ public final class Gpu3DMap {
      * are surrounded by higher columns, so they accumulate occlusion and get darker; the tint is
      * written into the vertex colour (the shader multiplies the atlas colour by it).
      */
-    private static int ambientOcclusion(LiveTileStore.LiveTile tile, long[] pixels, LiveTileStore live,
-                                        int x, int z, int step, int sea, double vscale, int texMax, float h) {
-        int strength = VoxyMapConfig.ADVANCED_3D_AO.get();
-        if (strength <= 0) return 255;
-        float occ = 0f;
-        int n = 0;
-        final int[] dx = {step, -step, 0, 0};
-        final int[] dz = {0, 0, step, -step};
-        for (int d = 0; d < 4; d++) {
-            float nh = voxNeighborY(tile, pixels, live, x + dx[d], z + dz[d], sea, vscale, texMax);
-            if (Float.isNaN(nh)) continue;
-            float diff = nh - h;
-            if (diff > 0f) occ += Math.min(1f, diff / Math.max(1f, step));
-            n++;
-        }
-        if (n == 0) return 255;
-        occ /= 4f;
+    /** AO byte for an occlusion value (0..1); shared by the smooth-vertex AO pass. */
+    private static int aoColour(float occ, int strength) {
         float amount = (strength / 100f) * 0.75f * (occ / (occ + 0.6f));
-        float factor = 1f - amount;
-        return Math.max(40, Math.round(255f * factor));
+        return Math.max(40, Math.round(255f * (1f - amount)));
     }
-
     private static void voxAdd(VoxelScratch s, double x, double y, double z, double u, double v) {
         s.ensureVerts(s.vi + 1);
         s.col[s.vi] = s.curAo;
@@ -1433,15 +1408,61 @@ public final class Gpu3DMap {
                 pz[vi] = wz;
                 pu[vi] = (sx + Math.min(texMax, x) + 0.5f) / ATLAS;
                 pv[vi] = v;
-                // The 3D atlas IS the 2D coloured texture (including its baked hillshade), so the
-                // vertex colour only carries the 3D-only AO; no per-vertex lighting any more.
-                col[vi] = !e && aoEnabled
-                        ? ambientOcclusion(tile, pixels, live, x, z, step, sea, vscale, texMax, y)
-                        : 255;
+                col[vi] = 255;
                 empty[vi++] = e;
                 if (!e) {
                     minY = Math.min(minY, y);
                     maxY = Math.max(maxY, y);
+                }
+            }
+        }
+        // Per-vertex AO from the already sampled vertex heights: interior neighbours come straight
+        // from py[], only the tile border samples across the seam once. The old code called
+        // voxNeighborY four times for every vertex (about 260k lookups for a 256-cell near tile).
+        if (aoEnabled && vi > 0) {
+            int aoStrength = VoxyMapConfig.ADVANCED_3D_AO.get();
+            for (int gz = 0; gz <= grid; gz++) {
+                int z = gz * step;
+                int row = gz * gw;
+                for (int gx = 0; gx <= grid; gx++) {
+                    int i = row + gx;
+                    if (empty[i]) {
+                        col[i] = 255;
+                        continue;
+                    }
+                    float h = py[i];
+                    float occ = 0f;
+                    int n = 0;
+                    float nh;
+                    nh = gx < grid ? py[i + 1]
+                            : voxNeighborY(tile, pixels, live, gx * step + step, z, sea, vscale, texMax);
+                    if (!Float.isNaN(nh)) {
+                        float d = nh - h;
+                        if (d > 0f) occ += Math.min(1f, d / Math.max(1f, step));
+                        n++;
+                    }
+                    nh = gx > 0 ? py[i - 1]
+                            : voxNeighborY(tile, pixels, live, gx * step - step, z, sea, vscale, texMax);
+                    if (!Float.isNaN(nh)) {
+                        float d = nh - h;
+                        if (d > 0f) occ += Math.min(1f, d / Math.max(1f, step));
+                        n++;
+                    }
+                    nh = gz < grid ? py[i + gw]
+                            : voxNeighborY(tile, pixels, live, gx * step, z + step, sea, vscale, texMax);
+                    if (!Float.isNaN(nh)) {
+                        float d = nh - h;
+                        if (d > 0f) occ += Math.min(1f, d / Math.max(1f, step));
+                        n++;
+                    }
+                    nh = gz > 0 ? py[i - gw]
+                            : voxNeighborY(tile, pixels, live, gx * step, z - step, sea, vscale, texMax);
+                    if (!Float.isNaN(nh)) {
+                        float d = nh - h;
+                        if (d > 0f) occ += Math.min(1f, d / Math.max(1f, step));
+                        n++;
+                    }
+                    col[i] = n == 0 ? 255 : aoColour(occ / 4f, aoStrength);
                 }
             }
         }
@@ -2231,10 +2252,6 @@ public final class Gpu3DMap {
         Matrix4f view = cam.viewMatrix();
         Matrix4f viewProj = new Matrix4f(proj).mul(view);
         ensureDepth(target.width, target.height);
-        boolean advanced = VoxyMapConfig.ADVANCED_3D_RENDER.get() && BlazeCompat.advanced3dSupported();
-        if (advanced) {
-            ensureAdvancedTarget(target.width, target.height);
-        }
         overlayIndexCount = 0;
         // One encoder for the whole 3D frame: the overlay upload, the terrain pass and the
         // ring fence all ride in it, so the mod does not add a submit of its own.
@@ -2248,10 +2265,8 @@ public final class Gpu3DMap {
                     com.mojang.blaze3d.ProjectionType.PERSPECTIVE);
             GpuBufferSlice transforms = RenderSystem.getDynamicUniforms()
                     .writeTransform(view, COLOR_MODULATOR, MODEL_OFFSET, TEXTURE_MATRIX);
-            try (RenderPass pass = advanced
-                        ? BlazeCompat.beginOffscreenPass(frameEncoder, advancedColorView, depthView)
-                        : BlazeCompat.beginTerrainPass(frameEncoder, target, depthView)) {
-                pass.setPipeline(advanced ? advancedPipeline() : PIPELINE);
+            try (RenderPass pass = BlazeCompat.beginTerrainPass(frameEncoder, target, depthView)) {
+                pass.setPipeline(PIPELINE);
                 RenderSystem.bindDefaultUniforms(pass);
                 pass.setUniform("DynamicTransforms", transforms);
                 // Full-bright is intentional: the terrain re-uses the 2D map colours, which are
@@ -2292,10 +2307,6 @@ public final class Gpu3DMap {
                 if (drawOverlay) drawOverlay(pass, transforms);
                 drawTrack(pass, transforms);
             }
-            if (advanced) {
-                compositeAdvanced(frameEncoder, target,
-                        mc.getWindow().getGuiScaledWidth(), mc.getWindow().getGuiScaledHeight());
-            }
             // The fence is taken after the draws, so the next reuse of this slot waits for them.
             if (overlaySlotInUse >= 0) {
                 overlayFences[overlaySlotInUse] = BlazeCompat.createFence(frameEncoder);
@@ -2308,115 +2319,6 @@ public final class Gpu3DMap {
         MapPerf.INSTANCE.rasterFrame(System.nanoTime() - rasterStartNs, trisDrawn);
     }
 
-    /** Lazily created custom terrain pipeline for the experimental advanced 3D renderer. */
-    private static RenderPipeline advancedPipeline() {
-        RenderPipeline p = advancedPipeline;
-        if (p == null) {
-            p = BlazeCompat.advancedTerrainPipeline();
-            advancedPipeline = p;
-        }
-        return p;
-    }
-
-    /** Offscreen colour target for the advanced 3D layer; recreated on window resize. */
-    private static void ensureAdvancedTarget(int width, int height) {
-        if (advancedColor != null && advancedWidth == width && advancedHeight == height) return;
-        if (advancedColorView != null) {
-            advancedColorView.close();
-            advancedColorView = null;
-        }
-        if (advancedColor != null) {
-            advancedColor.close();
-            advancedColor = null;
-        }
-        advancedColor = BlazeCompat.createOffscreenColorTexture("voxymap_adv3d_color", width, height);
-        advancedColorView = RenderSystem.getDevice().createTextureView(advancedColor);
-        advancedWidth = width;
-        advancedHeight = height;
-        if (advancedProjection == null) {
-            advancedProjection = new ProjectionMatrixBuffer("voxymap_adv3d");
-        }
-        if (advancedSampler == null) {
-            advancedSampler = RenderSystem.getSamplerCache().getClampToEdge(FilterMode.NEAREST);
-        }
-    }
-
-    /** Fullscreen composite quad (4 vertices + 6 indices) in GUI coordinates. */
-    private static void ensureAdvancedQuad(CommandEncoder encoder, int width, int height) {
-        if (advancedQuad != null && advancedQuadIndices != null
-                && advancedQuadWidth == width && advancedQuadHeight == height) return;
-        if (advancedQuad != null) {
-            advancedQuad.close();
-            advancedQuad = null;
-        }
-        if (advancedQuadIndices != null) {
-            advancedQuadIndices.close();
-            advancedQuadIndices = null;
-        }
-        if (advancedQuadIndices != null) {
-            advancedQuadIndices.close();
-            advancedQuadIndices = null;
-        }
-        ByteBufferBuilder alloc = new ByteBufferBuilder(256);
-        BufferBuilder bb = BlazeCompat.newBufferBuilder(alloc, DefaultVertexFormat.POSITION_TEX_COLOR);
-        float w = width;
-        float h = height;
-        // GUI coordinates grow downwards; render-target textures have v=1 at the top.
-        bb.addVertex(0.0f, 0.0f, 0.0f).setUv(0.0f, 1.0f).setColor(255, 255, 255, 255);
-        bb.addVertex(0.0f, h, 0.0f).setUv(0.0f, 0.0f).setColor(255, 255, 255, 255);
-        bb.addVertex(w, h, 0.0f).setUv(1.0f, 0.0f).setColor(255, 255, 255, 255);
-        bb.addVertex(w, 0.0f, 0.0f).setUv(1.0f, 1.0f).setColor(255, 255, 255, 255);
-        MeshData mesh = bb.buildOrThrow();
-        ByteBuffer vdata = copy(mesh.vertexBuffer());
-        mesh.close();
-        alloc.close();
-        advancedQuad = upload(encoder, "voxymap_adv3d_quad_v", GpuBuffer.USAGE_VERTEX, vdata);
-        ByteBuffer idata = ByteBuffer.allocateDirect(6 * Integer.BYTES).order(ByteOrder.nativeOrder());
-        // Two triangles that share the tl-br diagonal: (tl, bl, br) + (tl, br, tr). The previous
-        // order used the bl-tr diagonal for the second triangle, which overlapped the first one and
-        // left a V-shaped hole where the keepalive world frame flashed through.
-        idata.putInt(0).putInt(1).putInt(2).putInt(0).putInt(2).putInt(3);
-        idata.flip();
-        advancedQuadIndices = upload(encoder, "voxymap_adv3d_quad_i", GpuBuffer.USAGE_INDEX, idata);
-        advancedQuadWidth = width;
-        advancedQuadHeight = height;
-    }
-
-    private static RenderPipeline advancedCompositePipeline() {
-        RenderPipeline p = advancedComposite;
-        if (p == null) {
-            p = BlazeCompat.advancedCompositePipeline();
-            advancedComposite = p;
-        }
-        return p;
-    }
-
-    /** Draws the offscreen advanced 3D layer over the main target (GUI projection, no depth). */
-    private static void compositeAdvanced(CommandEncoder encoder, RenderTarget target, int width, int height) {
-        if (advancedColorView == null || width <= 0 || height <= 0) return;
-        ensureAdvancedQuad(encoder, width, height);
-        RenderSystem.backupProjectionMatrix();
-        try {
-            Projection projection = new Projection();
-            projection.setupOrtho(1000.0f, 11000.0f, width, height, true);
-            RenderSystem.setProjectionMatrix(advancedProjection.getBuffer(projection),
-                    ProjectionType.ORTHOGRAPHIC);
-            try (RenderPass pass = BlazeCompat.beginCompositePass(encoder, target.getColorTextureView())) {
-                pass.setPipeline(advancedCompositePipeline());
-                RenderSystem.bindDefaultUniforms(pass);
-                GpuBufferSlice transforms = RenderSystem.getDynamicUniforms()
-                        .writeTransform(new Matrix4f().setTranslation(0.0f, 0.0f, -11000.0f),
-                                COLOR_MODULATOR, MODEL_OFFSET, TEXTURE_MATRIX);
-                pass.setUniform("DynamicTransforms", transforms);
-                pass.bindTexture("Sampler0", advancedColorView, advancedSampler);
-                BlazeCompat.setVertexBuffer(pass, 0, advancedQuad);
-                BlazeCompat.setIndexBuffer(pass, advancedQuadIndices);
-                BlazeCompat.drawIndexed(pass, 6);
-            }
-        } finally {
-            RenderSystem.restoreProjectionMatrix();
-        }
-    }
     private static boolean boxVisible(Matrix4f m, double centerX, double centerZ,
                                       double minY, double maxY, float half) {
         // Six clip planes from projection * view. Both depth conventions used by these versions
@@ -2468,7 +2370,7 @@ public final class Gpu3DMap {
                 lastUploadTiles, lastAtlasPages, lastGpuBytes / (1024.0 * 1024.0),
                 lastAtlasBytes / (1024.0 * 1024.0), lastDepthBytes / (1024.0 * 1024.0)));
         out.add("adv3d: " + (VoxyMapConfig.ADVANCED_3D_RENDER.get() ? "on" : "off")
-                + "  layer=" + advancedWidth + "x" + advancedHeight + "  supported=" + BlazeCompat.advanced3dSupported());
+                + "  supported=" + BlazeCompat.advanced3dSupported());
         return out;
     }
 
@@ -2513,30 +2415,6 @@ public final class Gpu3DMap {
         lastTotal = 0;
         lastBuildNanos = 0;
         lastUploadNanos = 0;
-        if (advancedColorView != null) {
-            advancedColorView.close();
-            advancedColorView = null;
-        }
-        if (advancedColor != null) {
-            advancedColor.close();
-            advancedColor = null;
-        }
-        advancedWidth = 0;
-        advancedHeight = 0;
-        if (advancedQuad != null) {
-            advancedQuad.close();
-            advancedQuad = null;
-        }
-        if (advancedQuadIndices != null) {
-            advancedQuadIndices.close();
-            advancedQuadIndices = null;
-        }
-        advancedQuadWidth = 0;
-        advancedQuadHeight = 0;
-        if (advancedProjection != null) {
-            advancedProjection.close();
-            advancedProjection = null;
-        }
         // overlay/arrow ring: close every slot and its fence
         for (int slot = 0; slot < OVERLAY_SLOTS; slot++) {
             BlazeCompat.awaitAndCloseFence(overlayFences[slot]);

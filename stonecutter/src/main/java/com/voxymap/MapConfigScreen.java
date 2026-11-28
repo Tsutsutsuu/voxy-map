@@ -304,6 +304,7 @@ public class MapConfigScreen extends Screen {
     private void applyDraft() {
         int oldLodCap = VoxyMapConfig.MAX_LOD_LEVEL.get();
         boolean oldStartNotice = VoxyMapConfig.SHOW_START_NOTICE.get();
+        String oldColorSettings = MapData.colorSettingsSignature();
         for (Item it : items) {
             if (it.header()) continue;
             ((VoxyMapConfig.Value<Object>) it.value()).set(draft.get(it));
@@ -314,9 +315,12 @@ public class MapConfigScreen extends Screen {
             MapScreen.resetStartNoticeSession();
         }
         Gpu3DMap.reconfigureBuildThreads();
-        // Rendering changes must re-colour existing tiles; otherwise the ramp toggle only
-        // affects tiles loaded after the config screen closes.
-        MapData.INSTANCE.requestColorRerender();
+        // Only colour changes need the expensive terrain re-analysis + tile recolour; 3D-only
+        // settings (AO / FOV / distances / voxel / advanced renderer) remesh via the 3D stamp in
+        // the next tick and must not stall on a full 2D recolour.
+        if (!oldColorSettings.equals(MapData.colorSettingsSignature())) {
+            MapData.INSTANCE.requestColorRerender();
+        }
         if (oldLodCap != VoxyMapConfig.MAX_LOD_LEVEL.get()) {
             // The section index stores the LOD cap it was built with; a change invalidates it, so
             // request a rebuild instead of waiting for the next manual refresh.

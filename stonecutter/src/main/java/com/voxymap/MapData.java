@@ -4921,6 +4921,23 @@ public final class MapData {
     private static final ThreadLocal<Object[]> LIVE_QUERY_CACHE =
             ThreadLocal.withInitial(() -> new Object[]{Long.MIN_VALUE, null});
 
+    /**
+     * Settings that change the rendered 2D colours. The config screen compares this before/after
+     * applying the draft and only schedules a full 2D recolour when something in this set changed;
+     * 3D-only settings (AO, FOV, distances, advanced/voxel toggles) no longer trigger the expensive
+     * terrain re-analysis + recolour.
+     */
+    public static String colorSettingsSignature() {
+        return VoxyMapConfig.DRAW_HILLSHADE.get() + "|"
+                + VoxyMapConfig.LIGHT_STRENGTH.get() + "|" + VoxyMapConfig.LIGHT_AMBIENT.get() + "|"
+                + VoxyMapConfig.DRAW_CONTOURS.get() + "|" + VoxyMapConfig.CONTOUR_DENSITY.get() + "|"
+                + VoxyMapConfig.MIN_CONTOUR_AREA.get() + "|"
+                + VoxyMapConfig.WATER_BLUR.get() + "|" + VoxyMapConfig.WATER_BLUR_RADIUS.get() + "|"
+                + VoxyMapConfig.WATER_BLUR_PASSES.get() + "|" + VoxyMapConfig.DRAW_WATER_DEPTH.get() + "|"
+                + VoxyMapConfig.FILL_HOLES.get() + "|" + VoxyMapConfig.DENOISE.get() + "|"
+                + VoxyMapConfig.ADAPTIVE_COLOR_RAMP.get() + "|" + VoxyMapConfig.MIN_MAX_RAMP.get() + "|"
+                + VoxyMapConfig.BIOME_COLORS.get() + "|" + VoxyMapConfig.SHOW_BIOMES.get();
+    }
     /** Settings that shape the terrain analysis; changing any of them invalidates the cache. */
     private static String terrainFingerprint() {
         return VoxyMapConfig.FILL_HOLES.get() + "|" + VoxyMapConfig.DENOISE.get() + "|"

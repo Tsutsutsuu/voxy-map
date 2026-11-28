@@ -139,12 +139,11 @@ public final class VoxyMapConfig {
      */
     public static final Value<Boolean> GPU_TERRAIN_VOXEL = new Value<>("gpuTerrainVoxel", true);
     /**
-     * Experimental "advanced 3D rendering": the 3D terrain uses a base-colour-only atlas (no baked
-     * hillshade/contours), draws into an offscreen layer, and a custom shader supplies lighting,
-     * ambient occlusion and contour lines. Off by default; the 2D map pipeline is untouched.
+     * Experimental "advanced 3D rendering": adds per-vertex AO and side-face darkening on top of the
+     * shared 2D coloured texture (same atlas as the normal 3D view, no extra render passes).
      */
     public static final Value<Boolean> ADVANCED_3D_RENDER = new Value<>("advanced3dRender", true);
-    /** Ambient-occlusion strength (0-100) for the experimental advanced 3D renderer; 0 = off. */
+    /** Ambient-occlusion strength (0-100) for the experimental advanced 3D features; 0 = off. */
     public static final Value<Integer> ADVANCED_3D_AO = new Value<>("advanced3dAo", 50);
     /**
      * Directional-light strength (0-100) shared by the 2D map shading and the advanced 3D
