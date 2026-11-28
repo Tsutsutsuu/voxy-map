@@ -252,6 +252,8 @@ public final class MapData {
     private final AtomicBoolean buildingBiome = new AtomicBoolean();
     private volatile boolean loading;
     private volatile boolean styleChanging;
+    /** A colour rerender was requested while another one was in flight. */
+    private volatile boolean colorRerenderQueued;
     private volatile long styleChangeStartMs;
     /** last 3D view mode for this world (per-world ui state) */
     private volatile boolean view3d;
@@ -898,7 +900,18 @@ public final class MapData {
     public void setTemporaryContour(boolean value) {
         if (Boolean.valueOf(value).equals(contourOverride)) return;
         contourOverride = value;
+        invalidateLiveColorsNow();
         requestColorRerender();
+    }
+
+    /**
+     * Invalidates the live tile colours immediately. In 3D mode the map is rendered from the live
+     * tile store, so a contour/display-option change must reach that store even if the async colour
+     * path below would rebuild it.
+     */
+    private void invalidateLiveColorsNow() {
+        LiveTileStore live = liveTiles;
+        if (live != null) live.invalidateAllColors();
     }
 
     /** Contour lines are a per-world overlay now (bottom-left button), persisted in state.properties. */
@@ -906,6 +919,7 @@ public final class MapData {
         if (value == contourOverlay) return;
         contourOverlay = value;
         saveUiState();
+        invalidateLiveColorsNow();
         requestColorRerender();
     }
 
@@ -1246,12 +1260,20 @@ public final class MapData {
                     } finally {
                         styleChanging = false;
                         styleChangeStartMs = 0;
+                        if (colorRerenderQueued) {
+                            colorRerenderQueued = false;
+                            requestColorRerender();
+                        }
                     }
                 });
             } catch (Throwable t) {
                 t.printStackTrace();
                 styleChanging = false;
                 styleChangeStartMs = 0;
+                if (colorRerenderQueued) {
+                    colorRerenderQueued = false;
+                    requestColorRerender();
+                }
             }
         });
     }
@@ -1261,7 +1283,13 @@ public final class MapData {
      * contour overlay changes; much cheaper than a full refresh.
      */
     public void requestColorRerender() {
-        if (!isReady() || loading || styleChanging) return;
+        if (!isReady() || loading) return;
+        if (styleChanging) {
+            // Queue instead of dropping: the contour overlay can be toggled while the post-enter/auto-hide
+            // recolour is still running, and dropping it left the 3D view showing the old colour.
+            colorRerenderQueued = true;
+            return;
+        }
         if (isTile2DMode()) {
             LiveTileStore live = ensure2DStore();
             live.invalidateAllColors();
@@ -1283,12 +1311,20 @@ public final class MapData {
                     } finally {
                         styleChanging = false;
                         styleChangeStartMs = 0;
+                        if (colorRerenderQueued) {
+                            colorRerenderQueued = false;
+                            requestColorRerender();
+                        }
                     }
                 });
             } catch (Throwable t) {
                 t.printStackTrace();
                 styleChanging = false;
                 styleChangeStartMs = 0;
+                if (colorRerenderQueued) {
+                    colorRerenderQueued = false;
+                    requestColorRerender();
+                }
             }
         });
     }
