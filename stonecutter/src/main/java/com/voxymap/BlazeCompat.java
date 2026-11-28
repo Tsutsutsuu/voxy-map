@@ -352,12 +352,14 @@ public final class BlazeCompat {
         //?}
     }
 
-    /** Render pass that draws the advanced 3D terrain into its offscreen layer (transparent clear). */
+    /** Render pass that draws the advanced 3D terrain into its offscreen layer (opaque dark backdrop). */
     public static RenderPass beginOffscreenPass(CommandEncoder encoder, GpuTextureView colorView,
                                                 GpuTextureView depthView) {
         //? if >=26.2 {
         return encoder.createRenderPass(() -> "voxymap_adv3d_layer", colorView,
-                java.util.Optional.of(new org.joml.Vector4f(0.0f, 0.0f, 0.0f, 0.0f)),
+                // Opaque dark backdrop: the composite discards alpha==0 fragments, so a transparent
+                // clear would let the flashing main-target content show through the background.
+                java.util.Optional.of(new org.joml.Vector4f(0.02f, 0.02f, 0.03f, 1.0f)),
                 depthView, java.util.OptionalDouble.of(0.0));
         //?} else {
         /*return encoder.createRenderPass(() -> "voxymap_adv3d_layer", colorView,
