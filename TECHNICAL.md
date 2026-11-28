@@ -79,6 +79,7 @@ Voxy 的 RocksDB LOD 存储
 - 草稿模式：`取消` 丢弃、`应用` 保存不关闭、`完成` 保存并关闭、`重置` 恢复出厂默认。
 - 存储：Fabric 为 `config/voxymap-client.json`（平铺 key）；NeoForge 为 `config/voxymap-client.toml`（`ModConfigSpec`，分组 `ui/map/data/view3d/perf/debug`，另有一个对界面隐藏的 `legacy` 组保存旧键）。
 - 配置只决定**新世界**默认值；每个世界的样式、叠加层、地图比例、缩放（以及 3D 相机）存在该世界缓存目录的 `state.properties` 里。
+- **配置版本号规则**：`configVersion` 只在**需要重置所有用户配置**时递增（例如默认值整体改变、旧配置会与新逻辑冲突）。普通的默认值微调、新增配置项、说明文字和分组调整都不要递增；缺少新配置项时按默认值加载即可。递增会让所有用户已保存的配置被默认值覆盖一次，属于破坏性操作。
 
 <a id="配置参考"></a>
 
@@ -208,6 +209,7 @@ Voxy's RocksDB LOD storage
 - Draft mode: `Cancel` discards, `Apply` saves without closing, `Done` saves and closes, `Reset` restores factory defaults.
 - Storage: Fabric writes `config/voxymap-client.json` (flat keys); NeoForge writes `config/voxymap-client.toml` via `ModConfigSpec` (groups `ui/map/data/view3d/perf/debug`, plus a hidden `legacy` group holding retired keys).
 - The config only sets defaults for **new worlds**; each world's style, overlays, map scale, zoom (and 3D camera) live in that world's `state.properties`.
+- **Config version rule**: bump `configVersion` only when **every user's config must be reset** (for example a wholesale default change or an old config that conflicts with new logic). Do not bump it for ordinary default tweaks, new options, description edits or section reordering; load missing options with their defaults instead. A bump overwrites every user's saved settings with defaults once and is a destructive operation.
 
 <a id="config-reference"></a>
 
