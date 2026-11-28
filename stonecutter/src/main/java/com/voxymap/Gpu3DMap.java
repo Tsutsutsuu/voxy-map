@@ -78,6 +78,8 @@ public final class Gpu3DMap {
     private static final RenderPipeline MARKER_PIPELINE = markerPipeline();
     /** Textured world-space pipeline for the player arrow (POSITION_TEX, no depth test). */
     private static final RenderPipeline ARROW_PIPELINE = arrowPipeline();
+    /** Sky sphere: no depth test/write, back-face culling so only the near inner surface draws. */
+    private static final RenderPipeline SKY_PIPELINE = skyPipeline();
     /** Blocks-style advanced 3D sky/fog: horizontal-fog terrain pipeline and sky sphere. */
     private static RenderPipeline terrain3dPipeline;
     private static GpuBuffer skyMesh;
@@ -164,6 +166,20 @@ public final class Gpu3DMap {
      * Same vertex format / blending / topology as {@link #OVERLAY_PIPELINE}, but with the depth test
      * forced to ALWAYS_PASS so the marker line draws over the terrain.
      */
+
+    /** Depth-test-free sky sphere pipeline with culling enabled (the sphere uses inward winding). */
+    private static RenderPipeline skyPipeline() {
+        try {
+            return RenderPipelines.register(RenderPipeline.builder(RenderPipelines.DEBUG_FILLED_SNIPPET)
+                    .withLocation("pipeline/voxymap_sky")
+                    .withDepthStencilState(new DepthStencilState(CompareOp.ALWAYS_PASS, false))
+                    .withCull(true)
+                    .build());
+        } catch (Throwable t) {
+            System.out.println("[voxymap] sky pipeline unavailable: " + t);
+            return null;
+        }
+    }
     private static RenderPipeline markerPipeline() {
         try {
             return RenderPipelines.register(RenderPipeline.builder(RenderPipelines.DEBUG_FILLED_SNIPPET)
@@ -2278,7 +2294,14 @@ public final class Gpu3DMap {
 
     /** Horizon colour at y=0, fading into the zenith sky colour above a ~10 degree band. */
     private static int skyVertexColor(float y, int skyColor, int fogColor) {
-        if (y <= 0f) return SKY_BLACK;
+        if (y <= -0.15f) return SKY_BLACK;
+        if (y < 0f) {
+            // Keep the horizon colour a little below the equator so the black lower hemisphere
+            // starts lower (a ~8 degree haze band).
+            float t = -y / 0.15f;
+            t = t * t * (3f - 2f * t);
+            return lerpColor(fogColor, SKY_BLACK, t);
+        }
         float t = Math.min(1f, y / 0.18f);
         t = t * t * (3f - 2f * t);
         return lerpColor(fogColor, skyColor, t);
@@ -2294,8 +2317,8 @@ public final class Gpu3DMap {
             skyMesh.close();
             skyMesh = null;
         }
-        final int latSteps = 36;
-        final int lonSteps = 48;
+        final int latSteps = 60;
+        final int lonSteps = 72;
         float radius = SKY_RADIUS;
         ByteBufferBuilder alloc = new ByteBufferBuilder(1 << 16);
         BufferBuilder bb = BlazeCompat.newQuadBufferBuilder(alloc, DefaultVertexFormat.POSITION_COLOR);
@@ -2315,10 +2338,11 @@ public final class Gpu3DMap {
                 float xb1 = (float) (rb * Math.sin(tb)), zb1 = (float) (rb * Math.cos(tb));
                 int ca = below ? SKY_BLACK : skyVertexColor(ya, skyColor, fogColor);
                 int cb = below ? SKY_BLACK : skyVertexColor(yb, skyColor, fogColor);
-                addSkyVertex(bb, xa0 * radius, ya * radius, za0 * radius, ca);
-                addSkyVertex(bb, xa1 * radius, ya * radius, za1 * radius, ca);
-                addSkyVertex(bb, xb1 * radius, yb * radius, zb1 * radius, cb);
+                // Inward winding: from inside the sphere only the near surface survives culling.
                 addSkyVertex(bb, xb0 * radius, yb * radius, zb0 * radius, cb);
+                addSkyVertex(bb, xb1 * radius, yb * radius, zb1 * radius, cb);
+                addSkyVertex(bb, xa1 * radius, ya * radius, za1 * radius, ca);
+                addSkyVertex(bb, xa0 * radius, ya * radius, za0 * radius, ca);
                 vertices += 4;
             }
         }
@@ -2333,8 +2357,8 @@ public final class Gpu3DMap {
     }
 
     private static void drawSky(RenderPass pass, Matrix4f view, Map3D.Camera cam) {
-        if (skyMesh == null || MARKER_PIPELINE == null) return;
-        pass.setPipeline(MARKER_PIPELINE);
+        if (skyMesh == null || SKY_PIPELINE == null) return;
+        pass.setPipeline(SKY_PIPELINE);
         RenderSystem.bindDefaultUniforms(pass);
         Vector3f offset = new Vector3f((float) cam.eyeX(), (float) cam.eyeY(), (float) cam.eyeZ());
         GpuBufferSlice skyTransforms = RenderSystem.getDynamicUniforms()
