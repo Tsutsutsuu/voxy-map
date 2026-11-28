@@ -161,8 +161,8 @@ public class MapConfigScreen extends Screen {
         add(Group.MAP, "waterBlurRadius", VoxyMapConfig.WATER_BLUR_RADIUS, 1, 16, null);
         add(Group.MAP, "waterBlurPasses", VoxyMapConfig.WATER_BLUR_PASSES, 1, 5, null);
         add(Group.MAP, "denoise", VoxyMapConfig.DENOISE, 0, 0, null);
-        add(Group.MAP, "ignorePlantHeight", VoxyMapConfig.IGNORE_PLANT_HEIGHT, 0, 0, null);
         add(Group.MAP, "fillHoles", VoxyMapConfig.FILL_HOLES, 0, 0, null);
+        add(Group.MAP, "ignorePlantHeight", VoxyMapConfig.IGNORE_PLANT_HEIGHT, 0, 0, null);
         section(Group.MAP, "voxymap.config.section.xaero");
         add(Group.MAP, "xaeroWaypoints", VoxyMapConfig.XAERO_WAYPOINTS, 0, 0, null);
         add(Group.MAP, "xaeroWaypointLabels", VoxyMapConfig.XAERO_WAYPOINT_LABELS, 0, 0, null);
@@ -204,15 +204,15 @@ public class MapConfigScreen extends Screen {
         add(Group.THREE_D, "gpuTerrainSkirtDepth", VoxyMapConfig.GPU_TERRAIN_SKIRT_DEPTH, 0, 64, null);
         add(Group.THREE_D, "gpuTerrainHysteresisPct", VoxyMapConfig.GPU_TERRAIN_HYSTERESIS_PCT, 0, 50, null);
         add(Group.THREE_D, "gpuTerrainVoxel", VoxyMapConfig.GPU_TERRAIN_VOXEL, 0, 0, null);
+        section(Group.THREE_D, "voxymap.config.section.advanced3d");
         add(Group.THREE_D, "advanced3dRender", VoxyMapConfig.ADVANCED_3D_RENDER, 0, 0, null);
         add(Group.THREE_D, "advanced3dAo", VoxyMapConfig.ADVANCED_3D_AO, 0, 100, null);
         add(Group.THREE_D, "fogDistance3d", VoxyMapConfig.FOG_DISTANCE_3D, 1000, 60000, null);
+        add(Group.THREE_D, "autoHideContours3d", VoxyMapConfig.AUTO_HIDE_CONTOURS_3D, 0, 0, null);
         section(Group.THREE_D, "voxymap.config.section.markerLabels");
         add(Group.THREE_D, "playerMarkerHeight3d", VoxyMapConfig.PLAYER_MARKER_HEIGHT_3D, 0, 200, null);
         add(Group.THREE_D, "playerMarkerScale3d", VoxyMapConfig.PLAYER_MARKER_SCALE_3D, 0, 5, null);
         add(Group.THREE_D, "biomeLabel3dRange", VoxyMapConfig.BIOME_LABEL_3D_RANGE, 200, 20000, null);
-        section(Group.THREE_D, "voxymap.config.section.overlays");
-        add(Group.THREE_D, "autoHideContours3d", VoxyMapConfig.AUTO_HIDE_CONTOURS_3D, 0, 0, null);
 
         section(Group.PERFORMANCE, "voxymap.config.section.renderBudget");
         add(Group.PERFORMANCE, "gpuTextureBudgetMb", VoxyMapConfig.GPU_TEXTURE_BUDGET_MB, 32, 2048, null);
