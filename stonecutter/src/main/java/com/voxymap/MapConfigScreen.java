@@ -203,6 +203,7 @@ public class MapConfigScreen extends Screen {
         add(Group.THREE_D, "gpuTerrainHysteresisPct", VoxyMapConfig.GPU_TERRAIN_HYSTERESIS_PCT, 0, 50, null);
         add(Group.THREE_D, "gpuTerrainVoxel", VoxyMapConfig.GPU_TERRAIN_VOXEL, 0, 0, null);
         add(Group.THREE_D, "advanced3dRender", VoxyMapConfig.ADVANCED_3D_RENDER, 0, 0, null);
+        add(Group.THREE_D, "advanced3dAo", VoxyMapConfig.ADVANCED_3D_AO, 0, 100, null);
         section(Group.THREE_D, "voxymap.config.section.markerLabels");
         add(Group.THREE_D, "playerMarkerHeight3d", VoxyMapConfig.PLAYER_MARKER_HEIGHT_3D, 0, 200, null);
         add(Group.THREE_D, "playerMarkerScale3d", VoxyMapConfig.PLAYER_MARKER_SCALE_3D, 0, 5, null);

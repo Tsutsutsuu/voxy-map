@@ -144,6 +144,8 @@ public final class VoxyMapConfig {
      * ambient occlusion and contour lines. Off by default; the 2D map pipeline is untouched.
      */
     public static final Value<Boolean> ADVANCED_3D_RENDER = new Value<>("advanced3dRender", false);
+    /** Ambient-occlusion strength (0-100) for the experimental advanced 3D renderer; 0 = off. */
+    public static final Value<Integer> ADVANCED_3D_AO = new Value<>("advanced3dAo", 50);
     public static final Value<Integer> GPU3D_BUILD_THREADS = new Value<>("gpu3dBuildThreads", 0);
     public static final Value<Integer> GPU3D_BATCH_BUILD = new Value<>("gpu3dBatchBuild", 10);
     public static final Value<Boolean> KEEP_3D_TILES_IN_2D = new Value<>("keep3dTilesIn2d", true);

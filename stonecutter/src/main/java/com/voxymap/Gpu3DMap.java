@@ -725,6 +725,7 @@ public final class Gpu3DMap {
         stamp = stamp * 31L + sea;
         stamp = stamp * 31L + (VoxyMapConfig.GPU_TERRAIN_VOXEL.get() ? 1L : 0L);
         stamp = stamp * 31L + (VoxyMapConfig.ADVANCED_3D_RENDER.get() ? 1L : 0L);
+        stamp = stamp * 31L + VoxyMapConfig.ADVANCED_3D_AO.get();
         // Boundary vertices use the right/bottom neighbour's first pixel. Rebuild this tile when
         // those neighbours change, otherwise two tiles would keep different heights at the seam.
         for (int dz = 0; dz <= 1; dz++) {
@@ -788,6 +789,7 @@ public final class Gpu3DMap {
         boolean[] empty = s.emptyCell;
         boolean[] water = s.waterCell;
         boolean[] visited = s.visited;
+        int[] aoCell = s.aoCell;
         for (int i = 0; i < cells; i++) {
             h[i] = 0f;
             empty[i] = true;
@@ -822,6 +824,10 @@ public final class Gpu3DMap {
                 empty[i] = e;
                 water[i] = w;
                 h[i] = y;
+                aoCell[i] = 255;
+                if (!e && !w && VoxyMapConfig.ADVANCED_3D_RENDER.get()) {
+                    aoCell[i] = ambientOcclusion(tile, pixels, live, x, z, step, sea, vscale, texMax, y);
+                }
                 if (!e) {
                     minY = Math.min(minY, y);
                     maxY = Math.max(maxY, y);
@@ -834,10 +840,11 @@ public final class Gpu3DMap {
                 int i0 = gz * grid + gx;
                 if (empty[i0] || visited[i0]) continue;
                 float y0 = h[i0];
+                int ao0 = aoCell[i0];
                 int w = 1;
                 while (gx + w < grid) {
                     int i = i0 + w;
-                    if (empty[i] || visited[i] || h[i] != y0) break;
+                    if (empty[i] || visited[i] || h[i] != y0 || aoCell[i] != ao0) break;
                     w++;
                 }
                 int d = 1;
@@ -846,7 +853,7 @@ public final class Gpu3DMap {
                     int row = (gz + d) * grid + gx;
                     for (int k = 0; k < w; k++) {
                         int i = row + k;
-                        if (empty[i] || visited[i] || h[i] != y0) break outer;
+                        if (empty[i] || visited[i] || h[i] != y0 || aoCell[i] != ao0) break outer;
                     }
                     d++;
                 }
@@ -862,6 +869,7 @@ public final class Gpu3DMap {
                 double u1 = (sx + (double) Math.min(texMax + 1, (gx + w) * step)) / ATLAS;
                 double v0 = (sy + (double) Math.min(texMax + 1, gz * step)) / ATLAS;
                 double v1 = (sy + (double) Math.min(texMax + 1, (gz + d) * step)) / ATLAS;
+                s.curAo = ao0;
                 int b = s.vi;
                 voxAdd(s, wx0, y0, wz0, u0, v0);
                 voxAdd(s, wx0, y0, wz1, u0, v1);
@@ -896,6 +904,7 @@ public final class Gpu3DMap {
                 double u = (sx + Math.min(texMax, x) + 0.5) / ATLAS;
                 double v0 = (sy + (double) Math.min(texMax + 1, gz * step)) / ATLAS;
                 double v1 = (sy + (double) Math.min(texMax + 1, (gz + run) * step)) / ATLAS;
+                s.curAo = aoCell[i];
                 voxWallX(s, xEdge, ny, y, z0, z1, u, v0, v1, true);
                 minY = Math.min(minY, ny);
                 gz += run;
@@ -921,6 +930,7 @@ public final class Gpu3DMap {
                 double u = (sx + Math.min(texMax, x) + 0.5) / ATLAS;
                 double v0 = (sy + (double) Math.min(texMax + 1, gz * step)) / ATLAS;
                 double v1 = (sy + (double) Math.min(texMax + 1, (gz + run) * step)) / ATLAS;
+                s.curAo = aoCell[i];
                 voxWallX(s, xEdge, ny, y, z0, z1, u, v0, v1, true);
                 minY = Math.min(minY, ny);
                 gz += run;
@@ -949,6 +959,7 @@ public final class Gpu3DMap {
                 double v = (sy + Math.min(texMax, z) + 0.5) / ATLAS;
                 double u0 = (sx + (double) Math.min(texMax + 1, gx * step)) / ATLAS;
                 double u1 = (sx + (double) Math.min(texMax + 1, (gx + run) * step)) / ATLAS;
+                s.curAo = aoCell[i];
                 voxWallZ(s, zEdge, ny, y, x0, x1, v, u0, u1, true);
                 minY = Math.min(minY, ny);
                 gx += run;
@@ -974,6 +985,7 @@ public final class Gpu3DMap {
                 double v = (sy + Math.min(texMax, z) + 0.5) / ATLAS;
                 double u0 = (sx + (double) Math.min(texMax + 1, gx * step)) / ATLAS;
                 double u1 = (sx + (double) Math.min(texMax + 1, (gx + run) * step)) / ATLAS;
+                s.curAo = aoCell[i];
                 voxWallZ(s, zEdge, ny, y, x0, x1, v, u0, u1, true);
                 minY = Math.min(minY, ny);
                 gx += run;
@@ -1003,6 +1015,7 @@ public final class Gpu3DMap {
                 double u = (sx + Math.min(texMax, gx * step) + 0.5) / ATLAS;
                 double v = (sy + Math.min(texMax, gz * step) + 0.5) / ATLAS;
                 float low = (float) (y - skirt);
+                s.curAo = aoCell[i];
                 if (west) {
                     voxWallX(s, x0, low, y, z0, z1, u, v, v, true);
                 }
@@ -1029,7 +1042,7 @@ public final class Gpu3DMap {
         BufferBuilder bb = BlazeCompat.newBufferBuilder(alloc, format);
         for (int i = 0; i < s.vi; i++) {
             bb.addVertex(s.px[i], s.py[i], s.pz[i])
-                    .setColor(255, 255, 255, 255)
+                    .setColor(s.col[i], s.col[i], s.col[i], 255)
                     .setUv(s.pu[i], s.pv[i])
                     .setUv2(240, 240);
         }
@@ -1090,8 +1103,36 @@ public final class Gpu3DMap {
         return (float) ((top == VoxyMerge.NO_TOP ? floor + 1 : top + 1) * vscale);
     }
 
+    /**
+     * Ambient-occlusion tint (0..255) for one terrain sample. Valleys, cliff feet and wall corners
+     * are surrounded by higher columns, so they accumulate occlusion and get darker; the tint is
+     * written into the vertex colour (the shader multiplies the atlas colour by it).
+     */
+    private static int ambientOcclusion(LiveTileStore.LiveTile tile, long[] pixels, LiveTileStore live,
+                                        int x, int z, int step, int sea, double vscale, int texMax, float h) {
+        int strength = VoxyMapConfig.ADVANCED_3D_AO.get();
+        if (strength <= 0) return 255;
+        float occ = 0f;
+        int n = 0;
+        final int[] dx = {step, -step, 0, 0};
+        final int[] dz = {0, 0, step, -step};
+        for (int d = 0; d < 4; d++) {
+            float nh = voxNeighborY(tile, pixels, live, x + dx[d], z + dz[d], sea, vscale, texMax);
+            if (Float.isNaN(nh)) continue;
+            float diff = nh - h;
+            if (diff > 0f) occ += Math.min(1f, diff / Math.max(1f, step));
+            n++;
+        }
+        if (n == 0) return 255;
+        occ /= 4f;
+        float amount = (strength / 100f) * 0.75f * (occ / (occ + 0.6f));
+        float factor = 1f - amount;
+        return Math.max(40, Math.round(255f * factor));
+    }
+
     private static void voxAdd(VoxelScratch s, double x, double y, double z, double u, double v) {
         s.ensureVerts(s.vi + 1);
+        s.col[s.vi] = s.curAo;
         s.px[s.vi] = (float) x;
         s.py[s.vi] = (float) y;
         s.pz[s.vi] = (float) z;
@@ -1144,10 +1185,13 @@ public final class Gpu3DMap {
     private static final class VoxelScratch {
         private static final ThreadLocal<VoxelScratch> LOCAL = ThreadLocal.withInitial(VoxelScratch::new);
         float[] px = new float[0], py = new float[0], pz = new float[0], pu = new float[0], pv = new float[0];
+        int[] col = new int[0];
         int[] idx = new int[0];
         float[] h = new float[0];
         boolean[] emptyCell = new boolean[0], waterCell = new boolean[0], visited = new boolean[0];
+        int[] aoCell = new int[0];
         int vi, ii;
+        int curAo = 255;
 
         static VoxelScratch get(int cells) {
             VoxelScratch s = LOCAL.get();
@@ -1156,7 +1200,9 @@ public final class Gpu3DMap {
                 s.emptyCell = new boolean[cells];
                 s.waterCell = new boolean[cells];
                 s.visited = new boolean[cells];
+                s.aoCell = new int[cells];
             }
+            s.curAo = 255;
             s.vi = 0;
             s.ii = 0;
             return s;
@@ -1170,6 +1216,7 @@ public final class Gpu3DMap {
             pz = java.util.Arrays.copyOf(pz, cap);
             pu = java.util.Arrays.copyOf(pu, cap);
             pv = java.util.Arrays.copyOf(pv, cap);
+            col = java.util.Arrays.copyOf(col, cap);
         }
 
         void ensureIndices(int n) {
@@ -1184,6 +1231,7 @@ public final class Gpu3DMap {
         private static final ThreadLocal<BuildScratch> LOCAL = ThreadLocal.withInitial(BuildScratch::new);
 
         float[] px = new float[0], py = new float[0], pz = new float[0], pu = new float[0], pv = new float[0];
+        int[] col = new int[0];
         boolean[] empty = new boolean[0];
         int[] idx = new int[0];
 
@@ -1198,6 +1246,7 @@ public final class Gpu3DMap {
             s.pz = grow(s.pz, verts);
             s.pu = grow(s.pu, verts);
             s.pv = grow(s.pv, verts);
+            s.col = grow(s.col, verts);
             s.empty = grow(s.empty, (grid + 1) * (grid + 1));
             s.idx = grow(s.idx, indexLen);
             return s;
@@ -1212,6 +1261,7 @@ public final class Gpu3DMap {
             pz = new float[verts];
             pu = new float[verts];
             pv = new float[verts];
+            col = new int[verts];
             empty = new boolean[(grid + 1) * (grid + 1)];
             idx = new int[indexLen];
         }
@@ -1251,6 +1301,7 @@ public final class Gpu3DMap {
         float[] pv = scratch.pv;
         boolean[] empty = scratch.empty;
         int[] idx = scratch.idx;
+        int[] col = scratch.col;
         int vi = 0, ii = 0;
         int sx = (slot.index % COLS) * CELL;
         int sy = (slot.index / COLS) * CELL;
@@ -1290,6 +1341,10 @@ public final class Gpu3DMap {
                 pz[vi] = wz;
                 pu[vi] = (sx + Math.min(texMax, x) + 0.5f) / ATLAS;
                 pv[vi] = v;
+                col[vi] = 255;
+                if (!e && VoxyMapConfig.ADVANCED_3D_RENDER.get()) {
+                    col[vi] = ambientOcclusion(tile, pixels, live, x, z, step, sea, vscale, texMax, y);
+                }
                 empty[vi++] = e;
                 if (!e) {
                     minY = Math.min(minY, y);
@@ -1333,6 +1388,8 @@ public final class Gpu3DMap {
             addSkirtVertex(px, py, pz, pu, pv, ba, ta);
             int bb = vi + 1;
             addSkirtVertex(px, py, pz, pu, pv, bb, tb);
+            col[ba] = col[ta];
+            col[bb] = col[tb];
             vi += 2;
             minY = Math.min(minY, py[ba]);
             // Both windings: skirt visibility must not depend on tile border direction / culling.
@@ -1354,7 +1411,7 @@ public final class Gpu3DMap {
         for (int i = 0; i < vi; i++) {
             // BLOCK has no Normal element in 26.2, so setNormal would be a no-op.
             bb.addVertex(px[i], py[i], pz[i])
-                    .setColor(255, 255, 255, 255)
+                    .setColor(col[i], col[i], col[i], 255)
                     .setUv(pu[i], pv[i])
                     .setUv2(240, 240);
         }
