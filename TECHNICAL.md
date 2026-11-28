@@ -69,7 +69,7 @@ Voxy 的 RocksDB LOD 存储
 - 体素地形（`gpuTerrainVoxel`，默认开，仅近景 step）：每格一个平面顶 + 相邻更低时的垂直侧墙；顶面按"等高 + 同 AO"贪心合并，侧墙按朝向给系数 西 0.92 / 北 0.90 / 东 0.74 / 南 0.76，底部再暗 18%；瓦片边界只画一侧裙边，已有侧墙覆盖处跳过，避免共面 z-fighting。
 - 程序化屏幕空间天空：按 pitch + FOV 求地平线 NDC，画两条渐变带（天空色 → 地平线色 → 下方色），无几何体、无深度写入；相机离地 4000 格起在 1000 格内淡出为黑天并关闭雾。
 - 水平雾（blocks 样式）：终点固定为 `fogDistance3d`（默认 10000 格），起点随相机离地高度（约 2× 高度，最小 600），俯视 85° 附近平滑关闭；只取水平（XZ）距离，所以高度与俯仰不会加雾。
-- 版本门控：Fabric 26.1.2 没有雾 UBO、pipeline builder 也不同，`BlazeCompat.advanced3dSupported()` 返回 false → 程序化天空与水平雾关闭，**体素地形 / AO / 侧墙着色仍然生效**（走原版 SOLID_BLOCK，顶点色本来就会被乘进颜色）。
+- 版本适配：Fabric 26.1.2 的天空与雾只是**调用形状**不同（`RenderPipelines.BLOCK_SNIPPET` 取代 bind group layout、`CommandEncoder.mapBuffer` 取代 `GpuBuffer.map`、`pass.draw(firstVertex, vertexCount)` 的参数顺序与 26.2 相反），差异全部收在 `BlazeCompat`，三个平台观感一致。
 - 渲染距离带：贴地 +1.05 的黄色半透明三角带，64 段/边，每帧动态更新（混合、深度测试、不写深度）。
 - 3D 交互：左键平移、中键拖动环绕、滚轮缩放（插值）、空格缓动定位；射线拾取被地图像素 AABB 裁剪并校验空数据；玩家箭头浮在地形上方；3D 群系标签有距离限制、+6 抬高与地形/控件遮挡。
 - 相机：进入 3D 时"无缝俯视"（位置/比例与 2D 对应），退出时 0.22 s 旋转归位；中键短按=切换、按住拖动=环绕（按按压时长与位移区分）；可按世界记住 3D 相机。
@@ -144,7 +144,7 @@ cd mod
 - 仅主世界；下界/末地不建图。
 - 群系按注册名 path 反查，多个模组存在同名群系时可能显示错误（概率低）。
 - Fabric 26.1.2 在 `skipWorldRender` 下关图有极低概率触发 NVIDIA 驱动崩溃（26.2 无此问题）。
-- Fabric **26.1.2 目前没有高级 3D 的程序化天空与水平雾**（`advanced3dSupported()` = false）。注意这**不是 API 限制**：26.1.2 有 `RenderSystem.setShaderFog` / `FogRenderer.FOG_UBO_SIZE` / `MappableRingBuffer`，只是把 26.2 的 `GpuBuffer.map` 换成了 `CommandEncoder.mapBuffer`、把 pipeline 的 bind group layout 换成 `MATRICES_FOG_SNIPPET`/`withUniform`（见踩坑记录 §32）。体素地形、AO、侧墙着色照常生效；NeoForge 1.21.1 用自建 `voxymap:sky` / `voxymap:terrain3d` 补齐，观感与 26.2 一致。
+- Fabric **26.1.2 的程序化天空与水平雾自 2026-11-29 起已实现**（早期版本确实没有，旧记录已更正）：差异只是调用形状（`BLOCK_SNIPPET` 管线、`CommandEncoder.mapBuffer`、`pass.draw(firstVertex, vertexCount)`），见踩坑记录 §32.3；`:26.1-fabric` 实机自测（含俯仰截图）通过。
 - 3D 远景深度精度：Fabric 用私有 D32F；NeoForge 1.21.1 用主目标 24bit 定点深度，极远景若出现 z-fighting 可加大近平面或改自建 D32F。
 - 地图边缘黑色 = Voxy 还没存下数据（没装 SeedGen 时最常见），不是渲染错误；数据不更新先点「刷新」。
 
@@ -210,7 +210,7 @@ Voxy's RocksDB LOD storage
 - Voxel terrain (`gpuTerrainVoxel`, on by default, near step only): one flat top per cell plus vertical side walls wherever a neighbour is lower; tops are greedily merged over equal height + equal AO, walls use 西/west 0.92, north 0.90, east 0.74, south 0.76 face factors with a bottom that is another 18% darker. Each tile border emits exactly one skirt and skips it where a wall already covers the edge (no coplanar z-fighting).
 - Procedural screen-space sky: the horizon's NDC y is derived from pitch + FOV and drawn as two gradient bands (sky → horizon → below-horizon colour), with no geometry and no depth write. Above 4000 blocks of camera height it fades to a black sky over 1000 blocks and fog turns off.
 - Horizontal fog (blocks style only): the end distance is the fixed `fogDistance3d` (10000 blocks by default), the start follows the camera's height above the terrain (about 2× that height, minimum 600) and it fades out near the 85° top-down view. Only the horizontal (XZ) distance counts, so height and pitch never add fog.
-- Version gate: Fabric 26.1.2 has no fog UBO and a different pipeline builder, so `BlazeCompat.advanced3dSupported()` returns false and the procedural sky plus horizontal fog stay off; **voxel terrain, AO and side-wall shading still work** through the vanilla `SOLID_BLOCK` pipeline, whose shader already multiplies the vertex colour.
+- Version adaptation: Fabric 26.1.2's sky and fog only differ in **call shapes** (`RenderPipelines.BLOCK_SNIPPET` instead of bind-group layouts, `CommandEncoder.mapBuffer` instead of `GpuBuffer.map`, and `pass.draw(firstVertex, vertexCount)` has the reverse argument order), all isolated in `BlazeCompat`; the three platforms look the same.
 - Render-distance ribbon: translucent yellow triangle strip hugging the terrain at +1.05, 64 segments per side, updated every frame (blended, depth-tested, no depth write).
 - 3D interaction: left-drag pans, middle-drag orbits, wheel zoom (interpolated), Space eases the view to the player; ray picks are clipped to the map AABB and validate against empty data; the player arrow floats above the terrain; 3D biome labels have a distance limit, +6 lift, and terrain/control occlusion.
 - Camera: entering 3D is a seamless top-down match of the 2D view; exiting plays a 0.22 s rotation back; a short middle click toggles the view while a middle drag orbits (distinguished by press duration and movement). The 3D camera is remembered per world.
@@ -283,7 +283,7 @@ cd mod
 - Overworld only; the Nether/End are not mapped.
 - Biomes are resolved by registry path, so identically named biomes from different mods may collide (unlikely).
 - Fabric 26.1.2 has a rare, not-yet-reproducible NVIDIA driver crash when closing the map with `skipWorldRender` enabled; 26.2 is not affected.
-- Fabric **26.1.2 currently has no procedural sky or horizontal fog** in the advanced 3D view (`advanced3dSupported()` = false). This is **not an API limitation**: 26.1.2 has `RenderSystem.setShaderFog` / `FogRenderer.FOG_UBO_SIZE` / `MappableRingBuffer`; only two shapes differ (`GpuBuffer.map` → `CommandEncoder.mapBuffer`, bind-group layouts → `MATRICES_FOG_SNIPPET`/`withUniform`); see the pitfalls document §32. Voxel terrain, AO and side-wall shading still apply, and NeoForge 1.21.1 closes the gap with its own `voxymap:sky` / `voxymap:terrain3d` shaders.
+- Fabric **26.1.2 gained the procedural sky and horizontal fog on 2026-11-29** (earlier builds did not have them; the old note is corrected): only the call shapes differ (`BLOCK_SNIPPET` pipeline, `CommandEncoder.mapBuffer`, reversed `pass.draw(firstVertex, vertexCount)`), see the pitfalls document §32.3; the `:26.1-fabric` in-game self-test with a tilted 3D screenshot passes.
 - 3D far-depth precision: Fabric uses a private D32F attachment; NeoForge 1.21.1 uses the main target's 24-bit fixed-point depth. If far terrain ever z-fights, raise the near plane or move the pass to a private D32F target.
 - Black map edges mean Voxy has no data there yet (most common without SeedGen) — not a rendering error. If the data changed but the map looks old, press **Refresh**.
 
