@@ -99,6 +99,9 @@ public final class Gpu3DMap {
     /** Fixed clear-noon overworld colours: no weather, daylight or biome variation. */
     private static final int CLEAR_SKY_COLOR = 0xFF79A7FF;
     private static final int CLEAR_FOG_COLOR = 0xFFC0D8FF;
+    /** Above this camera height (with a 500 block fade) fog is off and the sky goes black. */
+    private static final float HIGH_CAMERA_START = 4000f;
+    private static final float HIGH_CAMERA_FADE = 500f;
     private static final int OVERLAY_SEGMENTS = 64;
     /** Upper bound on the marker tick-line segments (the buffer is sized for this). */
     private static final int MARKER_MAX_SEGMENTS = 96;
@@ -2429,16 +2432,8 @@ public final class Gpu3DMap {
         float fogEnd = 0f;
         float fogStrength = 0f;
         if (skyFog) {
-            // Fog end is FIXED (independent of camera distance/target): the map always keeps the
-            // same far fading range. Only the start changes.
-            float lookDownDeg = (float) Math.toDegrees(-cam.pitch);
-            // Vertical-down gate: fully off at the top-down camera, fading in over ~7 degrees of
-            // tilt so rotating up does not pop.
-            float gate = (85f - lookDownDeg) / 7f;
-            gate = Math.max(0f, Math.min(1f, gate));
-            fogStrength = gate * gate * (3f - 2f * gate);
             // Camera height above the terrain: close to the ground = more immersive, so fog starts
-            // closer for stronger near/far separation; high camera = fog starts farther away.
+            // closer; high camera = fog starts farther away.
             double groundY = cam.targetY;
             MapData data = MapData.INSTANCE;
             if (data.isReady()) {
@@ -2447,6 +2442,21 @@ public final class Gpu3DMap {
                 groundY = data.surfaceYAt(gx, gz);
             }
             float camHeight = Math.max(1f, (float) (cam.eyeY() - groundY));
+            // High camera: over a 500 block band above 4000 blocks, turn the fog off and fade the
+            // whole sky (above and below the horizon) to black.
+            float highFade = (camHeight - HIGH_CAMERA_START) / HIGH_CAMERA_FADE;
+            highFade = Math.max(0f, Math.min(1f, highFade));
+            highFade = highFade * highFade * (3f - 2f * highFade);
+            skyColor = lerpColor(CLEAR_SKY_COLOR, SKY_BLACK, highFade);
+            horizonColor = lerpColor(CLEAR_FOG_COLOR, SKY_BLACK, highFade);
+            // Fog end is FIXED (independent of camera distance/target): the map always keeps the
+            // same far fading range. Only the start changes.
+            float lookDownDeg = (float) Math.toDegrees(-cam.pitch);
+            // Vertical-down gate: fully off at the top-down camera, fading in over ~7 degrees of
+            // tilt so rotating up does not pop.
+            float gate = (85f - lookDownDeg) / 7f;
+            gate = Math.max(0f, Math.min(1f, gate));
+            fogStrength = gate * gate * (3f - 2f * gate) * (1f - highFade);
             fogEnd = Math.max(1000f, Math.min(60000f, VoxyMapConfig.FOG_DISTANCE_3D.get()));
             fogStart = Math.max(600f, Math.min(fogEnd * 0.85f, camHeight * 2.0f));
         }
