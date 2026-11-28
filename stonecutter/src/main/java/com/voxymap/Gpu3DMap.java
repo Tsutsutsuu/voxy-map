@@ -1371,10 +1371,16 @@ public final class Gpu3DMap {
         long buildStart = System.nanoTime();
         // Experimental voxel terrain is limited to the highest-precision (near) LOD step: larger
         // steps would render huge blocks and look worse than the smooth height field.
+        boolean nearLod = step <= meshStep(VoxyMapConfig.GPU_TERRAIN_NEAR_STEP.get());
         if (VoxyMapConfig.GPU_TERRAIN_VOXEL.get()
                 && step == meshStep(VoxyMapConfig.GPU_TERRAIN_NEAR_STEP.get())) {
             return buildVoxel(gen, key, stamp, slot, step, tile, pixels, live, pb, sea, vscale, buildStart);
         }
+        // AO is a near-range effect: mid/far LOD tiles cover only a few screen pixels per cell, so
+        // skip the per-vertex occlusion sampling there to save mesh-build time.
+        final boolean aoEnabled = nearLod
+                && VoxyMapConfig.ADVANCED_3D_RENDER.get()
+                && VoxyMapConfig.ADVANCED_3D_AO.get() > 0;
         int grid = LiveTileStore.TILE_PIXELS / step;
         int gw = grid + 1;
         int perim = 4 * grid;
@@ -1429,7 +1435,7 @@ public final class Gpu3DMap {
                 pv[vi] = v;
                 // The 3D atlas IS the 2D coloured texture (including its baked hillshade), so the
                 // vertex colour only carries the 3D-only AO; no per-vertex lighting any more.
-                col[vi] = !e && VoxyMapConfig.ADVANCED_3D_RENDER.get()
+                col[vi] = !e && aoEnabled
                         ? ambientOcclusion(tile, pixels, live, x, z, step, sea, vscale, texMax, y)
                         : 255;
                 empty[vi++] = e;

@@ -4769,7 +4769,7 @@ public final class MapData {
     private static final ThreadLocal<ContourScratch> CONTOUR_SCRATCH =
             ThreadLocal.withInitial(ContourScratch::new);
 
-    private boolean[] computeContour(int[] topArr, boolean[] isWaterPix, int[] smoothTop,
+    private boolean[] computeContour(int[] topArr, boolean[] isWaterPix,
                                      int lo, int hi, int w, int h, boolean enabled, int[] stackBuf) {
         boolean[] contour = new boolean[w * h];
         if (!enabled) return contour;
@@ -4781,7 +4781,6 @@ public final class MapData {
         if (contourRaw == null || contourRaw.length != cells) contourRaw = scratch.raw = new boolean[cells];
         else Arrays.fill(contourRaw, false);
         final int[] fTopA = topArr;
-        final int[] fSmoothT = smoothTop;
         final boolean[] fWaterC = isWaterPix;
         final boolean[] fRaw = contourRaw;
         final int fwC = w;
@@ -4793,13 +4792,15 @@ public final class MapData {
                 for (int x = 0; x < fwC; x++) {
                     int i = rowBase + x;
                     if (fTopA[i] == Integer.MIN_VALUE || fWaterC[i]) continue;
-                    int tv = fSmoothT[i];
+                    // raw (unsmoothed) heights: contours follow the actual terrain, not an
+                    // averaged height field (the same data the shading now uses)
+                    int tv = fTopA[i];
                     if (tv == Integer.MIN_VALUE) continue;
-                    if (x < fwC - 1 && fSmoothT[i + 1] != Integer.MIN_VALUE
-                            && Math.floorDiv(tv, fInterval) != Math.floorDiv(fSmoothT[i + 1], fInterval)) {
+                    if (x < fwC - 1 && fTopA[i + 1] != Integer.MIN_VALUE
+                            && Math.floorDiv(tv, fInterval) != Math.floorDiv(fTopA[i + 1], fInterval)) {
                         fRaw[i] = true;
-                    } else if (z < fhC - 1 && fSmoothT[i + fwC] != Integer.MIN_VALUE
-                            && Math.floorDiv(tv, fInterval) != Math.floorDiv(fSmoothT[i + fwC], fInterval)) {
+                    } else if (z < fhC - 1 && fTopA[i + fwC] != Integer.MIN_VALUE
+                            && Math.floorDiv(tv, fInterval) != Math.floorDiv(fTopA[i + fwC], fInterval)) {
                         fRaw[i] = true;
                     }
                 }
@@ -4844,7 +4845,7 @@ public final class MapData {
         boolean wantContour = contourOverride != null ? contourOverride : VoxyMapConfig.DRAW_CONTOURS.get();
         if (tc.contourEnabled != wantContour) {
             // contour visibility is a separate switch: rebuild only the mask, keep the terrain cache
-            tc.contour = computeContour(tc.topArr, tc.isWaterPix, tc.smoothTop, tc.lo, tc.hi,
+            tc.contour = computeContour(tc.topArr, tc.isWaterPix, tc.lo, tc.hi,
                     tc.width, tc.height, wantContour, null);
             tc.contourEnabled = wantContour;
         }
@@ -4863,9 +4864,6 @@ public final class MapData {
         final int sea;
         final String fingerprint;
         final int[] topArr;
-        final int[] floorArr;
-        final int[] smoothTop;
-        final int[] smoothFloor;
         final boolean[] isWaterPix;
         boolean[] contour;
         boolean contourEnabled;
@@ -4879,17 +4877,14 @@ public final class MapData {
         final int height;
         final int pixelBlocks;
 
-        TerrainCache(Snapshot snapshot, int sea, String fingerprint, int[] topArr, int[] floorArr,
-                     int[] smoothTop, int[] smoothFloor, boolean[] isWaterPix, boolean[] contour,
+        TerrainCache(Snapshot snapshot, int sea, String fingerprint, int[] topArr,
+                     boolean[] isWaterPix, boolean[] contour,
                      float[] depthMap, int lo, int hi, int rampLo, int rampHi,
                      boolean adaptive, int width, int height, int pixelBlocks) {
             this.snapshot = snapshot;
             this.sea = sea;
             this.fingerprint = fingerprint;
             this.topArr = topArr;
-            this.floorArr = floorArr;
-            this.smoothTop = smoothTop;
-            this.smoothFloor = smoothFloor;
             this.isWaterPix = isWaterPix;
             this.contour = contour;
             this.depthMap = depthMap;
@@ -5099,9 +5094,6 @@ public final class MapData {
         }
 
         progress = 87;
-        int[] smoothFloor = smooth(floorArr, w, h, scratch);
-        int[] smoothTop = smooth(topArr, w, h, scratch);
-
         progress = 89;
 
         // water depth: real where known; missing columns fall back to a deep percentile,
@@ -5374,9 +5366,9 @@ public final class MapData {
         // contour mask from the smoothed land height, then drop small fragments by connected-area size
         int contourInterval = Math.max(10, (hi - lo) / Math.max(1, VoxyMapConfig.CONTOUR_DENSITY.get()));
         boolean drawContours = contourOverride != null ? contourOverride : VoxyMapConfig.DRAW_CONTOURS.get();
-        boolean[] contour = computeContour(topArr, isWaterPix, smoothTop, lo, hi, w, h, drawContours, next);
+        boolean[] contour = computeContour(topArr, isWaterPix, lo, hi, w, h, drawContours, next);
 
-        TerrainCache built = new TerrainCache(s, sea, fp, topArr, floorArr, smoothTop, smoothFloor,
+        TerrainCache built = new TerrainCache(s, sea, fp, topArr,
                 isWaterPix, contour, depthMap, lo, hi, rampLo, rampHi,
                 adaptive || VoxyMapConfig.MIN_MAX_RAMP.get(), w, h, pixelBlocks);
         built.contourEnabled = drawContours;
@@ -5412,25 +5404,6 @@ public final class MapData {
         if (tv == NO_TOP) tv = fl != NO_SOLID ? fl : Integer.MIN_VALUE;
         if (tv == Integer.MIN_VALUE) return Integer.MIN_VALUE;
         return (tw && fl != NO_SOLID && fl < tv) ? fl : tv;
-    }
-
-    /** 3x3 average of the raw top/floor values around (x,z), matching {@link #smooth}. */
-    private static int smoothSample(long[] pixels, int x, int z, int w, int h, boolean top) {
-        int sum = 0, cnt = 0;
-        for (int dz = -1; dz <= 1; dz++) {
-            int zz = z + dz;
-            if (zz < 0 || zz >= h) continue;
-            for (int dx = -1; dx <= 1; dx++) {
-                int xx = x + dx;
-                if (xx < 0 || xx >= w) continue;
-                int v = top ? rawTop(pixels[zz * w + xx]) : rawFloor(pixels[zz * w + xx]);
-                if (v != Integer.MIN_VALUE) {
-                    sum += v;
-                    cnt++;
-                }
-            }
-        }
-        return cnt == 0 ? Integer.MIN_VALUE : sum / cnt;
     }
 
     /** Adaptive colour-ramp limits; mirrors the block in terrainFor. */
@@ -5576,16 +5549,6 @@ public final class MapData {
                 tc.isWaterPix[i] = rawWater(p);
             }
         }
-        // smoothing for the rectangle plus one pixel of context
-        int sx0 = Math.max(0, dx0 - 1), sz0 = Math.max(0, dz0 - 1);
-        int sx1 = Math.min(w - 1, dx1 + 1), sz1 = Math.min(h - 1, dz1 + 1);
-        for (int z = sz0; z <= sz1; z++) {
-            for (int x = sx0; x <= sx1; x++) {
-                int i = z * w + x;
-                tc.smoothTop[i] = smoothSample(built.pixels, x, z, w, h, true);
-                tc.smoothFloor[i] = smoothSample(built.pixels, x, z, w, h, false);
-            }
-        }
         // any ramp change recolours the whole map, so it must be rejected before touching colours
         int[] ramp = rampParams(tc.topArr, tc.isWaterPix, sea, w, h);
         if (ramp[0] != tc.lo || ramp[1] != tc.hi || ramp[2] != tc.rampLo || ramp[3] != tc.rampHi) {
@@ -5593,7 +5556,7 @@ public final class MapData {
             return null;
         }
         boolean[] oldContour = tc.contour;
-        boolean[] newContour = computeContour(tc.topArr, tc.isWaterPix, tc.smoothTop, tc.lo, tc.hi, w, h, contours, null);
+        boolean[] newContour = computeContour(tc.topArr, tc.isWaterPix, tc.lo, tc.hi, w, h, contours, null);
         // contour fragments are filtered by connected area, so a local edit can toggle a whole
         // contour line: include every changed mask pixel, or fall back when that area explodes
         int contourDiff = 0;
@@ -5620,8 +5583,8 @@ public final class MapData {
             return null;
         }
         tc.contour = newContour;
-        TerrainCache updated = new TerrainCache(built, sea, tc.fingerprint, tc.topArr, tc.floorArr, tc.smoothTop,
-                tc.smoothFloor, tc.isWaterPix, tc.contour, tc.depthMap, tc.lo, tc.hi, tc.rampLo, tc.rampHi,
+        TerrainCache updated = new TerrainCache(built, sea, tc.fingerprint, tc.topArr,
+                tc.isWaterPix, tc.contour, tc.depthMap, tc.lo, tc.hi, tc.rampLo, tc.rampHi,
                 tc.adaptive, w, h, built.pixelBlocks);
         updated.contourEnabled = contours;
         terrainCache = updated;
@@ -5841,54 +5804,7 @@ public final class MapData {
     }
 
 
-    private static int[] smooth(int[] arr, int w, int h, int[] tmp) {
-        if (tmp == null || tmp.length != arr.length) tmp = new int[arr.length];
-        int[] out = new int[arr.length];
-        final int[] fArr = arr;
-        final int[] fTmp = tmp;
-        final int[] fOut = out;
-        final int fw = w;
-        final int fh = h;
-        // Two separate banded passes with a latch barrier between them. Doing both passes inside a
-        // single parallelRows call let the vertical pass read the neighbour band's rows before that
-        // band had written its horizontal pass, which produced horizontal seams every band boundary.
-        parallelRows(h, (z0, z1) -> {
-            for (int z = z0; z < z1; z++) {
-                int row = z * fw;
-                for (int x = 0; x < fw; x++) {
-                    int sum = 0, cnt = 0;
-                    for (int dx = -1; dx <= 1; dx++) {
-                        int xx = x + dx;
-                        if (xx < 0 || xx >= fw) continue;
-                        int v = fArr[row + xx];
-                        if (v != Integer.MIN_VALUE) {
-                            sum += v;
-                            cnt++;
-                        }
-                    }
-                    fTmp[row + x] = cnt == 0 ? Integer.MIN_VALUE : sum / cnt;
-                }
-            }
-        });
-        parallelRows(h, (z0, z1) -> {
-            for (int z = z0; z < z1; z++) {
-                for (int x = 0; x < fw; x++) {
-                    int sum = 0, cnt = 0;
-                    for (int dz = -1; dz <= 1; dz++) {
-                        int zz = z + dz;
-                        if (zz < 0 || zz >= fh) continue;
-                        int v = fTmp[zz * fw + x];
-                        if (v != Integer.MIN_VALUE) {
-                            sum += v;
-                            cnt++;
-                        }
-                    }
-                    fOut[z * fw + x] = cnt == 0 ? Integer.MIN_VALUE : sum / cnt;
-                }
-            }
-        });
-        return out;
-    }
+
 }
 
 
