@@ -962,10 +962,21 @@ public final class Gpu3DMap {
             }
         }
         // ---- border skirt: hides cracks between neighbouring tiles with a different LOD step ----
+        // Emit exactly one curtain per tile boundary: this tile's west/north edge, and the east/south
+        // edge only when that neighbour is not loaded. Emitting from both sides used to draw two
+        // coincident curtains with different UVs, and the resulting z-fighting looked like dark seams
+        // along tile edges. Curtains are double sided so a LOD crack stays covered from both sides.
+        LiveTileStore.LiveTile eastN = live == null ? null : live.get(tile.tx + 1, tile.tz);
+        LiveTileStore.LiveTile southN = live == null ? null : live.get(tile.tx, tile.tz + 1);
         for (int gz = 0; gz < grid; gz++) {
             for (int gx = 0; gx < grid; gx++) {
                 int i = gz * grid + gx;
                 if (empty[i]) continue;
+                boolean west = gx == 0;
+                boolean east = gx == grid - 1 && eastN == null;
+                boolean north = gz == 0;
+                boolean south = gz == grid - 1 && southN == null;
+                if (!west && !east && !north && !south) continue;
                 float y = h[i];
                 double x0 = tile.minWX + (long) (gx * step) * pb;
                 double x1 = tile.minWX + (long) ((gx + 1) * step) * pb;
@@ -974,27 +985,21 @@ public final class Gpu3DMap {
                 double u = (sx + Math.min(texMax, gx * step) + 0.5) / ATLAS;
                 double v = (sy + Math.min(texMax, gz * step) + 0.5) / ATLAS;
                 float low = (float) (y - skirt);
-                boolean any = false;
-                if (gx == 0) {
-                    voxWallX(s, x0, low, y, z0, z1, u, v, v, false);
-                    any = true;
+                if (west) {
+                    voxWallX(s, x0, low, y, z0, z1, u, v, v, true);
                 }
-                if (gx == grid - 1) {
-                    voxWallX(s, x1, low, y, z0, z1, u, v, v, false);
-                    any = true;
+                if (east) {
+                    voxWallX(s, x1, low, y, z0, z1, u, v, v, true);
                 }
-                if (gz == 0) {
-                    voxWallZ(s, z0, low, y, x0, x1, v, u, u, false);
-                    any = true;
+                if (north) {
+                    voxWallZ(s, z0, low, y, x0, x1, v, u, u, true);
                 }
-                if (gz == grid - 1) {
-                    voxWallZ(s, z1, low, y, x0, x1, v, u, u, false);
-                    any = true;
+                if (south) {
+                    voxWallZ(s, z1, low, y, x0, x1, v, u, u, true);
                 }
-                if (any) minY = Math.min(minY, low);
+                minY = Math.min(minY, low);
             }
-        }
-        double cx = tile.minWX + LiveTileStore.TILE_PIXELS * pb * 0.5;
+        }        double cx = tile.minWX + LiveTileStore.TILE_PIXELS * pb * 0.5;
         double cz = tile.minWZ + LiveTileStore.TILE_PIXELS * pb * 0.5;
         if (s.ii == 0) {
             return new BuildResult(gen, key, stamp, slot, null, null, 0, step,
@@ -1024,12 +1029,39 @@ public final class Gpu3DMap {
                 System.nanoTime() - buildStart);
     }
 
-    /** Neighbour cell height for a voxel wall; NaN when the cell is empty/unloaded. */
+    /**
+     * Neighbour cell height for a voxel wall; NaN when the cell is empty/unloaded. Coordinates may be
+     * negative or >= 256: the pixel is then looked up in the neighbouring tile, so tile-border walls
+     * on the west/north sides work exactly like interior ones (the old version returned NaN there,
+     * which left a hole whenever the neighbouring tile was higher than this one).
+     */
     private static float voxNeighborY(LiveTileStore.LiveTile tile, long[] pixels, LiveTileStore live,
                                       int x, int z, int sea, double vscale, int texMax) {
-        if (x < 0 || z < 0) return Float.NaN;
-        long packed = sampleBoundary(tile, pixels, x, z,
-                Math.min(texMax, x), Math.min(texMax, z), live);
+        int ntx = tile.tx;
+        int ntz = tile.tz;
+        int nx = x;
+        int nz = z;
+        if (x < 0) {
+            ntx--;
+            nx += LiveTileStore.TILE_PIXELS;
+        } else if (x >= LiveTileStore.TILE_PIXELS) {
+            ntx++;
+            nx -= LiveTileStore.TILE_PIXELS;
+        }
+        if (z < 0) {
+            ntz--;
+            nz += LiveTileStore.TILE_PIXELS;
+        } else if (z >= LiveTileStore.TILE_PIXELS) {
+            ntz++;
+            nz -= LiveTileStore.TILE_PIXELS;
+        }
+        long[] src = pixels;
+        if (ntx != tile.tx || ntz != tile.tz) {
+            LiveTileStore.LiveTile n = live == null ? null : live.get(ntx, ntz);
+            if (n == null || n.pixels == null) return Float.NaN;
+            src = n.pixels;
+        }
+        long packed = src[nz * LiveTileStore.TILE_PIXELS + nx];
         int top = packed == VoxyMerge.LONG_EMPTY ? VoxyMerge.NO_TOP
                 : (int) ((packed >>> 24) & 0xFFFF) - 32768;
         int floor = packed == VoxyMerge.LONG_EMPTY ? VoxyMerge.NO_SOLID
