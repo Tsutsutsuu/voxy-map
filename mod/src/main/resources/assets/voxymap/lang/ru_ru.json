@@ -71,6 +71,7 @@
   "voxymap.config.biomeLabelBackground": "Фон названий биомов",
   "key.voxymap.center": "Центрировать на игроке",
   "key.category.voxymap.main": "Voxy Map",
+  "key.categories.voxymap": "Voxy Map",
   "voxymap.ui.overworldOnly": "Пока поддерживаются только LOD-карты Верхнего мира",
   "voxymap.config.desc.mapScale": "Масштаб по умолчанию для новых миров; каждый мир запоминает свой (1 = 1 блок на пиксель).",
   "voxymap.config.desc.maxLodLevel": "Наибольший уровень Voxy LOD для объединения (0-4)",

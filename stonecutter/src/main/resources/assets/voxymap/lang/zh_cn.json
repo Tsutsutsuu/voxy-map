@@ -139,6 +139,7 @@
   "voxymap.config.biomeLabelBackground": "群系标签背景",
   "key.voxymap.center": "对准玩家",
   "key.category.voxymap.main": "Voxy Map",
+  "key.categories.voxymap": "Voxy Map",
   "voxymap.ui.overworldOnly": "目前只支持绘制主世界 LOD 地图",
   "voxymap.config.desc.mapScale": "新存档的默认地图比例；每个存档会记住自己的比例（1 = 每像素 1 方块）。",
   "voxymap.config.desc.maxLodLevel": "读取的最高细节层级。",

@@ -71,6 +71,7 @@
   "voxymap.config.biomeLabelBackground": "Hintergrund der Biomnamen",
   "key.voxymap.center": "Auf Spieler zentrieren",
   "key.category.voxymap.main": "Voxy Map",
+  "key.categories.voxymap": "Voxy Map",
   "voxymap.ui.overworldOnly": "Derzeit werden nur LOD-Karten der Oberwelt unterstützt",
   "voxymap.config.desc.mapScale": "Standard-Maßstab für neue Welten; jede Welt merkt sich ihren eigenen (1 = 1 Block pro Pixel).",
   "voxymap.config.desc.maxLodLevel": "Höchste zu vermischende Voxy-LOD-Stufe (0-4)",

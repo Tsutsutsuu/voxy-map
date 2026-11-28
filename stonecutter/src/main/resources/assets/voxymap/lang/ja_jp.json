@@ -71,6 +71,7 @@
   "voxymap.config.biomeLabelBackground": "バイオーム名の背景",
   "key.voxymap.center": "プレイヤーに合わせる",
   "key.category.voxymap.main": "Voxy マップ",
+  "key.categories.voxymap": "Voxy マップ",
   "voxymap.ui.overworldOnly": "現在は通常世界の LOD マップのみ対応しています",
   "voxymap.config.desc.mapScale": "新しいワールドの初期マップ縮尺。ワールドごとに保存されます（1 = 1ピクセルあたり1ブロック）。",
   "voxymap.config.desc.maxLodLevel": "結合する最高の Voxy LOD レベル（0-4）",

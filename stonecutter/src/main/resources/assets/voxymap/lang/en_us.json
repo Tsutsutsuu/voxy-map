@@ -139,6 +139,7 @@
   "voxymap.config.biomeLabelBackground": "Biome label background",
   "key.voxymap.center": "Center on player",
   "key.category.voxymap.main": "Voxy Map",
+  "key.categories.voxymap": "Voxy Map",
   "voxymap.ui.overworldOnly": "Only overworld LOD maps are supported for now",
   "voxymap.config.desc.mapScale": "Default map scale for new worlds; each world remembers its own (1 = one block per pixel).",
   "voxymap.config.desc.maxLodLevel": "Highest LOD level to read.",

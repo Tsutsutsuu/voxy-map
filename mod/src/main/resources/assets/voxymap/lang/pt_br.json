@@ -71,6 +71,7 @@
   "voxymap.config.biomeLabelBackground": "Fundo das etiquetas de bioma",
   "key.voxymap.center": "Centralizar no jogador",
   "key.category.voxymap.main": "Voxy Map",
+  "key.categories.voxymap": "Voxy Map",
   "voxymap.ui.overworldOnly": "Por enquanto apenas mapas LOD do Overworld são suportados",
   "voxymap.config.desc.mapScale": "Escala padrão para mundos novos; cada mundo lembra a sua (1 = 1 bloco por pixel).",
   "voxymap.config.desc.maxLodLevel": "Nível Voxy LOD mais alto para mesclar (0-4)",
