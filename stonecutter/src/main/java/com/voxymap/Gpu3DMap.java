@@ -99,9 +99,9 @@ public final class Gpu3DMap {
     /** Fixed clear-noon overworld colours: no weather, daylight or biome variation. */
     private static final int CLEAR_SKY_COLOR = 0xFF79A7FF;
     private static final int CLEAR_FOG_COLOR = 0xFFC0D8FF;
-    /** Above this camera height (with a 500 block fade) fog is off and the sky goes black. */
+    /** Above this camera height (with a 1000 block fade) fog is off and the sky goes black. */
     private static final float HIGH_CAMERA_START = 4000f;
-    private static final float HIGH_CAMERA_FADE = 500f;
+    private static final float HIGH_CAMERA_FADE = 1000f;
     private static final int OVERLAY_SEGMENTS = 64;
     /** Upper bound on the marker tick-line segments (the buffer is sized for this). */
     private static final int MARKER_MAX_SEGMENTS = 96;
@@ -1970,7 +1970,7 @@ public final class Gpu3DMap {
                 boolean buried = mid < surface;
                 boolean hidden = buried || occluded[occIndex];
                 // light grey: still readable over the terrain, but clearly "behind something"
-                int c = hidden ? 0xBE : 0xFF;
+                int c = hidden ? 0xB2 : 0xFF;
                 putOverlayVertex(vb, px + rx * halfW, y0, pz + rz * halfW, c, c, c, 0xFF);
                 putOverlayVertex(vb, px - rx * halfW, y0, pz - rz * halfW, c, c, c, 0xFF);
                 putOverlayVertex(vb, px + rx * halfW, y1, pz + rz * halfW, c, c, c, 0xFF);
@@ -1993,7 +1993,7 @@ public final class Gpu3DMap {
                 double mid = (y0 + y1) * 0.5;
                 int occIndex = Math.max(0, Math.min(occSamples - 1,
                         (int) Math.round((mid - bottom) / spanLen * (occSamples - 1))));
-                int c = occluded[occIndex] ? 0xBE : 0xFF;   // never buried: below feet, above surface
+                int c = occluded[occIndex] ? 0xB2 : 0xFF;   // never buried: below feet, above surface
                 putOverlayVertex(vb, px + rx * halfW, y0, pz + rz * halfW, c, c, c, 0xFF);
                 putOverlayVertex(vb, px - rx * halfW, y0, pz - rz * halfW, c, c, c, 0xFF);
                 putOverlayVertex(vb, px + rx * halfW, y1, pz + rz * halfW, c, c, c, 0xFF);
@@ -2482,7 +2482,7 @@ public final class Gpu3DMap {
                 groundY = data.surfaceYAt(gx, gz);
             }
             float camHeight = Math.max(1f, (float) (cam.eyeY() - groundY));
-            // High camera: over a 500 block band above 4000 blocks, turn the fog off and fade the
+            // High camera: over a 1000 block band above 4000 blocks, turn the fog off and fade the
             // whole sky (above and below the horizon) to black.
             float highFade = (camHeight - HIGH_CAMERA_START) / HIGH_CAMERA_FADE;
             highFade = Math.max(0f, Math.min(1f, highFade));
