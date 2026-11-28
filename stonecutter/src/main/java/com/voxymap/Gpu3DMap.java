@@ -825,13 +825,64 @@ public final class Gpu3DMap {
                 water[i] = w;
                 h[i] = y;
                 aoCell[i] = 255;
-                if (!e && !w && VoxyMapConfig.ADVANCED_3D_RENDER.get()) {
-                    aoCell[i] = ambientOcclusion(tile, pixels, live, x, z, step, sea, vscale, texMax, y);
-                }
                 if (!e) {
                     minY = Math.min(minY, y);
                     maxY = Math.max(maxY, y);
                 }
+            }
+        }
+        // ---- per-corner AO (Minecraft-style smooth lighting) ----
+        // Corner brightness is derived from the columns around the shared grid-vertex position, so
+        // the two cells that meet at a vertex compute the same value and the interpolation across
+        // each face is continuous. Water stays at full brightness for now.
+        int gw2 = grid + 2;
+        float[] hb = s.hb;
+        if (hb.length < gw2 * gw2) {
+            hb = new float[gw2 * gw2];
+            s.hb = hb;
+        }
+        for (int bgz = 0; bgz < gw2; bgz++) {
+            int bz = (bgz - 1) * step;
+            for (int bgx = 0; bgx < gw2; bgx++) {
+                int bx = (bgx - 1) * step;
+                float hv;
+                if (bgx >= 1 && bgx <= grid && bgz >= 1 && bgz <= grid) {
+                    hv = h[(bgz - 1) * grid + (bgx - 1)];
+                } else {
+                    hv = voxNeighborY(tile, pixels, live, bx, bz, sea, vscale, texMax);
+                }
+                hb[bgz * gw2 + bgx] = Float.isNaN(hv) ? Float.NEGATIVE_INFINITY : hv;
+            }
+        }
+        byte[] vao = s.vao;
+        if (vao.length < cells * 4) {
+            vao = new byte[cells * 4];
+            s.vao = vao;
+        }
+        int aoStrength = VoxyMapConfig.ADVANCED_3D_AO.get();
+        boolean useAo = VoxyMapConfig.ADVANCED_3D_RENDER.get() && aoStrength > 0;
+        for (int gz = 0; gz < grid; gz++) {
+            for (int gx = 0; gx < grid; gx++) {
+                int i = gz * grid + gx;
+                int base = i * 4;
+                if (!useAo || empty[i] || water[i]) {
+                    vao[base] = (byte) 0xFF;
+                    vao[base + 1] = (byte) 0xFF;
+                    vao[base + 2] = (byte) 0xFF;
+                    vao[base + 3] = (byte) 0xFF;
+                    aoCell[i] = 255;
+                    continue;
+                }
+                float cy = h[i];
+                int c0 = cornerAo(hb, gw2, gx, gz, 0, cy, aoStrength);
+                int c1 = cornerAo(hb, gw2, gx, gz, 1, cy, aoStrength);
+                int c2 = cornerAo(hb, gw2, gx, gz, 2, cy, aoStrength);
+                int c3 = cornerAo(hb, gw2, gx, gz, 3, cy, aoStrength);
+                vao[base] = (byte) c0;
+                vao[base + 1] = (byte) c1;
+                vao[base + 2] = (byte) c2;
+                vao[base + 3] = (byte) c3;
+                aoCell[i] = (c0 + c1 + c2 + c3) / 4;
             }
         }
         // ---- flat tops, greedily merged over equal-height cells ----
@@ -840,11 +891,11 @@ public final class Gpu3DMap {
                 int i0 = gz * grid + gx;
                 if (empty[i0] || visited[i0]) continue;
                 float y0 = h[i0];
-                int ao0 = aoCell[i0];
+                int aoBase = i0 * 4;
                 int w = 1;
                 while (gx + w < grid) {
                     int i = i0 + w;
-                    if (empty[i] || visited[i] || h[i] != y0 || aoCell[i] != ao0) break;
+                    if (empty[i] || visited[i] || h[i] != y0 || !sameAo(vao, i, i0)) break;
                     w++;
                 }
                 int d = 1;
@@ -853,7 +904,7 @@ public final class Gpu3DMap {
                     int row = (gz + d) * grid + gx;
                     for (int k = 0; k < w; k++) {
                         int i = row + k;
-                        if (empty[i] || visited[i] || h[i] != y0 || aoCell[i] != ao0) break outer;
+                        if (empty[i] || visited[i] || h[i] != y0 || !sameAo(vao, i, i0)) break outer;
                     }
                     d++;
                 }
@@ -869,11 +920,14 @@ public final class Gpu3DMap {
                 double u1 = (sx + (double) Math.min(texMax + 1, (gx + w) * step)) / ATLAS;
                 double v0 = (sy + (double) Math.min(texMax + 1, gz * step)) / ATLAS;
                 double v1 = (sy + (double) Math.min(texMax + 1, (gz + d) * step)) / ATLAS;
-                s.curAo = ao0;
                 int b = s.vi;
+                s.curAo = vao[aoBase] & 0xFF;
                 voxAdd(s, wx0, y0, wz0, u0, v0);
+                s.curAo = vao[aoBase + 2] & 0xFF;
                 voxAdd(s, wx0, y0, wz1, u0, v1);
+                s.curAo = vao[aoBase + 1] & 0xFF;
                 voxAdd(s, wx1, y0, wz0, u1, v0);
+                s.curAo = vao[aoBase + 3] & 0xFF;
                 voxAdd(s, wx1, y0, wz1, u1, v1);
                 voxTri(s, b, b + 1, b + 2);
                 voxTri(s, b + 2, b + 1, b + 3);
@@ -1103,6 +1157,33 @@ public final class Gpu3DMap {
         return (float) ((top == VoxyMerge.NO_TOP ? floor + 1 : top + 1) * vscale);
     }
 
+    /** Per-corner AO brightness (0..255) for one voxel top-face vertex. */
+    private static int cornerAo(float[] hb, int gw2, int gx, int gz, int corner, float y, int strength) {
+        int vx = gx + ((corner == 1 || corner == 3) ? 1 : 0);
+        int vz = gz + ((corner == 2 || corner == 3) ? 1 : 0);
+        int occ = 0;
+        if (hb[vz * gw2 + vx] > y + 0.5f) occ++;
+        if (hb[vz * gw2 + vx + 1] > y + 0.5f) occ++;
+        if (hb[(vz + 1) * gw2 + vx] > y + 0.5f) occ++;
+        if (hb[(vz + 1) * gw2 + vx + 1] > y + 0.5f) occ++;
+        float factor = switch (occ) {
+            case 1 -> 0.75f;
+            case 2 -> 0.55f;
+            case 3 -> 0.40f;
+            default -> 1f;
+        };
+        float f = 1f - (strength / 100f) * (1f - factor);
+        return Math.max(40, Math.round(255f * f));
+    }
+
+    /** True when two cells share exactly the same per-corner AO pattern (used by greedy merging). */
+    private static boolean sameAo(byte[] vao, int a, int b) {
+        int oa = a * 4;
+        int ob = b * 4;
+        return vao[oa] == vao[ob] && vao[oa + 1] == vao[ob + 1]
+                && vao[oa + 2] == vao[ob + 2] && vao[oa + 3] == vao[ob + 3];
+    }
+
     /**
      * Ambient-occlusion tint (0..255) for one terrain sample. Valleys, cliff feet and wall corners
      * are surrounded by higher columns, so they accumulate occlusion and get darker; the tint is
@@ -1190,6 +1271,8 @@ public final class Gpu3DMap {
         float[] h = new float[0];
         boolean[] emptyCell = new boolean[0], waterCell = new boolean[0], visited = new boolean[0];
         int[] aoCell = new int[0];
+        float[] hb = new float[0];
+        byte[] vao = new byte[0];
         int vi, ii;
         int curAo = 255;
 
@@ -1201,6 +1284,9 @@ public final class Gpu3DMap {
                 s.waterCell = new boolean[cells];
                 s.visited = new boolean[cells];
                 s.aoCell = new int[cells];
+                int g = (int) Math.round(Math.sqrt(cells));
+                s.hb = new float[(g + 2) * (g + 2)];
+                s.vao = new byte[cells * 4];
             }
             s.curAo = 255;
             s.vi = 0;
