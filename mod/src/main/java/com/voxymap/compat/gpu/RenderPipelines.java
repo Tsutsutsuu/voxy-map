@@ -77,6 +77,39 @@ public final class RenderPipelines {
             false  // a downward-facing quad must not be culled
     );
 
+    /**
+     * Advanced 3D terrain: identical vertex layout and GL state to {@link #TERRAIN}, but with the
+     * {@code voxymap:terrain3d} shader, which adds the horizontal (distance-only) fog. The fog
+     * parameters are the vanilla {@code FogStart}/{@code FogEnd}/{@code FogColor} uniforms, filled
+     * by {@code ShaderInstance.setDefaultUniforms} from the {@code RenderSystem} fog state.
+     */
+    public static final RenderPipeline TERRAIN3D = new RenderPipeline(
+            "voxymap_gpu3d_terrain3d",
+            ResourceLocation.fromNamespaceAndPath("voxymap", "terrain3d"),
+            DefaultVertexFormat.POSITION_TEX_COLOR,
+            VertexFormat.Mode.TRIANGLES,
+            false, // opaque atlas, same as TERRAIN
+            true,  // depth test
+            true,  // depth write
+            true   // cull back faces: matches 26.2's SOLID_BLOCK
+    );
+
+    /**
+     * Procedural screen-space sky: NDC positions carrying the gradient colours, no depth test and no
+     * depth write, translucent. It is drawn as the first thing in the 3D pass and the terrain then
+     * covers it wherever geometry exists (26.2 has the same pipeline as {@code voxymap:sky}).
+     */
+    public static final RenderPipeline SKY = new RenderPipeline(
+            "voxymap_gpu3d_sky",
+            ResourceLocation.fromNamespaceAndPath("voxymap", "sky"),
+            DefaultVertexFormat.POSITION_COLOR,
+            VertexFormat.Mode.TRIANGLES,
+            true,  // translucent: the bands blend over the dark 3D background
+            false, // no depth test: the sky is behind everything
+            false, // no depth write
+            false  // screen-space geometry: never cull
+    );
+
     private RenderPipelines() {
     }
 }

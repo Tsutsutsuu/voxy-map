@@ -1,0 +1,8 @@
+{
+    "vertex": "voxymap:sky",
+    "fragment": "voxymap:sky",
+    "samplers": [],
+    "uniforms": [
+        { "name": "ColorModulator", "type": "float", "count": 4, "values": [ 1.0, 1.0, 1.0, 1.0 ] }
+    ]
+}

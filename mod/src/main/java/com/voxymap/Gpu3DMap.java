@@ -86,6 +86,24 @@ public final class Gpu3DMap {
     private static final RenderPipeline MARKER_PIPELINE = RenderPipelines.MARKER;
     /** World-space textured quad for the player arrow (vanilla {@code position_tex}). */
     private static final RenderPipeline ARROW_PIPELINE = RenderPipelines.ARROW;
+    // ---- advanced 3D look: procedural screen-space sky + horizontal fog (26.2 parity) ----------
+    /** Fixed clear-noon overworld colours: no weather, daylight or biome variation. */
+    private static final int CLEAR_SKY_COLOR = 0xFF79A7FF;
+    private static final int CLEAR_FOG_COLOR = 0xFFC0D8FF;
+    private static final int SKY_BLACK = 0xFF050508;
+    /** Above this camera height (with a 500 block fade) fog is off and the sky goes black. */
+    private static final float HIGH_CAMERA_START = 4000f;
+    private static final float HIGH_CAMERA_FADE = 500f;
+    /** POSITION_COLOR vertex: 3 floats + RGBA, i.e. the same 16-byte stride as the overlay. */
+    private static final int SKY_VERTEX_BYTES = 16;
+    private static final int SKY_MAX_VERTS = 12;
+    /** Draw order of the sky triangles: sequential indices, so indexCount == vertexCount. */
+    private static final int[] SKY_INDICES = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11};
+    private static GpuBuffer skyVbo;
+    private static GpuBuffer skyIbo;
+    private static ByteBuffer skyStaging;
+    private static int skyVertexCount;
+
     private static final int OVERLAY_SEGMENTS = 64;
     /**
      * The ribbon + marker line + arrow are rebuilt every frame, so they live in a 3-slot ring.
@@ -693,6 +711,10 @@ public final class Gpu3DMap {
         // level, vertical scale) would keep the old mesh forever.
         stamp = stamp * 31L + (Long.rotateLeft(Double.doubleToLongBits(vscale), 17) ^ (long) pb);
         stamp = stamp * 31L + sea;
+        stamp = stamp * 31L + (VoxyMapConfig.GPU_TERRAIN_VOXEL.get() ? 1L : 0L);
+        stamp = stamp * 31L + (VoxyMapConfig.ADVANCED_3D_RENDER.get() ? 1L : 0L);
+        stamp = stamp * 31L + (VoxyMapConfig.IGNORE_PLANT_HEIGHT.get() ? 1L : 0L);
+        stamp = stamp * 31L + VoxyMapConfig.ADVANCED_3D_AO.get();
         // Boundary vertices use the right/bottom neighbour's first pixel. Rebuild this tile when
         // those neighbours change, otherwise two tiles would keep different heights at the seam.
         for (int dz = 0; dz <= 1; dz++) {
@@ -709,7 +731,8 @@ public final class Gpu3DMap {
     private static long overlayKey() {
         // Edge pixels are derived per tile, so only the toggle state matters. There is no
         // viewport-sized biome edge texture to rebuild as the 3D camera moves.
-        return MapData.INSTANCE.isBiomeOverlay() ? 1L : 0L;
+        return (MapData.INSTANCE.isBiomeOverlay() ? 1L : 0L)
+                | (VoxyMapConfig.ADVANCED_3D_RENDER.get() ? 2L : 0L);
     }
 
     private static void refreshOverlayTextures(LiveTileStore live) {
@@ -734,6 +757,574 @@ public final class Gpu3DMap {
     }
 
     /**
+     * Experimental voxel mesher (1.21.1 port of the 26.2 implementation): one flat top per cell plus
+     * vertical side walls wherever a neighbour is lower. Tops are greedily merged over equal-height,
+     * equal-AO cells; walls use a direction-dependent face factor and a vertical gradient, which is
+     * what gives the blocks-style look its "sun from the north-west" shading.
+     */
+    private static BuildResult buildVoxel(int gen, long key, long stamp, Slot slot, int step,
+                                          LiveTileStore.LiveTile tile, long[] pixels,
+                                          LiveTileStore live, int pb, int sea, double vscale,
+                                          long buildStart) {
+        final int grid = LiveTileStore.TILE_PIXELS / step;
+        final int cells = grid * grid;
+        final int texMax = LiveTileStore.TILE_PIXELS - 1;
+        final int sx = (slot.index % COLS) * CELL;
+        final int sy = (slot.index / COLS) * CELL;
+        final double skirt = VoxyMapConfig.GPU_TERRAIN_SKIRT_DEPTH.get();
+        VoxelScratch s = VoxelScratch.get(cells);
+        float[] h = s.h;
+        boolean[] empty = s.emptyCell;
+        boolean[] water = s.waterCell;
+        boolean[] visited = s.visited;
+        int[] aoCell = s.aoCell;
+        for (int i = 0; i < cells; i++) {
+            h[i] = 0f;
+            empty[i] = true;
+            water[i] = false;
+            visited[i] = false;
+        }
+        double minY = Double.MAX_VALUE, maxY = -Double.MAX_VALUE;
+        for (int gz = 0; gz < grid; gz++) {
+            int z = gz * step;
+            for (int gx = 0; gx < grid; gx++) {
+                int x = gx * step;
+                long packed = sampleBoundary(tile, pixels, x, z,
+                        Math.min(texMax, x), Math.min(texMax, z), live);
+                int i = gz * grid + gx;
+                int top = packed == VoxyMerge.LONG_EMPTY ? VoxyMerge.NO_TOP
+                        : (int) ((packed >>> 24) & 0xFFFF) - 32768;
+                int floor = packed == VoxyMerge.LONG_EMPTY ? VoxyMerge.NO_SOLID
+                        : (int) (packed & 0xFFFF) - 32768;
+                top = SurfaceClassTable.INSTANCE.adjustedTop(packed, top);
+                boolean e = packed == VoxyMerge.LONG_EMPTY
+                        || (top == VoxyMerge.NO_TOP && floor == VoxyMerge.NO_SOLID);
+                boolean w = !e && (packed & (1L << 52)) != 0;
+                float y;
+                if (e) {
+                    y = 0f;
+                } else if (top == VoxyMerge.NO_TOP) {
+                    // top-face convention, same as the smooth mesher (land is one block above the
+                    // stored block Y; water already uses its surface level)
+                    y = (float) ((floor + 1) * vscale);
+                } else {
+                    y = (float) ((top + 1) * vscale);
+                }
+                empty[i] = e;
+                water[i] = w;
+                h[i] = y;
+                aoCell[i] = 255;
+                if (!e) {
+                    minY = Math.min(minY, y);
+                    maxY = Math.max(maxY, y);
+                }
+            }
+        }
+        // ---- per-corner AO (Minecraft-style smooth lighting) ----
+        // Corner brightness is derived from the columns around the shared grid-vertex position, so
+        // the two cells that meet at a vertex compute the same value and the interpolation across
+        // each face is continuous. Water stays at full brightness for now.
+        int aoStrength = VoxyMapConfig.ADVANCED_3D_AO.get();
+        boolean advancedLook = VoxyMapConfig.ADVANCED_3D_RENDER.get();
+        boolean useAo = advancedLook && aoStrength > 0;
+        byte[] vao = s.vao;
+        if (vao.length < cells * 4) {
+            vao = new byte[cells * 4];
+            s.vao = vao;
+        }
+        if (!useAo) {
+            // No AO requested: skip the border height ring and the per-cell corner pass entirely.
+            java.util.Arrays.fill(vao, 0, cells * 4, (byte) 0xFF);
+            java.util.Arrays.fill(aoCell, 0, cells, 255);
+        } else {
+            int gw2 = grid + 2;
+            float[] hb = s.hb;
+            if (hb.length < gw2 * gw2) {
+                hb = new float[gw2 * gw2];
+                s.hb = hb;
+            }
+            for (int bgz = 0; bgz < gw2; bgz++) {
+                int bz = (bgz - 1) * step;
+                for (int bgx = 0; bgx < gw2; bgx++) {
+                    int bx = (bgx - 1) * step;
+                    float hv;
+                    if (bgx >= 1 && bgx <= grid && bgz >= 1 && bgz <= grid) {
+                        hv = h[(bgz - 1) * grid + (bgx - 1)];
+                    } else {
+                        hv = voxNeighborY(tile, pixels, live, bx, bz, sea, vscale, texMax);
+                    }
+                    hb[bgz * gw2 + bgx] = Float.isNaN(hv) ? Float.NEGATIVE_INFINITY : hv;
+                }
+            }
+            for (int gz = 0; gz < grid; gz++) {
+                for (int gx = 0; gx < grid; gx++) {
+                    int i = gz * grid + gx;
+                    int base = i * 4;
+                    if (empty[i] || water[i]) {
+                        vao[base] = (byte) 0xFF;
+                        vao[base + 1] = (byte) 0xFF;
+                        vao[base + 2] = (byte) 0xFF;
+                        vao[base + 3] = (byte) 0xFF;
+                        aoCell[i] = 255;
+                        continue;
+                    }
+                    float cy = h[i];
+                    int c0 = cornerAo(hb, gw2, gx, gz, 0, cy, aoStrength);
+                    int c1 = cornerAo(hb, gw2, gx, gz, 1, cy, aoStrength);
+                    int c2 = cornerAo(hb, gw2, gx, gz, 2, cy, aoStrength);
+                    int c3 = cornerAo(hb, gw2, gx, gz, 3, cy, aoStrength);
+                    vao[base] = (byte) c0;
+                    vao[base + 1] = (byte) c1;
+                    vao[base + 2] = (byte) c2;
+                    vao[base + 3] = (byte) c3;
+                    aoCell[i] = (c0 + c1 + c2 + c3) / 4;
+                }
+            }
+        }
+        // ---- flat tops, greedily merged over equal-height cells ----
+        for (int gz = 0; gz < grid; gz++) {
+            for (int gx = 0; gx < grid; gx++) {
+                int i0 = gz * grid + gx;
+                if (empty[i0] || visited[i0]) continue;
+                float y0 = h[i0];
+                int aoBase = i0 * 4;
+                int w = 1;
+                while (gx + w < grid) {
+                    int i = i0 + w;
+                    if (empty[i] || visited[i] || h[i] != y0 || !sameAo(vao, i, i0)) break;
+                    w++;
+                }
+                int d = 1;
+                outer:
+                while (gz + d < grid) {
+                    int row = (gz + d) * grid + gx;
+                    for (int k = 0; k < w; k++) {
+                        int i = row + k;
+                        if (empty[i] || visited[i] || h[i] != y0 || !sameAo(vao, i, i0)) break outer;
+                    }
+                    d++;
+                }
+                for (int zz = 0; zz < d; zz++) {
+                    int row = (gz + zz) * grid + gx;
+                    for (int xx = 0; xx < w; xx++) visited[row + xx] = true;
+                }
+                double wx0 = tile.minWX + (long) (gx * step) * pb;
+                double wx1 = tile.minWX + (long) ((gx + w) * step) * pb;
+                double wz0 = tile.minWZ + (long) (gz * step) * pb;
+                double wz1 = tile.minWZ + (long) ((gz + d) * step) * pb;
+                double u0 = (sx + (double) Math.min(texMax + 1, gx * step)) / ATLAS;
+                double u1 = (sx + (double) Math.min(texMax + 1, (gx + w) * step)) / ATLAS;
+                double v0 = (sy + (double) Math.min(texMax + 1, gz * step)) / ATLAS;
+                double v1 = (sy + (double) Math.min(texMax + 1, (gz + d) * step)) / ATLAS;
+                int b = s.vi;
+                s.curAo = vao[aoBase] & 0xFF;
+                voxAdd(s, wx0, y0, wz0, u0, v0);
+                s.curAo = vao[aoBase + 2] & 0xFF;
+                voxAdd(s, wx0, y0, wz1, u0, v1);
+                s.curAo = vao[aoBase + 1] & 0xFF;
+                voxAdd(s, wx1, y0, wz0, u1, v0);
+                s.curAo = vao[aoBase + 3] & 0xFF;
+                voxAdd(s, wx1, y0, wz1, u1, v1);
+                voxTri(s, b, b + 1, b + 2);
+                voxTri(s, b + 2, b + 1, b + 3);
+            }
+        }
+        // ---- vertical side walls (every column, water included: its stored surface can be above or
+        // below sea level) ----
+        for (int gx = 0; gx < grid; gx++) {
+            int x = gx * step;
+            // east faces (constant X, merged along Z); the west face of the neighbour tile is skipped,
+            // so drawing the boundary here does not duplicate walls between tiles.
+            int gz = 0;
+            while (gz < grid) {
+                int i = gz * grid + gx;
+                if (empty[i]) { gz++; continue; }
+                float y = h[i];
+                float ny = voxNeighborY(tile, pixels, live, x + step, gz * step, sea, vscale, texMax);
+                if (Float.isNaN(ny) || ny >= y) { gz++; continue; }
+                int run = 1;
+                while (gz + run < grid) {
+                    int j = (gz + run) * grid + gx;
+                    if (empty[j] || h[j] != y) break;
+                    float n2 = voxNeighborY(tile, pixels, live, x + step, (gz + run) * step, sea, vscale, texMax);
+                    if (!(Float.isNaN(n2) || n2 != ny) && n2 < y) { run++; } else { break; }
+                }
+                double z0 = tile.minWZ + (long) (gz * step) * pb;
+                double z1 = tile.minWZ + (long) ((gz + run) * step) * pb;
+                double xEdge = tile.minWX + (long) ((gx + 1) * step) * pb;
+                double u = (sx + Math.min(texMax, x) + 0.5) / ATLAS;
+                double v0 = (sy + (double) Math.min(texMax + 1, gz * step)) / ATLAS;
+                double v1 = (sy + (double) Math.min(texMax + 1, (gz + run) * step)) / ATLAS;
+                wallColors(s, aoCell[i], 0.74f, advancedLook); // east: shadow side
+                voxWallX(s, xEdge, ny, y, z0, z1, u, v0, v1, true);
+                minY = Math.min(minY, ny);
+                gz += run;
+            }
+            // west faces
+            gz = 0;
+            while (gz < grid) {
+                int i = gz * grid + gx;
+                if (empty[i]) { gz++; continue; }
+                float y = h[i];
+                float ny = voxNeighborY(tile, pixels, live, x - step, gz * step, sea, vscale, texMax);
+                if (Float.isNaN(ny) || ny >= y) { gz++; continue; }
+                int run = 1;
+                while (gz + run < grid) {
+                    int j = (gz + run) * grid + gx;
+                    if (empty[j] || h[j] != y) break;
+                    float n2 = voxNeighborY(tile, pixels, live, x - step, (gz + run) * step, sea, vscale, texMax);
+                    if (!(Float.isNaN(n2) || n2 != ny) && n2 < y) { run++; } else { break; }
+                }
+                double z0 = tile.minWZ + (long) (gz * step) * pb;
+                double z1 = tile.minWZ + (long) ((gz + run) * step) * pb;
+                double xEdge = tile.minWX + (long) (gx * step) * pb;
+                double u = (sx + Math.min(texMax, x) + 0.5) / ATLAS;
+                double v0 = (sy + (double) Math.min(texMax + 1, gz * step)) / ATLAS;
+                double v1 = (sy + (double) Math.min(texMax + 1, (gz + run) * step)) / ATLAS;
+                wallColors(s, aoCell[i], 0.92f, advancedLook); // west: lit side
+                voxWallX(s, xEdge, ny, y, z0, z1, u, v0, v1, true);
+                minY = Math.min(minY, ny);
+                gz += run;
+            }
+        }
+        for (int gz = 0; gz < grid; gz++) {
+            int z = gz * step;
+            // south faces
+            int gx = 0;
+            while (gx < grid) {
+                int i = gz * grid + gx;
+                if (empty[i]) { gx++; continue; }
+                float y = h[i];
+                float ny = voxNeighborY(tile, pixels, live, gx * step, z + step, sea, vscale, texMax);
+                if (Float.isNaN(ny) || ny >= y) { gx++; continue; }
+                int run = 1;
+                while (gx + run < grid) {
+                    int j = gz * grid + gx + run;
+                    if (empty[j] || h[j] != y) break;
+                    float n2 = voxNeighborY(tile, pixels, live, (gx + run) * step, z + step, sea, vscale, texMax);
+                    if (!(Float.isNaN(n2) || n2 != ny) && n2 < y) { run++; } else { break; }
+                }
+                double x0 = tile.minWX + (long) (gx * step) * pb;
+                double x1 = tile.minWX + (long) ((gx + run) * step) * pb;
+                double zEdge = tile.minWZ + (long) ((gz + 1) * step) * pb;
+                double v = (sy + Math.min(texMax, z) + 0.5) / ATLAS;
+                double u0 = (sx + (double) Math.min(texMax + 1, gx * step)) / ATLAS;
+                double u1 = (sx + (double) Math.min(texMax + 1, (gx + run) * step)) / ATLAS;
+                wallColors(s, aoCell[i], 0.76f, advancedLook); // south: shadow side
+                voxWallZ(s, zEdge, ny, y, x0, x1, v, u0, u1, true);
+                minY = Math.min(minY, ny);
+                gx += run;
+            }
+            // north faces
+            gx = 0;
+            while (gx < grid) {
+                int i = gz * grid + gx;
+                if (empty[i]) { gx++; continue; }
+                float y = h[i];
+                float ny = voxNeighborY(tile, pixels, live, gx * step, z - step, sea, vscale, texMax);
+                if (Float.isNaN(ny) || ny >= y) { gx++; continue; }
+                int run = 1;
+                while (gx + run < grid) {
+                    int j = gz * grid + gx + run;
+                    if (empty[j] || h[j] != y) break;
+                    float n2 = voxNeighborY(tile, pixels, live, (gx + run) * step, z - step, sea, vscale, texMax);
+                    if (!(Float.isNaN(n2) || n2 != ny) && n2 < y) { run++; } else { break; }
+                }
+                double x0 = tile.minWX + (long) (gx * step) * pb;
+                double x1 = tile.minWX + (long) ((gx + run) * step) * pb;
+                double zEdge = tile.minWZ + (long) (gz * step) * pb;
+                double v = (sy + Math.min(texMax, z) + 0.5) / ATLAS;
+                double u0 = (sx + (double) Math.min(texMax + 1, gx * step)) / ATLAS;
+                double u1 = (sx + (double) Math.min(texMax + 1, (gx + run) * step)) / ATLAS;
+                wallColors(s, aoCell[i], 0.90f, advancedLook); // north: lit side
+                voxWallZ(s, zEdge, ny, y, x0, x1, v, u0, u1, true);
+                minY = Math.min(minY, ny);
+                gx += run;
+            }
+        }
+        // ---- border skirt: hides cracks between neighbouring tiles with a different LOD step ----
+        // Emit exactly one curtain per tile boundary: this tile's west/north edge, and the east/south
+        // edge only when that neighbour is not loaded. Emitting from both sides used to draw two
+        // coincident curtains with different UVs, and the resulting z-fighting looked like dark seams
+        // along tile edges. Curtains are double sided so a LOD crack stays covered from both sides.
+        LiveTileStore.LiveTile eastN = live == null ? null : live.get(tile.tx + 1, tile.tz);
+        LiveTileStore.LiveTile southN = live == null ? null : live.get(tile.tx, tile.tz + 1);
+        for (int gz = 0; gz < grid; gz++) {
+            for (int gx = 0; gx < grid; gx++) {
+                int i = gz * grid + gx;
+                if (empty[i]) continue;
+                boolean west = gx == 0;
+                boolean east = gx == grid - 1 && eastN == null;
+                boolean north = gz == 0;
+                boolean south = gz == grid - 1 && southN == null;
+                if (!west && !east && !north && !south) continue;
+                float y = h[i];
+                double x0 = tile.minWX + (long) (gx * step) * pb;
+                double x1 = tile.minWX + (long) ((gx + 1) * step) * pb;
+                double z0 = tile.minWZ + (long) (gz * step) * pb;
+                double z1 = tile.minWZ + (long) ((gz + 1) * step) * pb;
+                double u = (sx + Math.min(texMax, gx * step) + 0.5) / ATLAS;
+                double v = (sy + Math.min(texMax, gz * step) + 0.5) / ATLAS;
+                float low = (float) (y - skirt);
+                wallColors(s, aoCell[i], 0.605f, advancedLook); // skirt
+                // On the west/north edges the skirt is always emitted, but the regular wall loop may
+                // already have drawn a wall here when the neighbouring tile is lower. Drawing both
+                // puts two coplanar surfaces at the same edge (z-fighting). Skip the skirt where the
+                // wall already covers the height difference.
+                boolean westWall = false;
+                boolean northWall = false;
+                if (west) {
+                    float nwy = voxNeighborY(tile, pixels, live, gx * step - step, gz * step, sea, vscale, texMax);
+                    westWall = !Float.isNaN(nwy) && nwy < y;
+                }
+                if (north) {
+                    float nnz = voxNeighborY(tile, pixels, live, gx * step, gz * step - step, sea, vscale, texMax);
+                    northWall = !Float.isNaN(nnz) && nnz < y;
+                }
+                if (west && !westWall) {
+                    voxWallX(s, x0, low, y, z0, z1, u, v, v, true);
+                }
+                if (east) {
+                    voxWallX(s, x1, low, y, z0, z1, u, v, v, true);
+                }
+                if (north && !northWall) {
+                    voxWallZ(s, z0, low, y, x0, x1, v, u, u, true);
+                }
+                if (south) {
+                    voxWallZ(s, z1, low, y, x0, x1, v, u, u, true);
+                }
+                minY = Math.min(minY, low);
+            }
+        }
+        double cx = tile.minWX + LiveTileStore.TILE_PIXELS * pb * 0.5;
+        double cz = tile.minWZ + LiveTileStore.TILE_PIXELS * pb * 0.5;
+        if (s.ii == 0) {
+            return new BuildResult(gen, key, stamp, slot, null, null, 0, step,
+                    cx, cz, 0.0, 0.0, System.nanoTime() - buildStart);
+        }
+        // 1.21.1 vertex layout: Position, UV0, Color (POSITION_TEX_COLOR); no UV2/Normal.
+        ByteBufferBuilder alloc = new ByteBufferBuilder(Math.max(1024, s.vi * 24));
+        BufferBuilder bb = new BufferBuilder(alloc, VertexFormat.Mode.TRIANGLES,
+                DefaultVertexFormat.POSITION_TEX_COLOR);
+        for (int i = 0; i < s.vi; i++) {
+            bb.addVertex(s.px[i], s.py[i], s.pz[i])
+                    .setColor(s.col[i], s.col[i], s.col[i], 255)
+                    .setUv(s.pu[i], s.pv[i]);
+        }
+        MeshData mesh = bb.buildOrThrow();
+        ByteBuffer vdata = copy(mesh.vertexBuffer());
+        mesh.close();
+        alloc.close();
+        ByteBuffer idata = ByteBuffer.allocateDirect(s.ii * Integer.BYTES).order(ByteOrder.nativeOrder());
+        for (int i = 0; i < s.ii; i++) idata.putInt(s.idx[i]);
+        idata.flip();
+        return new BuildResult(gen, key, stamp, slot, vdata, idata, s.ii, step,
+                cx, cz,
+                minY == Double.MAX_VALUE ? 0.0 : minY,
+                maxY == -Double.MAX_VALUE ? 0.0 : maxY,
+                System.nanoTime() - buildStart);
+    }
+
+    /**
+     * Neighbour cell height for a voxel wall; NaN when the cell is empty/unloaded. Coordinates may be
+     * negative or >= 256: the pixel is then looked up in the neighbouring tile, so tile-border walls
+     * on the west/north sides work exactly like interior ones.
+     */
+    private static float voxNeighborY(LiveTileStore.LiveTile tile, long[] pixels, LiveTileStore live,
+                                      int x, int z, int sea, double vscale, int texMax) {
+        int ntx = tile.tx;
+        int ntz = tile.tz;
+        int nx = x;
+        int nz = z;
+        if (x < 0) {
+            ntx--;
+            nx += LiveTileStore.TILE_PIXELS;
+        } else if (x >= LiveTileStore.TILE_PIXELS) {
+            ntx++;
+            nx -= LiveTileStore.TILE_PIXELS;
+        }
+        if (z < 0) {
+            ntz--;
+            nz += LiveTileStore.TILE_PIXELS;
+        } else if (z >= LiveTileStore.TILE_PIXELS) {
+            ntz++;
+            nz -= LiveTileStore.TILE_PIXELS;
+        }
+        long[] src = pixels;
+        if (ntx != tile.tx || ntz != tile.tz) {
+            LiveTileStore.LiveTile n = live == null ? null : live.get(ntx, ntz);
+            if (n == null || n.pixels == null) return Float.NaN;
+            src = n.pixels;
+        }
+        long packed = src[nz * LiveTileStore.TILE_PIXELS + nx];
+        int top = packed == VoxyMerge.LONG_EMPTY ? VoxyMerge.NO_TOP
+                : (int) ((packed >>> 24) & 0xFFFF) - 32768;
+        int floor = packed == VoxyMerge.LONG_EMPTY ? VoxyMerge.NO_SOLID
+                : (int) (packed & 0xFFFF) - 32768;
+        top = SurfaceClassTable.INSTANCE.adjustedTop(packed, top);
+        if (packed == VoxyMerge.LONG_EMPTY || (top == VoxyMerge.NO_TOP && floor == VoxyMerge.NO_SOLID)) {
+            return Float.NaN;
+        }
+        return (float) ((top == VoxyMerge.NO_TOP ? floor + 1 : top + 1) * vscale);
+    }
+
+    /** Per-corner AO brightness (0..255) for one voxel top-face vertex. */
+    private static int cornerAo(float[] hb, int gw2, int gx, int gz, int corner, float y, int strength) {
+        int vx = gx + ((corner == 1 || corner == 3) ? 1 : 0);
+        int vz = gz + ((corner == 2 || corner == 3) ? 1 : 0);
+        int occ = 0;
+        if (hb[vz * gw2 + vx] > y + 0.5f) occ++;
+        if (hb[vz * gw2 + vx + 1] > y + 0.5f) occ++;
+        if (hb[(vz + 1) * gw2 + vx] > y + 0.5f) occ++;
+        if (hb[(vz + 1) * gw2 + vx + 1] > y + 0.5f) occ++;
+        float factor = switch (occ) {
+            case 1 -> 0.75f;
+            case 2 -> 0.55f;
+            case 3 -> 0.40f;
+            default -> 1f;
+        };
+        float f = 1f - (strength / 100f) * (1f - factor);
+        return Math.max(40, Math.round(255f * f));
+    }
+
+    /** True when two cells share exactly the same per-corner AO pattern (used by greedy merging). */
+    private static boolean sameAo(byte[] vao, int a, int b) {
+        int oa = a * 4;
+        int ob = b * 4;
+        return vao[oa] == vao[ob] && vao[oa + 1] == vao[ob + 1]
+                && vao[oa + 2] == vao[ob + 2] && vao[oa + 3] == vao[ob + 3];
+    }
+
+    /** AO byte for an occlusion value (0..1); shared by the smooth-vertex AO pass. */
+    private static int aoColour(float occ, int strength) {
+        float amount = (strength / 100f) * 0.75f * (occ / (occ + 0.6f));
+        return Math.max(40, Math.round(255f * (1f - amount)));
+    }
+
+    /**
+     * Wall colours: a direction-dependent face factor (sun comes from the north-west, so the west
+     * and north walls are the lit sides) plus a vertical gradient (bottom ~18% darker than the top).
+     */
+    private static void wallColors(VoxelScratch s, int ao, float factor, boolean advancedLook) {
+        if (!advancedLook) {
+            s.curAoLow = 255;
+            s.curAoHigh = 255;
+            return;
+        }
+        int high = Math.max(40, Math.round(ao * factor));
+        s.curAoHigh = high;
+        s.curAoLow = Math.max(40, Math.round(high * 0.82f));
+    }
+
+    private static void voxAdd(VoxelScratch s, double x, double y, double z, double u, double v) {
+        s.ensureVerts(s.vi + 1);
+        s.col[s.vi] = s.curAo;
+        s.px[s.vi] = (float) x;
+        s.py[s.vi] = (float) y;
+        s.pz[s.vi] = (float) z;
+        s.pu[s.vi] = (float) u;
+        s.pv[s.vi] = (float) v;
+        s.vi++;
+    }
+
+    private static void voxTri(VoxelScratch s, int a, int b, int c) {
+        s.ensureIndices(s.ii + 3);
+        s.idx[s.ii] = a;
+        s.idx[s.ii + 1] = b;
+        s.idx[s.ii + 2] = c;
+        s.ii += 3;
+    }
+
+    /** Vertical wall on a constant-X plane (east/west or a skirt face); both windings when cullSafe. */
+    private static void voxWallX(VoxelScratch s, double xEdge, float yLow, float yHigh,
+                                 double z0, double z1, double u, double v0, double v1, boolean cullSafe) {
+        int b = s.vi;
+        s.curAo = s.curAoLow;
+        voxAdd(s, xEdge, yLow, z0, u, v0);
+        voxAdd(s, xEdge, yLow, z1, u, v1);
+        s.curAo = s.curAoHigh;
+        voxAdd(s, xEdge, yHigh, z0, u, v0);
+        voxAdd(s, xEdge, yHigh, z1, u, v1);
+        voxTri(s, b, b + 1, b + 2);
+        voxTri(s, b + 2, b + 1, b + 3);
+        if (cullSafe) {
+            voxTri(s, b + 2, b + 1, b);
+            voxTri(s, b + 3, b + 1, b + 2);
+        }
+    }
+
+    /** Vertical wall on a constant-Z plane (south/north or a skirt face); both windings when cullSafe. */
+    private static void voxWallZ(VoxelScratch s, double zEdge, float yLow, float yHigh,
+                                 double x0, double x1, double v, double u0, double u1, boolean cullSafe) {
+        int b = s.vi;
+        s.curAo = s.curAoLow;
+        voxAdd(s, x0, yLow, zEdge, u0, v);
+        voxAdd(s, x1, yLow, zEdge, u1, v);
+        s.curAo = s.curAoHigh;
+        voxAdd(s, x0, yHigh, zEdge, u0, v);
+        voxAdd(s, x1, yHigh, zEdge, u1, v);
+        voxTri(s, b, b + 1, b + 2);
+        voxTri(s, b + 2, b + 1, b + 3);
+        if (cullSafe) {
+            voxTri(s, b + 2, b + 1, b);
+            voxTri(s, b + 3, b + 1, b + 2);
+        }
+    }
+
+    /** Growable per-thread scratch for the voxel mesher (vertex/index/level arrays). */
+    private static final class VoxelScratch {
+        private static final ThreadLocal<VoxelScratch> LOCAL = ThreadLocal.withInitial(VoxelScratch::new);
+        float[] px = new float[0], py = new float[0], pz = new float[0], pu = new float[0], pv = new float[0];
+        int[] col = new int[0];
+        int[] idx = new int[0];
+        float[] h = new float[0];
+        boolean[] emptyCell = new boolean[0], waterCell = new boolean[0], visited = new boolean[0];
+        int[] aoCell = new int[0];
+        float[] hb = new float[0];
+        byte[] vao = new byte[0];
+        int vi, ii;
+        int curAo = 255;
+        int curAoLow = 255;
+        int curAoHigh = 255;
+
+        static VoxelScratch get(int cells) {
+            VoxelScratch s = LOCAL.get();
+            if (s.h.length < cells) {
+                s.h = new float[cells];
+                s.emptyCell = new boolean[cells];
+                s.waterCell = new boolean[cells];
+                s.visited = new boolean[cells];
+                s.aoCell = new int[cells];
+                int g = (int) Math.round(Math.sqrt(cells));
+                s.hb = new float[(g + 2) * (g + 2)];
+                s.vao = new byte[cells * 4];
+            }
+            s.curAo = 255;
+            s.curAoLow = 255;
+            s.curAoHigh = 255;
+            s.vi = 0;
+            s.ii = 0;
+            return s;
+        }
+
+        void ensureVerts(int n) {
+            if (px.length >= n) return;
+            int cap = Math.max(4096, (int) (n * 1.5));
+            px = java.util.Arrays.copyOf(px, cap);
+            py = java.util.Arrays.copyOf(py, cap);
+            pz = java.util.Arrays.copyOf(pz, cap);
+            pu = java.util.Arrays.copyOf(pu, cap);
+            pv = java.util.Arrays.copyOf(pv, cap);
+            col = java.util.Arrays.copyOf(col, cap);
+        }
+
+        void ensureIndices(int n) {
+            if (idx.length >= n) return;
+            idx = java.util.Arrays.copyOf(idx, Math.max(4096, (int) (n * 1.5)));
+        }
+    }
+
+    /**
      * Reusable per-worker scratch for the mesh arrays. step>=4 tiles are built many times per
      * session, so caching their arrays avoids ~100 KB of garbage per build; step 1/2 tiles are rare
      * and larger, so they still allocate (keeping memory bounded per thread).
@@ -744,6 +1335,7 @@ public final class Gpu3DMap {
         private static final ThreadLocal<BuildScratch> LOCAL = ThreadLocal.withInitial(BuildScratch::new);
 
         float[] px = new float[0], py = new float[0], pz = new float[0], pu = new float[0], pv = new float[0];
+        int[] col = new int[0];
         boolean[] empty = new boolean[0];
         int[] idx = new int[0];
 
@@ -758,6 +1350,7 @@ public final class Gpu3DMap {
             s.pz = grow(s.pz, verts);
             s.pu = grow(s.pu, verts);
             s.pv = grow(s.pv, verts);
+            s.col = grow(s.col, verts);
             s.empty = grow(s.empty, (grid + 1) * (grid + 1));
             s.idx = grow(s.idx, indexLen);
             return s;
@@ -772,6 +1365,7 @@ public final class Gpu3DMap {
             pz = new float[verts];
             pu = new float[verts];
             pv = new float[verts];
+            col = new int[verts];
             empty = new boolean[(grid + 1) * (grid + 1)];
             idx = new int[indexLen];
         }
@@ -793,6 +1387,18 @@ public final class Gpu3DMap {
                                      LiveTileStore.LiveTile tile, long[] pixels, int[] rgb,
                                      LiveTileStore live, int pb, int sea, double vscale) {
         long buildStart = System.nanoTime();
+        // Experimental voxel terrain is limited to the highest-precision (near) LOD step: larger
+        // steps would render huge blocks and look worse than the smooth height field.
+        boolean nearLod = step <= meshStep(VoxyMapConfig.GPU_TERRAIN_NEAR_STEP.get());
+        if (VoxyMapConfig.GPU_TERRAIN_VOXEL.get()
+                && step == meshStep(VoxyMapConfig.GPU_TERRAIN_NEAR_STEP.get())) {
+            return buildVoxel(gen, key, stamp, slot, step, tile, pixels, live, pb, sea, vscale, buildStart);
+        }
+        // AO is a near-range effect: mid/far LOD tiles cover only a few screen pixels per cell, so
+        // skip the per-vertex occlusion sampling there to save mesh-build time.
+        final boolean aoEnabled = nearLod
+                && VoxyMapConfig.ADVANCED_3D_RENDER.get()
+                && VoxyMapConfig.ADVANCED_3D_AO.get() > 0;
         int grid = LiveTileStore.TILE_PIXELS / step;
         int gw = grid + 1;
         int perim = 4 * grid;
@@ -805,6 +1411,7 @@ public final class Gpu3DMap {
         float[] pv = scratch.pv;
         boolean[] empty = scratch.empty;
         int[] idx = scratch.idx;
+        int[] col = scratch.col;
         int vi = 0, ii = 0;
         int sx = (slot.index % COLS) * CELL;
         int sy = (slot.index / COLS) * CELL;
@@ -826,27 +1433,80 @@ public final class Gpu3DMap {
                         : (int) ((packed >>> 24) & 0xFFFF) - 32768;
                 int floor = packed == VoxyMerge.LONG_EMPTY ? VoxyMerge.NO_SOLID
                         : (int) (packed & 0xFFFF) - 32768;
+                top = SurfaceClassTable.INSTANCE.adjustedTop(packed, top);
                 boolean e = packed == VoxyMerge.LONG_EMPTY
                         || (top == VoxyMerge.NO_TOP && floor == VoxyMerge.NO_SOLID);
                 float y;
                 if (e) {
                     y = 0f;
-                } else if ((packed & (1L << 52)) != 0) {
-                    y = (float) (sea * vscale);
                 } else if (top == VoxyMerge.NO_TOP) {
-                    y = (float) (floor * vscale);
+                    // Surface = top face of the highest non-air block. Water columns store their
+                    // real water surface (not sea level), so lakes/rivers above or below sea level
+                    // are drawn at the correct height as well.
+                    y = (float) ((floor + 1) * vscale);
                 } else {
-                    y = (float) (top * vscale);
+                    y = (float) ((top + 1) * vscale);
                 }
                 px[vi] = wx;
                 py[vi] = y;
                 pz[vi] = wz;
                 pu[vi] = (sx + Math.min(texMax, x) + 0.5f) / ATLAS;
                 pv[vi] = v;
+                col[vi] = 255;
                 empty[vi++] = e;
                 if (!e) {
                     minY = Math.min(minY, y);
                     maxY = Math.max(maxY, y);
+                }
+            }
+        }
+        // Per-vertex AO from the already sampled vertex heights: interior neighbours come straight
+        // from py[], only the tile border samples across the seam once. Calling voxNeighborY four
+        // times for every vertex would be about 260k lookups for a 256-cell near tile.
+        if (aoEnabled && vi > 0) {
+            int aoStrength = VoxyMapConfig.ADVANCED_3D_AO.get();
+            for (int gz = 0; gz <= grid; gz++) {
+                int z = gz * step;
+                int row = gz * gw;
+                for (int gx = 0; gx <= grid; gx++) {
+                    int i = row + gx;
+                    if (empty[i]) {
+                        col[i] = 255;
+                        continue;
+                    }
+                    float h = py[i];
+                    float occ = 0f;
+                    int n = 0;
+                    float nh;
+                    nh = gx < grid ? py[i + 1]
+                            : voxNeighborY(tile, pixels, live, gx * step + step, z, sea, vscale, texMax);
+                    if (!Float.isNaN(nh)) {
+                        float d = nh - h;
+                        if (d > 0f) occ += Math.min(1f, d / Math.max(1f, step));
+                        n++;
+                    }
+                    nh = gx > 0 ? py[i - 1]
+                            : voxNeighborY(tile, pixels, live, gx * step - step, z, sea, vscale, texMax);
+                    if (!Float.isNaN(nh)) {
+                        float d = nh - h;
+                        if (d > 0f) occ += Math.min(1f, d / Math.max(1f, step));
+                        n++;
+                    }
+                    nh = gz < grid ? py[i + gw]
+                            : voxNeighborY(tile, pixels, live, gx * step, z + step, sea, vscale, texMax);
+                    if (!Float.isNaN(nh)) {
+                        float d = nh - h;
+                        if (d > 0f) occ += Math.min(1f, d / Math.max(1f, step));
+                        n++;
+                    }
+                    nh = gz > 0 ? py[i - gw]
+                            : voxNeighborY(tile, pixels, live, gx * step, z - step, sea, vscale, texMax);
+                    if (!Float.isNaN(nh)) {
+                        float d = nh - h;
+                        if (d > 0f) occ += Math.min(1f, d / Math.max(1f, step));
+                        n++;
+                    }
+                    col[i] = n == 0 ? 255 : aoColour(occ / 4f, aoStrength);
                 }
             }
         }
@@ -886,6 +1546,8 @@ public final class Gpu3DMap {
             addSkirtVertex(px, py, pz, pu, pv, ba, ta);
             int bb = vi + 1;
             addSkirtVertex(px, py, pz, pu, pv, bb, tb);
+            col[ba] = col[ta];
+            col[bb] = col[tb];
             vi += 2;
             minY = Math.min(minY, py[ba]);
             // Both windings: skirt visibility must not depend on tile border direction / culling.
@@ -907,7 +1569,7 @@ public final class Gpu3DMap {
         BufferBuilder bb = new BufferBuilder(alloc, VertexFormat.Mode.TRIANGLES, format);
         for (int i = 0; i < vi; i++) {
             bb.addVertex(px[i], py[i], pz[i])
-                    .setColor(255, 255, 255, 255)
+                    .setColor(col[i], col[i], col[i], 255)
                     .setUv(pu[i], pv[i]);
         }
         MeshData mesh = bb.buildOrThrow();
@@ -1592,6 +2254,102 @@ public final class Gpu3DMap {
         tickedThisFrame = false;
     }
 
+    // ------------------------------------------------------------ blocks-style sky / fog (advanced 3D)
+
+    /**
+     * The sky and the horizontal fog only exist for the experimental advanced renderer and the
+     * blocks style (same gate as the 26.2 build, where {@code advanced3dSupported()} additionally
+     * gates it off for 26.1.2; 1.21.1 implements the shaded look with its own core shaders).
+     */
+    private static boolean skyFogActive() {
+        return VoxyMapConfig.ADVANCED_3D_RENDER.get() && "blocks".equals(MapData.INSTANCE.getStyle());
+    }
+
+    private static int lerpColor(int from, int to, float t) {
+        int r0 = (from >> 16) & 0xFF, g0 = (from >> 8) & 0xFF, b0 = from & 0xFF;
+        int r1 = (to >> 16) & 0xFF, g1 = (to >> 8) & 0xFF, b1 = to & 0xFF;
+        int r = Math.round(r0 + (r1 - r0) * t);
+        int g = Math.round(g0 + (g1 - g0) * t);
+        int b = Math.round(b0 + (b1 - b0) * t);
+        return 0xFF000000 | (r << 16) | (g << 8) | b;
+    }
+
+    private static void skyVertex(ByteBuffer buf, float x, float y, int argb) {
+        buf.putFloat(x).putFloat(y).putFloat(0f);
+        buf.put((byte) ((argb >> 16) & 0xFF)).put((byte) ((argb >> 8) & 0xFF))
+                .put((byte) (argb & 0xFF)).put((byte) 0xFF);
+    }
+
+    /** Two triangles filling the horizontal band from y0 (top colour) to y1 (bottom colour). */
+    private static void skyBand(ByteBuffer buf, float y0, float y1, int topColor, int bottomColor) {
+        skyVertex(buf, -1f, y0, topColor);
+        skyVertex(buf, 1f, y0, topColor);
+        skyVertex(buf, 1f, y1, bottomColor);
+        skyVertex(buf, -1f, y0, topColor);
+        skyVertex(buf, 1f, y1, bottomColor);
+        skyVertex(buf, -1f, y1, bottomColor);
+    }
+
+    /**
+     * Builds the procedural screen-space sky for this frame. The horizon's NDC y comes from the
+     * camera pitch and the FOV, so no sphere geometry (and no depth/culling tricks) are involved.
+     * 1.21.1 has no deferred encoder: the 192-byte upload executes immediately, before the pass.
+     */
+    private static void prepareSky(int skyColor, int fogColor, Map3D.Camera cam, float fov) {
+        skyVertexCount = 0;
+        if (skyVbo == null) {
+            skyVbo = GpuBuffer.createVertex("voxymap_3d_sky", SKY_MAX_VERTS * SKY_VERTEX_BYTES,
+                    DefaultVertexFormat.POSITION_COLOR);
+            skyIbo = GpuBuffer.createIndex("voxymap_3d_sky_idx", SKY_MAX_VERTS * Integer.BYTES);
+            ByteBuffer idx = ByteBuffer.allocateDirect(SKY_MAX_VERTS * Integer.BYTES)
+                    .order(ByteOrder.nativeOrder());
+            for (int i = 0; i < SKY_MAX_VERTS; i++) idx.putInt(SKY_INDICES[i]);
+            idx.flip();
+            CommandEncoder.create().writeToBuffer(new GpuBufferSlice(skyIbo, 0L, idx.remaining()), idx);
+        }
+        if (skyStaging == null) {
+            skyStaging = ByteBuffer.allocateDirect(SKY_MAX_VERTS * SKY_VERTEX_BYTES)
+                    .order(ByteOrder.nativeOrder());
+        }
+        // Below the horizon darkens towards black as the camera tilts down. The blend is gradual
+        // (fully coloured above -60 degrees, fully black at -85 degrees), so tilting up from a
+        // top-down view fades from black to the horizon colour instead of switching abruptly.
+        double pitchDeg = Math.toDegrees(cam.pitch);
+        float straight = (float) Math.max(0.0, Math.min(1.0, (-pitchDeg - 60.0) / 25.0));
+        straight = straight * straight * (3f - 2f * straight);
+        int belowColor = lerpColor(fogColor, SKY_BLACK, straight);
+        double tanHalfFov = Math.tan(Math.toRadians(fov * 0.5));
+        double horizon = -Math.tan(cam.pitch) / Math.max(1e-4, tanHalfFov);
+        skyStaging.clear();
+        if (horizon >= 1.0) {
+            // Horizon is above the screen: everything visible is below it.
+            skyBand(skyStaging, 1f, -1f, belowColor, belowColor);
+        } else if (horizon <= -1.0) {
+            // Whole screen is above the horizon: fade sky -> horizon colour top to bottom.
+            skyBand(skyStaging, 1f, -1f, skyColor, fogColor);
+        } else {
+            float hz = (float) horizon;
+            skyBand(skyStaging, 1f, hz, skyColor, fogColor);
+            // Fade from the horizon colour at the horizon line to the pitch-dependent below colour
+            // at the bottom of the screen (terrain is drawn over most of it).
+            skyBand(skyStaging, hz, -1f, fogColor, belowColor);
+        }
+        skyStaging.flip();
+        int bytes = skyStaging.remaining();
+        if (bytes == 0) return;
+        CommandEncoder.create().writeToBuffer(new GpuBufferSlice(skyVbo, 0L, bytes), skyStaging);
+        skyVertexCount = bytes / SKY_VERTEX_BYTES;
+    }
+
+    /** Draws the pre-uploaded sky band; the pass switches back to the terrain pipeline afterwards. */
+    private static void drawSky(RenderPass pass) {
+        if (skyVbo == null || skyIbo == null || skyVertexCount == 0) return;
+        pass.setPipeline(RenderPipelines.SKY);
+        pass.setVertexBuffer(0, skyVbo);
+        pass.setIndexBuffer(skyIbo);
+        pass.drawIndexed(0, skyVertexCount);
+    }
+
     public static void render() {
         Minecraft mc = Minecraft.getInstance();
         // 26.2 moved the current screen behind Gui; 1.21.1 keeps it in Minecraft.screen.
@@ -1653,6 +2411,40 @@ public final class Gpu3DMap {
                 4.0f, 60000f);
         Matrix4f view = cam.viewMatrix();
         Matrix4f viewProj = new Matrix4f(proj).mul(view);
+        // ---- advanced 3D look: fixed sky colours + height-based horizontal fog ----
+        boolean skyFog = skyFogActive();
+        int skyColor = CLEAR_SKY_COLOR;
+        int horizonColor = CLEAR_FOG_COLOR;
+        float fogStart = 0f;
+        float fogEnd = 0f;
+        float fogStrength = 0f;
+        if (skyFog) {
+            // Camera height above the terrain: close to the ground = more immersive, so fog starts
+            // closer; high camera = fog starts farther away.
+            double groundY = cam.targetY;
+            MapData map = MapData.INSTANCE;
+            if (map.isReady()) {
+                groundY = map.surfaceYAt((int) Math.round(cam.eyeX()), (int) Math.round(cam.eyeZ()));
+            }
+            float camHeight = Math.max(1f, (float) (cam.eyeY() - groundY));
+            // High camera: over a 500 block band above 4000 blocks, turn the fog off and fade the
+            // whole sky (above and below the horizon) to black.
+            float highFade = (camHeight - HIGH_CAMERA_START) / HIGH_CAMERA_FADE;
+            highFade = Math.max(0f, Math.min(1f, highFade));
+            highFade = highFade * highFade * (3f - 2f * highFade);
+            skyColor = lerpColor(CLEAR_SKY_COLOR, SKY_BLACK, highFade);
+            horizonColor = lerpColor(CLEAR_FOG_COLOR, SKY_BLACK, highFade);
+            // Fog end is FIXED (independent of camera distance/target): the map always keeps the
+            // same far fading range. Only the start changes.
+            float lookDownDeg = (float) Math.toDegrees(-cam.pitch);
+            // Vertical-down gate: fully off at the top-down camera, fading in over ~7 degrees of
+            // tilt so rotating up does not pop.
+            float gate = (85f - lookDownDeg) / 7f;
+            gate = Math.max(0f, Math.min(1f, gate));
+            fogStrength = gate * gate * (3f - 2f * gate) * (1f - highFade);
+            fogEnd = Math.max(1000f, Math.min(60000f, VoxyMapConfig.FOG_DISTANCE_3D.get()));
+            fogStart = Math.max(600f, Math.min(fogEnd * 0.85f, camHeight * 2.0f));
+        }
         depthWidth = target.width;
         depthHeight = target.height;
         overlayIndexCount = 0;
@@ -1680,7 +2472,36 @@ public final class Gpu3DMap {
         RenderSystem.clear(GL11.GL_COLOR_BUFFER_BIT | GL11.GL_DEPTH_BUFFER_BIT, Minecraft.ON_OSX);
         float[] oldShaderColor = RenderSystem.getShaderColor().clone();
         RenderSystem.setShaderColor(1f, 1f, 1f, 1f);
-        try (RenderPass pass = new RenderPass(PIPELINE, view, proj)) {
+        // Sky and fog are set up before the pass opens: the compat layer executes GL immediately,
+        // and the fog uniforms are read by setDefaultUniforms when the terrain pipeline is applied.
+        // The fog values are always written when the advanced look is on (alpha 0 = no fog), so the
+        // shader never picks up the world renderer's leftover fog state.
+        float oldFogStart = RenderSystem.getShaderFogStart();
+        float oldFogEnd = RenderSystem.getShaderFogEnd();
+        float[] oldFogColor = RenderSystem.getShaderFogColor().clone();
+        boolean skyDrawn = false;
+        boolean fogSet = false;
+        if (skyFog) {
+            try {
+                prepareSky(skyColor, horizonColor, cam, fov);
+                skyDrawn = skyVertexCount > 0;
+                RenderSystem.setShaderFogStart(fogStart);
+                RenderSystem.setShaderFogEnd(fogEnd);
+                RenderSystem.setShaderFogColor(((horizonColor >> 16) & 0xFF) / 255f,
+                        ((horizonColor >> 8) & 0xFF) / 255f, (horizonColor & 0xFF) / 255f, fogStrength);
+                fogSet = true;
+            } catch (Throwable t) {
+                System.out.println("[voxymap] 3d sky/fog setup failed, continuing without it: " + t);
+                skyDrawn = false;
+            }
+        }
+        RenderPipeline terrainPipeline = skyFog ? RenderPipelines.TERRAIN3D : PIPELINE;
+        try (RenderPass pass = new RenderPass(terrainPipeline, view, proj)) {
+            if (skyDrawn) {
+                // Sky first (no depth test/write), then the terrain over it.
+                drawSky(pass);
+                pass.setPipeline(terrainPipeline);
+            }
             // Full-bright is intentional: the terrain re-uses the 2D map colours, which are not
             // lit, so the shader does not sample a lightmap at all (26.2 bound the 1x1 UI lightmap
             // and deliberately not the level lightmap for exactly the same reason).
@@ -1705,6 +2526,11 @@ public final class Gpu3DMap {
             if (drawOverlay) drawOverlay(pass);
             drawTrack(pass);
         } finally {
+            if (fogSet) {
+                RenderSystem.setShaderFogStart(oldFogStart);
+                RenderSystem.setShaderFogEnd(oldFogEnd);
+                RenderSystem.setShaderFogColor(oldFogColor[0], oldFogColor[1], oldFogColor[2], oldFogColor[3]);
+            }
             // Diagnostic for the on-device check: a GL error here usually means a state/attrib
             // mistake in the compat layer. Rate-limited so a permanent failure cannot spam.
             if (VoxyMapConfig.DEBUG_ENABLED.get()) {
@@ -1799,6 +2625,9 @@ public final class Gpu3DMap {
                 lastBuildNanos / 1_000_000.0, lastUploadNanos / 1_000_000.0,
                 lastUploadTiles, lastAtlasPages, lastGpuBytes / (1024.0 * 1024.0),
                 lastAtlasBytes / (1024.0 * 1024.0), lastDepthBytes / (1024.0 * 1024.0)));
+        out.add("adv3d: " + (VoxyMapConfig.ADVANCED_3D_RENDER.get() ? "on" : "off")
+                + "  voxel=" + (VoxyMapConfig.GPU_TERRAIN_VOXEL.get() ? "on" : "off")
+                + "  ao=" + VoxyMapConfig.ADVANCED_3D_AO.get());
         return out;
     }
 
@@ -1843,6 +2672,15 @@ public final class Gpu3DMap {
         lastTotal = 0;
         lastBuildNanos = 0;
         lastUploadNanos = 0;
+        if (skyVbo != null) {
+            skyVbo.close();
+            skyVbo = null;
+        }
+        if (skyIbo != null) {
+            skyIbo.close();
+            skyIbo = null;
+        }
+        skyVertexCount = 0;
         for (int slot = 0; slot < OVERLAY_SLOTS; slot++) {
             if (overlayVbos[slot] != null) {
                 overlayVbos[slot].close();
