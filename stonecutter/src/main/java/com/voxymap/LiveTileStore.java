@@ -844,7 +844,9 @@ public final class LiveTileStore {
     /** FALLBACK tiles that were on screen in the last frame (the ones a screenshot can show). */
     public int fallbackVisibleTileCount() {
         int n = 0;
-        for (LiveTile tile : visibleTiles) {
+        // visibleTextures, not visibleTiles: the latter now also pins tiles the draw loop touched
+        // before they could be coloured, and those cannot show FALLBACK pixels in a screenshot.
+        for (LiveTile tile : visibleTextures) {
             if (tile.usedFallbackSlots) n++;
         }
         return n;
@@ -1780,6 +1782,16 @@ public final class LiveTileStore {
      */
     public Identifier textureFor(LiveTile tile, String style, int sea, int colorEpoch) {
         if (tile == null) return null;
+        // Pin the tile as visible BEFORE any early return below. The draw loop only calls this for
+        // tiles inside the viewport, so an on-screen tile must never be evicted - even while it
+        // cannot be coloured yet (mapping scan in flight, or a decode that hit unknown block
+        // states). It used to be pinned only on the fully-drawn path, so trimResident evicted
+        // exactly those tiles: the next frame re-created and re-decoded them, that decode
+        // re-triggered a mapping reload, the reload un-pinned the whole viewport (isTileDecodeReady
+        // is false during the scan) and the entire viewport was evicted again - the "tiles keep
+        // reloading at low zoom" loop.
+        visibleTiles.add(tile);
+        tile.lastAccessFrame = textureFrame;
         // Do not colour anything before the surface-class/biome tables are published: slot 0 would
         // paint the whole tile FALLBACK grey, and the plains biome-tint fallback would be wrong.
         // Keep returning the already-built texture so a reload does not flicker the map.
@@ -1789,8 +1801,6 @@ public final class LiveTileStore {
             // mapping table reloads; keep the old texture instead of flashing a grey tile.
             return tile.texture;
         }
-        visibleTiles.add(tile);
-        tile.lastAccessFrame = textureFrame;
         visibleTextures.add(tile);
         tile.lastTextureFrame = textureFrame;
         // M1: two identities. The colour hash is shared with pumpFor3D, the texture hash adds the
@@ -2056,9 +2066,16 @@ public final class LiveTileStore {
     public void trimResident(int highWater, int lowWater) {
         if (tiles.size() <= highWater) return;
         int target = Math.max(128, lowWater);
+        // Second, independent pin: never evict a tile the creation path considers in view
+        // (viewport + margin - the same predicate applySection uses to materialise live tiles).
+        // At low zoom the visible set can be larger than the resident cap, and a tile the draw loop
+        // did not pin this frame must still not be evicted: otherwise it is evicted and re-created
+        // (re-read from .vxt / re-decoded) on the next frame, which is the "tiles keep reloading"
+        // loop.
         java.util.List<LiveTile> candidates = new java.util.ArrayList<>();
         for (LiveTile tile : tiles.values()) {
             if (visibleTiles.contains(tile)) continue;
+            if (liveTileInViewport(tile.tx, tile.tz)) continue;
             long k = key(tile.tx, tile.tz);
             // A pending decode/colour job is still being paid for; evicting now makes its
             // callback write into an orphaned tile and re-request the same tile later.
