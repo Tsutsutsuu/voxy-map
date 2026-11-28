@@ -1093,13 +1093,27 @@ public final class Gpu3DMap {
                 double v = (sy + Math.min(texMax, gz * step) + 0.5) / ATLAS;
                 float low = (float) (y - skirt);
                 wallColors(s, aoCell[i], 0.605f, advancedLook); // skirt
+                // On the west/north edges the skirt is always emitted, but the regular wall loop may
+                // already have drawn a wall here when the neighbouring tile is lower. Drawing both
+                // puts two coplanar surfaces at the same edge (z-fighting). Skip the skirt where the
+                // wall already covers the height difference.
+                boolean westWall = false;
+                boolean northWall = false;
                 if (west) {
+                    float nwy = voxNeighborY(tile, pixels, live, gx * step - step, gz * step, sea, vscale, texMax);
+                    westWall = !Float.isNaN(nwy) && nwy < y;
+                }
+                if (north) {
+                    float nnz = voxNeighborY(tile, pixels, live, gx * step, gz * step - step, sea, vscale, texMax);
+                    northWall = !Float.isNaN(nnz) && nnz < y;
+                }
+                if (west && !westWall) {
                     voxWallX(s, x0, low, y, z0, z1, u, v, v, true);
                 }
                 if (east) {
                     voxWallX(s, x1, low, y, z0, z1, u, v, v, true);
                 }
-                if (north) {
+                if (north && !northWall) {
                     voxWallZ(s, z0, low, y, x0, x1, v, u, u, true);
                 }
                 if (south) {
