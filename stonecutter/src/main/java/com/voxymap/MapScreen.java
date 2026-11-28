@@ -1258,14 +1258,17 @@ public class MapScreen extends Screen {
         data.skipBiomeLabels = true;
         if (BlazeCompat.advanced3dSupported() && VoxyMapConfig.ADVANCED_3D_RENDER.get()) {
             // Advanced 3D bakes base colour + coastline + water depth + contours, but the shader
-            // supplies lighting, so hillshade must not be baked into its atlas. Keep contours.
+            // supplies lighting, so hillshade must not be baked into its atlas. Contours follow the
+            // player's "auto-hide contours in 3D" setting exactly like the normal 3D view.
             boolean changed = false;
             if (MapData.hillshadeOverride == null) {
                 MapData.hillshadeOverride = Boolean.FALSE;
                 changed = true;
             }
-            if (MapData.contourOverride != null) {
-                MapData.contourOverride = null;
+            Boolean wantedContours = (VoxyMapConfig.AUTO_HIDE_CONTOURS_3D.get()
+                    && VoxyMapConfig.DRAW_CONTOURS.get()) ? Boolean.FALSE : null;
+            if (!java.util.Objects.equals(MapData.contourOverride, wantedContours)) {
+                MapData.contourOverride = wantedContours;
                 changed = true;
             }
             if (changed) data.requestColorRerender();
