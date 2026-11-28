@@ -983,7 +983,7 @@ public final class Gpu3DMap {
                 double u = (sx + Math.min(texMax, x) + 0.5) / ATLAS;
                 double v0 = (sy + (double) Math.min(texMax + 1, gz * step)) / ATLAS;
                 double v1 = (sy + (double) Math.min(texMax + 1, (gz + run) * step)) / ATLAS;
-                wallColors(s, aoCell[i], 0.682f, advancedLook); // east: shadow side
+                wallColors(s, aoCell[i], 0.74f, advancedLook); // east: shadow side
                 voxWallX(s, xEdge, ny, y, z0, z1, u, v0, v1, true);
                 minY = Math.min(minY, ny);
                 gz += run;
@@ -1009,7 +1009,7 @@ public final class Gpu3DMap {
                 double u = (sx + Math.min(texMax, x) + 0.5) / ATLAS;
                 double v0 = (sy + (double) Math.min(texMax + 1, gz * step)) / ATLAS;
                 double v1 = (sy + (double) Math.min(texMax + 1, (gz + run) * step)) / ATLAS;
-                wallColors(s, aoCell[i], 0.946f, advancedLook); // west: lit side
+                wallColors(s, aoCell[i], 0.92f, advancedLook); // west: lit side
                 voxWallX(s, xEdge, ny, y, z0, z1, u, v0, v1, true);
                 minY = Math.min(minY, ny);
                 gz += run;
@@ -1038,7 +1038,7 @@ public final class Gpu3DMap {
                 double v = (sy + Math.min(texMax, z) + 0.5) / ATLAS;
                 double u0 = (sx + (double) Math.min(texMax + 1, gx * step)) / ATLAS;
                 double u1 = (sx + (double) Math.min(texMax + 1, (gx + run) * step)) / ATLAS;
-                wallColors(s, aoCell[i], 0.704f, advancedLook); // south: shadow side
+                wallColors(s, aoCell[i], 0.76f, advancedLook); // south: shadow side
                 voxWallZ(s, zEdge, ny, y, x0, x1, v, u0, u1, true);
                 minY = Math.min(minY, ny);
                 gx += run;
@@ -1064,7 +1064,7 @@ public final class Gpu3DMap {
                 double v = (sy + Math.min(texMax, z) + 0.5) / ATLAS;
                 double u0 = (sx + (double) Math.min(texMax + 1, gx * step)) / ATLAS;
                 double u1 = (sx + (double) Math.min(texMax + 1, (gx + run) * step)) / ATLAS;
-                wallColors(s, aoCell[i], 0.924f, advancedLook); // north: lit side
+                wallColors(s, aoCell[i], 0.90f, advancedLook); // north: lit side
                 voxWallZ(s, zEdge, ny, y, x0, x1, v, u0, u1, true);
                 minY = Math.min(minY, ny);
                 gx += run;
