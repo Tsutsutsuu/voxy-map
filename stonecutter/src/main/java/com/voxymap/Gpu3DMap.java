@@ -2240,7 +2240,12 @@ public final class Gpu3DMap {
     private static RenderPipeline terrain3dPipeline() {
         RenderPipeline p = terrain3dPipeline;
         if (p == null) {
-            p = BlazeCompat.advancedTerrain3dPipeline();
+            try {
+                p = BlazeCompat.advancedTerrain3dPipeline();
+            } catch (Throwable t) {
+                System.out.println("[voxymap] 3d fog pipeline unavailable, falling back to solid block: " + t);
+                p = PIPELINE;
+            }
             terrain3dPipeline = p;
         }
         return p;
@@ -2441,11 +2446,19 @@ public final class Gpu3DMap {
                     com.mojang.blaze3d.ProjectionType.PERSPECTIVE);
             GpuBufferSlice transforms = RenderSystem.getDynamicUniforms()
                     .writeTransform(view, COLOR_MODULATOR, MODEL_OFFSET, TEXTURE_MATRIX);
-            try (RenderPass pass = BlazeCompat.beginTerrainPass(frameEncoder, target, depthView)) {
-                if (skyFog) {
+            if (skyFog) {
+                // The sky buffer upload and the fog-buffer map must happen BEFORE the render pass:
+                // writing/mapping GPU buffers while a pass is open is illegal and aborted the pass.
+                try {
                     ensureSkyMesh(frameEncoder, skyColor, horizonColor);
                     beginFog(fogStart, fogEnd, horizonColor);
                     fogStarted = true;
+                } catch (Throwable t) {
+                    System.out.println("[voxymap] 3d sky/fog setup failed, continuing without it: " + t);
+                }
+            }
+            try (RenderPass pass = BlazeCompat.beginTerrainPass(frameEncoder, target, depthView)) {
+                if (fogStarted) {
                     drawSky(pass, view, cam);
                 }
                 pass.setPipeline(skyFog ? terrain3dPipeline() : PIPELINE);
