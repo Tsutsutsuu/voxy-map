@@ -99,6 +99,8 @@ public final class Gpu3DMap {
     /** Fixed clear-noon overworld colours: no weather, daylight or biome variation. */
     private static final int CLEAR_SKY_COLOR = 0xFF79A7FF;
     private static final int CLEAR_FOG_COLOR = 0xFFC0D8FF;
+    /** Fixed far distance of the 3D fog; only the start distance varies with camera height. */
+    private static final float FOG_END = 20000f;
     private static final int OVERLAY_SEGMENTS = 64;
     /** Upper bound on the marker tick-line segments (the buffer is sized for this). */
     private static final int MARKER_MAX_SEGMENTS = 96;
@@ -2429,18 +2431,26 @@ public final class Gpu3DMap {
         float fogEnd = 0f;
         float fogStrength = 0f;
         if (skyFog) {
-            // 3D-map fog: purely a horizon/depth cue. It is completely disabled when looking down
-            // (a top-down map has no horizon and must stay crisp), and fades in gradually as the
-            // camera tilts towards the horizon.
+            // Fog end is FIXED (independent of camera distance/target): the map always keeps the
+            // same far fading range. Only the start changes.
             float lookDownDeg = (float) Math.toDegrees(-cam.pitch);
-            float tilt = (85f - lookDownDeg) / 35f;
-            tilt = Math.max(0f, Math.min(1f, tilt));
-            fogStrength = tilt * tilt * (3f - 2f * tilt);
-            // Keep the fog far away: the map is for seeing distance, not for shrinking the view.
-            float camHeight = Math.max(1f, (float) (cam.eyeY() - cam.targetY));
-            float fogScale = Math.max(cam.distance, camHeight * 1.6f);
-            fogStart = Math.max(3000f, fogScale * 2.5f);
-            fogEnd = Math.min(45000f, Math.max(9000f, fogScale * 8f));
+            // Vertical-down gate: fully off at the top-down camera, fading in over ~7 degrees of
+            // tilt so rotating up does not pop.
+            float gate = (85f - lookDownDeg) / 7f;
+            gate = Math.max(0f, Math.min(1f, gate));
+            fogStrength = gate * gate * (3f - 2f * gate);
+            // Camera height above the terrain: close to the ground = more immersive, so fog starts
+            // closer for stronger near/far separation; high camera = fog starts farther away.
+            double groundY = cam.targetY;
+            MapData data = MapData.INSTANCE;
+            if (data.isReady()) {
+                int gx = (int) Math.round(cam.eyeX());
+                int gz = (int) Math.round(cam.eyeZ());
+                groundY = data.surfaceYAt(gx, gz);
+            }
+            float camHeight = Math.max(1f, (float) (cam.eyeY() - groundY));
+            fogEnd = FOG_END;
+            fogStart = Math.max(600f, Math.min(FOG_END * 0.85f, camHeight * 2.0f));
         }
         overlayIndexCount = 0;
         // One encoder for the whole 3D frame: the overlay upload, the terrain pass and the
