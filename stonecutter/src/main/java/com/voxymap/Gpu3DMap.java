@@ -840,7 +840,8 @@ public final class Gpu3DMap {
         // the two cells that meet at a vertex compute the same value and the interpolation across
         // each face is continuous. Water stays at full brightness for now.
         int aoStrength = VoxyMapConfig.ADVANCED_3D_AO.get();
-        boolean useAo = VoxyMapConfig.ADVANCED_3D_RENDER.get() && aoStrength > 0;
+        boolean advancedLook = VoxyMapConfig.ADVANCED_3D_RENDER.get();
+        boolean useAo = advancedLook && aoStrength > 0;
         byte[] vao = s.vao;
         if (vao.length < cells * 4) {
             vao = new byte[cells * 4];
@@ -967,7 +968,7 @@ public final class Gpu3DMap {
                 double u = (sx + Math.min(texMax, x) + 0.5) / ATLAS;
                 double v0 = (sy + (double) Math.min(texMax + 1, gz * step)) / ATLAS;
                 double v1 = (sy + (double) Math.min(texMax + 1, (gz + run) * step)) / ATLAS;
-                s.curAo = (int) (aoCell[i] * 0.68f);
+                s.curAo = advancedLook ? (int) (aoCell[i] * 0.68f) : 255;
                 voxWallX(s, xEdge, ny, y, z0, z1, u, v0, v1, true);
                 minY = Math.min(minY, ny);
                 gz += run;
@@ -993,7 +994,7 @@ public final class Gpu3DMap {
                 double u = (sx + Math.min(texMax, x) + 0.5) / ATLAS;
                 double v0 = (sy + (double) Math.min(texMax + 1, gz * step)) / ATLAS;
                 double v1 = (sy + (double) Math.min(texMax + 1, (gz + run) * step)) / ATLAS;
-                s.curAo = (int) (aoCell[i] * 0.68f);
+                s.curAo = advancedLook ? (int) (aoCell[i] * 0.68f) : 255;
                 voxWallX(s, xEdge, ny, y, z0, z1, u, v0, v1, true);
                 minY = Math.min(minY, ny);
                 gz += run;
@@ -1022,7 +1023,7 @@ public final class Gpu3DMap {
                 double v = (sy + Math.min(texMax, z) + 0.5) / ATLAS;
                 double u0 = (sx + (double) Math.min(texMax + 1, gx * step)) / ATLAS;
                 double u1 = (sx + (double) Math.min(texMax + 1, (gx + run) * step)) / ATLAS;
-                s.curAo = (int) (aoCell[i] * 0.85f);
+                s.curAo = advancedLook ? (int) (aoCell[i] * 0.85f) : 255;
                 voxWallZ(s, zEdge, ny, y, x0, x1, v, u0, u1, true);
                 minY = Math.min(minY, ny);
                 gx += run;
@@ -1048,7 +1049,7 @@ public final class Gpu3DMap {
                 double v = (sy + Math.min(texMax, z) + 0.5) / ATLAS;
                 double u0 = (sx + (double) Math.min(texMax + 1, gx * step)) / ATLAS;
                 double u1 = (sx + (double) Math.min(texMax + 1, (gx + run) * step)) / ATLAS;
-                s.curAo = (int) (aoCell[i] * 0.85f);
+                s.curAo = advancedLook ? (int) (aoCell[i] * 0.85f) : 255;
                 voxWallZ(s, zEdge, ny, y, x0, x1, v, u0, u1, true);
                 minY = Math.min(minY, ny);
                 gx += run;
@@ -1078,7 +1079,7 @@ public final class Gpu3DMap {
                 double u = (sx + Math.min(texMax, gx * step) + 0.5) / ATLAS;
                 double v = (sy + Math.min(texMax, gz * step) + 0.5) / ATLAS;
                 float low = (float) (y - skirt);
-                s.curAo = (int) (aoCell[i] * 0.55f);
+                s.curAo = advancedLook ? (int) (aoCell[i] * 0.55f) : 255;
                 if (west) {
                     voxWallX(s, x0, low, y, z0, z1, u, v, v, true);
                 }
