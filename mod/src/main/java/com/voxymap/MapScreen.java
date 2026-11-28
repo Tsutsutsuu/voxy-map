@@ -707,7 +707,7 @@ public class MapScreen extends Screen {
         double wx = screenToWorldX(mouseX);
         double wz = screenToWorldZ(mouseY);
         secondary.add(String.format(Locale.ROOT, "hover: %.0f %.0f h=%d b=%d",
-                wx, wz, data.heightAt((int) Math.round(wx), (int) Math.round(wz)),
+                wx, wz, data.surfaceYAt((int) Math.round(wx), (int) Math.round(wz)),
                 data.biomeAt((int) Math.round(wx), (int) Math.round(wz))));
         secondary.add("labels: " + labelPanelState(data, mapZoomDevice()) + " / "
                 + (data.getBiomeLabelsFlat().length / 3) + " total");
@@ -920,14 +920,21 @@ public class MapScreen extends Screen {
     private void apply3dOverrides() {
         MapData data = MapData.INSTANCE;
         data.skipBiomeLabels = true;
-        if (VoxyMapConfig.AUTO_HIDE_CONTOURS_3D.get()
-                && VoxyMapConfig.DRAW_CONTOURS.get() && MapData.contourOverride == null) {
-            // contours are a 2D decoration: hide them in 3D (cheap colour-only re-render)
-            MapData.contourOverride = Boolean.FALSE;
+        // 3D now renders the normal 2D coloured texture (baked hillshade included) and only adds
+        // per-vertex AO + side-face darkening, so the hillshade no longer needs a 3D-only override.
+        // The optional "hide contours in 3D" still needs a temporary colour-only re-render.
+        if (VoxyMapConfig.AUTO_HIDE_CONTOURS_3D.get()) {
+            // Auto-hide is a session-only override: the saved per-world contour state is untouched
+            // and the bottom-left button shows "off" while this override is active.
+            if (!Boolean.FALSE.equals(MapData.contourOverride)) {
+                MapData.contourOverride = Boolean.FALSE;
+                data.requestColorRerender();
+            }
+        } else if (MapData.contourOverride != null) {
+            MapData.contourOverride = null;
             data.requestColorRerender();
         }
     }
-
     /**
      * Keeps overlay/picking FOV in sync with the value {@code Gpu3DMap} reads for the terrain pass
      * every frame, so a FOV change made in the config screen applies immediately and consistently.
@@ -1015,6 +1022,10 @@ public class MapScreen extends Screen {
         return font.width(Component.translatable("voxymap.ui.renderDistance")) + 12;
     }
 
+    private int contoursWidth() {
+        return font.width(Component.translatable("voxymap.ui.contours")) + 12;
+    }
+
     private int styleSelWidth() {
         return font.width(Component.translatable("voxymap.ui.styleButton", styleName(MapData.INSTANCE.getStyle()))) + 28;
     }
@@ -1098,7 +1109,7 @@ public class MapScreen extends Screen {
         } else {
             wx = screenToWorldX(mouseX);
             wz = screenToWorldZ(mouseY);
-            wy = md.heightAt((int) Math.round(wx), (int) Math.round(wz));
+            wy = md.surfaceYAt((int) Math.round(wx), (int) Math.round(wz));
         }
         int gy = (int) Math.round(wy);
         int biomeId = md.biomeAt((int) Math.round(wx), (int) Math.round(wz));
@@ -1245,7 +1256,7 @@ public class MapScreen extends Screen {
         MapData d = MapData.INSTANCE;
         int ix = (int) Math.round(wx);
         int iz = (int) Math.round(wz);
-        return d.isWaterAt(ix, iz) ? d.seaLevel() : d.heightAt(ix, iz);
+        return d.surfaceYAt(ix, iz);
     }
 
     /** Vertical stretch applied to the mesh: the camera, picking and overlays work in this space. */
@@ -1464,23 +1475,30 @@ public class MapScreen extends Screen {
             }
         }
 
-        // biome / render distance / track toggles bottom-left
+        // bottom-left overlay toggles, top to bottom: track, distance, biomes, contours
         boolean biomesOn = data.isBiomeOverlay();
         boolean distanceOn = data.isRenderDistanceOverlay();
-        Component biomeText = Component.translatable("voxymap.ui.biomes");
-        int bw = font.width(biomeText) + 12;
+        boolean contoursOn = data.isContourEffective();
         int bx = 8;
         int by = height - 30;
-        drawToggle(g, "biomes", bx, by, bw, biomeText, biomesOn,
-                mouseX >= bx && mouseX <= bx + bw && mouseY >= by && mouseY <= by + 20, !busy);
+        Component coText = Component.translatable("voxymap.ui.contours");
+        int cow = font.width(coText) + 12;
+        drawToggle(g, "contours", bx, by, cow, coText, contoursOn,
+                mouseX >= bx && mouseX <= bx + cow && mouseY >= by && mouseY <= by + 20, !busy);
+        Component biomeText = Component.translatable("voxymap.ui.biomes");
+        int bw = font.width(biomeText) + 12;
+        int biomeY = by - 24;
+        drawToggle(g, "biomes", bx, biomeY, bw, biomeText, biomesOn,
+                mouseX >= bx && mouseX <= bx + bw && mouseY >= biomeY && mouseY <= biomeY + 20, !busy);
         Component rdText = Component.translatable("voxymap.ui.renderDistance");
         int rdw = font.width(rdText) + 12;
-        int ry2 = by - 24;
-        drawToggle(g, "distance", bx, ry2, rdw, rdText, distanceOn,
-                mouseX >= bx && mouseX <= bx + rdw && mouseY >= ry2 && mouseY <= ry2 + 20, !busy);
+        int rdY = by - 48;
+        drawToggle(g, "distance", bx, rdY, rdw, rdText, distanceOn,
+                mouseX >= bx && mouseX <= bx + rdw && mouseY >= rdY && mouseY <= rdY + 20, !busy);
+        // track overlay toggle (session state: switching it off clears the path)
         Component trackText = Component.translatable("voxymap.ui.track");
         int tw = font.width(trackText) + 12;
-        int ty3 = ry2 - 24;
+        int ty3 = by - 72;
         drawToggle(g, "track", bx, ty3, tw, trackText, TrackOverlay.enabled(),
                 mouseX >= bx && mouseX <= bx + tw && mouseY >= ty3 && mouseY <= ty3 + 20, !busy);
 
@@ -1729,8 +1747,9 @@ public class MapScreen extends Screen {
         int bz = (int) Math.floor(pz);
         boolean hasModel = !data.isEmptyAt(bx, bz);
         double scale = meshScale();
+        // The mesh draws land at its top face now, so this already is the standing surface Y.
         double surface = groundMeshY(bx, bz);
-        double surfaceTop = surface + scale;
+        double surfaceTop = surface;
         double feet = player.getY() * scale;
         double anchor = Math.max(feet, surfaceTop);
         double markY = anchor + Math.max(0.0, VoxyMapConfig.PLAYER_MARKER_HEIGHT_3D.get());
@@ -1830,10 +1849,12 @@ public class MapScreen extends Screen {
             labelBlockers.add(new int[]{width - 8 - menuW - 2, STYLE_ROW_Y + 22, width - 6,
                     STYLE_ROW_Y + 24 + MapStyles.NAMES.length * 20 + 6});
         }
-        // biome / distance / track toggles (bottom-left)
-        labelBlockers.add(new int[]{6, height - 32, 8 + biomesWidth() + 2, height - 8});
-        labelBlockers.add(new int[]{6, height - 56, 8 + distanceWidth() + 2, height - 32});
-        labelBlockers.add(new int[]{6, height - 80, 8 + trackWidth() + 2, height - 56});
+        // biome / distance toggles (bottom-left)
+        labelBlockers.add(new int[]{6, height - 32, 8 + contoursWidth() + 2, height - 8});
+        labelBlockers.add(new int[]{6, height - 56, 8 + biomesWidth() + 2, height - 32});
+        labelBlockers.add(new int[]{6, height - 80, 8 + distanceWidth() + 2, height - 56});
+        // track overlay toggle (top of the stack)
+        labelBlockers.add(new int[]{6, height - 104, 8 + trackWidth() + 2, height - 80});
         // refresh (bottom-right)
         Component refresh = refreshComponent();
         int rw = font.width(refresh) + 12;
@@ -2679,11 +2700,25 @@ public class MapScreen extends Screen {
             }
             return true;
         }
-        Component biomeText = Component.translatable("voxymap.ui.biomes");
-        int bw = font.width(biomeText) + 12;
         int bx = 8;
         int by = height - 30;
-        if (button == 0 && mx >= bx && mx <= bx + bw && my >= by && my <= by + 20) {
+        Component coText = Component.translatable("voxymap.ui.contours");
+        int cow = font.width(coText) + 12;
+        if (button == 0 && mx >= bx && mx <= bx + cow && my >= by && my <= by + 20) {
+            if (!data.isLoading() && !data.isStyleChanging()) {
+                if (view3d && VoxyMapConfig.AUTO_HIDE_CONTOURS_3D.get()) {
+                    // Session-only toggle; must not be written to state.properties.
+                    data.setTemporaryContour(!data.isContourEffective());
+                } else {
+                    data.setContourOverlay(!data.isContourOverlay());
+                }
+            }
+            return true;
+        }
+        Component biomeText = Component.translatable("voxymap.ui.biomes");
+        int bw = font.width(biomeText) + 12;
+        int biomeY = by - 24;
+        if (button == 0 && mx >= bx && mx <= bx + bw && my >= biomeY && my <= biomeY + 20) {
             if (!data.isLoading() && !data.isStyleChanging()) {
                 data.setBiomeOverlay(!data.isBiomeOverlay());
             }
@@ -2691,9 +2726,8 @@ public class MapScreen extends Screen {
         }
         Component rdText = Component.translatable("voxymap.ui.renderDistance");
         int rdw = font.width(rdText) + 12;
-        int rx2 = bx;
-        int ry2 = by - 24;
-        if (button == 0 && mx >= rx2 && mx <= rx2 + rdw && my >= ry2 && my <= ry2 + 20) {
+        int rdY = by - 48;
+        if (button == 0 && mx >= bx && mx <= bx + rdw && my >= rdY && my <= rdY + 20) {
             if (!data.isLoading() && !data.isStyleChanging()) {
                 data.setRenderDistanceOverlay(!data.isRenderDistanceOverlay());
             }
@@ -2701,7 +2735,7 @@ public class MapScreen extends Screen {
         }
         Component trackText = Component.translatable("voxymap.ui.track");
         int tw = font.width(trackText) + 12;
-        int ty3 = ry2 - 24;
+        int ty3 = by - 72;
         if (button == 0 && mx >= bx && mx <= bx + tw && my >= ty3 && my <= ty3 + 20) {
             TrackOverlay.toggle();
             showNotification(Component.translatable(TrackOverlay.enabled()
@@ -2775,7 +2809,7 @@ public class MapScreen extends Screen {
             double wz = screenToWorldZ(my);
             menuWorldX = (int) Math.round(wx);
             menuWorldZ = (int) Math.round(wz);
-            menuWorldY = data.heightAt(menuWorldX, menuWorldZ);
+            menuWorldY = data.surfaceYAt(menuWorldX, menuWorldZ);
             return true;
         }
         return super.mouseClicked(mx, my, button);
@@ -2949,4 +2983,3 @@ public class MapScreen extends Screen {
         return true;
     }
 }
-

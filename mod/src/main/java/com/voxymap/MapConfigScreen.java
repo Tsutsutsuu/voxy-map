@@ -153,29 +153,33 @@ public class MapConfigScreen extends Screen {
 
         section(Group.MAP, "voxymap.config.section.terrainColor");
         add(Group.MAP, "defaultStyle", VoxyMapConfig.DEFAULT_STYLE, 0, 0, MapStyles.NAMES);
+        add(Group.MAP, "biomeColors", VoxyMapConfig.BIOME_COLORS, 0, 0, null);
         add(Group.MAP, "adaptiveColorRamp", VoxyMapConfig.ADAPTIVE_COLOR_RAMP, 0, 0, null);
         add(Group.MAP, "landMaxRamp", VoxyMapConfig.MIN_MAX_RAMP, 0, 0, null);
+        section(Group.MAP, "voxymap.config.section.mapLighting");
         add(Group.MAP, "drawHillshade", VoxyMapConfig.DRAW_HILLSHADE, 0, 0, null);
-        add(Group.MAP, "biomeColors", VoxyMapConfig.BIOME_COLORS, 0, 0, null);
-        add(Group.MAP, "drawWaterDepth", VoxyMapConfig.DRAW_WATER_DEPTH, 0, 0, null);
-        add(Group.MAP, "autoSeaLevel", VoxyMapConfig.AUTO_SEA_LEVEL, 0, 0, null);
-        add(Group.MAP, "seaLevelOverride", VoxyMapConfig.SEA_LEVEL_OVERRIDE, -2048, 2048, null);
-        section(Group.MAP, "voxymap.config.section.contours");
-        add(Group.MAP, "drawContours", VoxyMapConfig.DRAW_CONTOURS, 0, 0, null);
-        add(Group.MAP, "contourDensity", VoxyMapConfig.CONTOUR_DENSITY, 1, 24, null);
-        add(Group.MAP, "minContourArea", VoxyMapConfig.MIN_CONTOUR_AREA, 0, 1000, null);
+        add(Group.MAP, "lightStrength", VoxyMapConfig.LIGHT_STRENGTH, 0, 100, null);
+        add(Group.MAP, "lightAmbient", VoxyMapConfig.LIGHT_AMBIENT, 0, 100, null);
         section(Group.MAP, "voxymap.config.section.waterPost");
+        add(Group.MAP, "drawWaterDepth", VoxyMapConfig.DRAW_WATER_DEPTH, 0, 0, null);
         add(Group.MAP, "waterBlur", VoxyMapConfig.WATER_BLUR, 0, 0, null);
         add(Group.MAP, "waterBlurRadius", VoxyMapConfig.WATER_BLUR_RADIUS, 1, 16, null);
         add(Group.MAP, "waterBlurPasses", VoxyMapConfig.WATER_BLUR_PASSES, 1, 5, null);
+        add(Group.MAP, "autoSeaLevel", VoxyMapConfig.AUTO_SEA_LEVEL, 0, 0, null);
+        add(Group.MAP, "seaLevelOverride", VoxyMapConfig.SEA_LEVEL_OVERRIDE, -2048, 2048, null);
+        section(Group.MAP, "voxymap.config.section.contours");
+        add(Group.MAP, "contourDensity", VoxyMapConfig.CONTOUR_DENSITY, 1, 24, null);
+        add(Group.MAP, "minContourArea", VoxyMapConfig.MIN_CONTOUR_AREA, 0, 1000, null);
+        section(Group.MAP, "voxymap.config.section.terrainProcessing");
         add(Group.MAP, "denoise", VoxyMapConfig.DENOISE, 0, 0, null);
         add(Group.MAP, "fillHoles", VoxyMapConfig.FILL_HOLES, 0, 0, null);
-        section(Group.MAP, "voxymap.config.section.overlaysLabels");
-        add(Group.MAP, "showBiomes", VoxyMapConfig.SHOW_BIOMES, 0, 0, null);
-        add(Group.MAP, "showRenderDistance", VoxyMapConfig.SHOW_RENDER_DISTANCE, 0, 0, null);
+        add(Group.MAP, "ignorePlantHeight", VoxyMapConfig.IGNORE_PLANT_HEIGHT, 0, 0, null);
         section(Group.MAP, "voxymap.config.section.xaero");
         add(Group.MAP, "xaeroWaypoints", VoxyMapConfig.XAERO_WAYPOINTS, 0, 0, null);
         add(Group.MAP, "xaeroWaypointLabels", VoxyMapConfig.XAERO_WAYPOINT_LABELS, 0, 0, null);
+        section(Group.MAP, "voxymap.config.section.overlaysLabels");
+        add(Group.MAP, "showBiomes", VoxyMapConfig.SHOW_BIOMES, 0, 0, null);
+        add(Group.MAP, "showRenderDistance", VoxyMapConfig.SHOW_RENDER_DISTANCE, 0, 0, null);
         add(Group.MAP, "biomeLabelMinArea", VoxyMapConfig.BIOME_LABEL_MIN_AREA, 1, 5000, null);
         add(Group.MAP, "biomeLabelBackground", VoxyMapConfig.BIOME_LABEL_BACKGROUND, 0, 0, null);
 
@@ -196,26 +200,32 @@ public class MapConfigScreen extends Screen {
         section(Group.THREE_D, "voxymap.config.section.camera");
         add(Group.THREE_D, "fov3d", VoxyMapConfig.FOV_3D, 30, 110, null);
         add(Group.THREE_D, "verticalScale3d", VoxyMapConfig.VERTICAL_SCALE_3D, 0.1, 3.0, null);
-        add(Group.THREE_D, "minDistance3d", VoxyMapConfig.MIN_DISTANCE_3D, 16, 4096, null);
-        add(Group.THREE_D, "maxDistance3d", VoxyMapConfig.MAX_DISTANCE_3D, 512, 32768, null);
         add(Group.THREE_D, "rotateSens3d", VoxyMapConfig.ROTATE_SENS_3D, 0.2, 5.0, null);
         add(Group.THREE_D, "panSens3d", VoxyMapConfig.PAN_SENS_3D, 0.2, 5.0, null);
         add(Group.THREE_D, "zoomSens3d", VoxyMapConfig.ZOOM_SENS_3D, 0.2, 5.0, null);
         add(Group.THREE_D, "remember3dView", VoxyMapConfig.REMEMBER_3D_VIEW, 0, 0, null);
+        section(Group.THREE_D, "voxymap.config.section.advanced3d");
+        add(Group.THREE_D, "advanced3dRender", VoxyMapConfig.ADVANCED_3D_RENDER, 0, 0, null);
+        add(Group.THREE_D, "advanced3dAo", VoxyMapConfig.ADVANCED_3D_AO, 0, 100, null);
+        add(Group.THREE_D, "fogDistance3d", VoxyMapConfig.FOG_DISTANCE_3D, 1000, 60000, null);
+        add(Group.THREE_D, "autoHideContours3d", VoxyMapConfig.AUTO_HIDE_CONTOURS_3D, 0, 0, null);
         section(Group.THREE_D, "voxymap.config.section.terrainMesh");
         add(Group.THREE_D, "gpuTerrainNearDistance", VoxyMapConfig.GPU_TERRAIN_NEAR_DISTANCE, 64, 4096, null);
         add(Group.THREE_D, "gpuTerrainMidDistance", VoxyMapConfig.GPU_TERRAIN_MID_DISTANCE, 256, 16384, null);
         add(Group.THREE_D, "gpuTerrainNearStep", VoxyMapConfig.GPU_TERRAIN_NEAR_STEP, 1, 256, null);
         add(Group.THREE_D, "gpuTerrainMidStep", VoxyMapConfig.GPU_TERRAIN_MID_STEP, 1, 256, null);
         add(Group.THREE_D, "gpuTerrainFarStep", VoxyMapConfig.GPU_TERRAIN_FAR_STEP, 1, 256, null);
-        add(Group.THREE_D, "gpuTerrainSkirtDepth", VoxyMapConfig.GPU_TERRAIN_SKIRT_DEPTH, 0, 64, null);
         add(Group.THREE_D, "gpuTerrainHysteresisPct", VoxyMapConfig.GPU_TERRAIN_HYSTERESIS_PCT, 0, 50, null);
+        section(Group.THREE_D, "voxymap.config.section.meshDetails");
+        add(Group.THREE_D, "gpuTerrainSkirtDepth", VoxyMapConfig.GPU_TERRAIN_SKIRT_DEPTH, 0, 64, null);
+        add(Group.THREE_D, "gpuTerrainVoxel", VoxyMapConfig.GPU_TERRAIN_VOXEL, 0, 0, null);
+        section(Group.THREE_D, "voxymap.config.section.cameraLimits");
+        add(Group.THREE_D, "minDistance3d", VoxyMapConfig.MIN_DISTANCE_3D, 16, 4096, null);
+        add(Group.THREE_D, "maxDistance3d", VoxyMapConfig.MAX_DISTANCE_3D, 512, 32768, null);
         section(Group.THREE_D, "voxymap.config.section.markerLabels");
         add(Group.THREE_D, "playerMarkerHeight3d", VoxyMapConfig.PLAYER_MARKER_HEIGHT_3D, 0, 200, null);
         add(Group.THREE_D, "playerMarkerScale3d", VoxyMapConfig.PLAYER_MARKER_SCALE_3D, 0, 5, null);
         add(Group.THREE_D, "biomeLabel3dRange", VoxyMapConfig.BIOME_LABEL_3D_RANGE, 200, 20000, null);
-        section(Group.THREE_D, "voxymap.config.section.overlays");
-        add(Group.THREE_D, "autoHideContours3d", VoxyMapConfig.AUTO_HIDE_CONTOURS_3D, 0, 0, null);
 
         section(Group.PERFORMANCE, "voxymap.config.section.renderBudget");
         add(Group.PERFORMANCE, "gpuTextureBudgetMb", VoxyMapConfig.GPU_TEXTURE_BUDGET_MB, 32, 2048, null);
@@ -324,6 +334,7 @@ public class MapConfigScreen extends Screen {
     private void applyDraft() {
         int oldLodCap = VoxyMapConfig.MAX_LOD_LEVEL.get();
         boolean oldStartNotice = VoxyMapConfig.SHOW_START_NOTICE.get();
+        String oldColorSettings = MapData.colorSettingsSignature();
         for (Item it : items) {
             if (it.header()) continue;
             ((VoxyMapConfig.Value<Object>) it.value()).set(draft.get(it));
@@ -334,9 +345,12 @@ public class MapConfigScreen extends Screen {
             MapScreen.resetStartNoticeSession();
         }
         Gpu3DMap.reconfigureBuildThreads();
-        // Rendering changes must re-colour existing tiles; otherwise the ramp toggle only
-        // affects tiles loaded after the config screen closes.
-        MapData.INSTANCE.requestColorRerender();
+        // Only colour changes need the expensive terrain re-analysis + tile recolour; 3D-only
+        // settings (AO / FOV / distances / voxel / advanced renderer) remesh via the 3D stamp in
+        // the next tick and must not stall on a full 2D recolour.
+        if (!oldColorSettings.equals(MapData.colorSettingsSignature())) {
+            MapData.INSTANCE.requestColorRerender();
+        }
         if (oldLodCap != VoxyMapConfig.MAX_LOD_LEVEL.get()) {
             // The section index stores the LOD cap it was built with; a change invalidates it, so
             // request a rebuild instead of waiting for the next manual refresh.

@@ -149,6 +149,7 @@ public final class MapData {
     /** Per-world overlay toggles, persisted in the world's cache sidecar file (see loadUiState). */
     private volatile boolean biomeOverlay;
     private volatile boolean renderDistanceOverlay;
+    private volatile boolean contourOverlay;
     /** Per-world map scale: 1..8 blocks per pixel (1:1 to 1:8). */
     private volatile int mapScale = 1;
     /** Per-world zoom level, restored on reopen when rememberZoom is on. */
@@ -251,6 +252,8 @@ public final class MapData {
     private final AtomicBoolean buildingBiome = new AtomicBoolean();
     private volatile boolean loading;
     private volatile boolean styleChanging;
+    /** A colour rerender was requested while another one was in flight. */
+    private volatile boolean colorRerenderQueued;
     private volatile long styleChangeStartMs;
     /** last 3D view mode for this world (per-world ui state) */
     private volatile boolean view3d;
@@ -646,9 +649,24 @@ public final class MapData {
         int top = (int) ((p >>> 24) & 0xFFFF) - 32768;
         int floor = (int) (p & 0xFFFF) - 32768;
         if (top == NO_TOP) return floor != NO_SOLID ? floor : seaLevel();
-        return top;
+        return SurfaceClassTable.INSTANCE.adjustedTop(p, top);
     }
 
+
+    /**
+     * Top-face ("surface") Y at a world position: the water surface for water columns and the top
+     * face of the highest solid block for land. This is the coordinate a player standing there would
+     * report (their feet Y), unlike {@link #heightAt} which returns the top block's own Y (its bottom
+     * face). The 3D mesh, picking, cursor readout and teleport/waypoint actions all use this
+     * convention so land and water agree.
+     */
+    public int surfaceYAt(int worldX, int worldZ) {
+        if (isEmptyAt(worldX, worldZ)) return seaLevel();
+        // heightAt() is the highest non-air block Y. Every column (land and water alike) is drawn
+        // at its top face, i.e. +1. The old code forced every water column to seaLevel(), which is
+        // wrong for lakes/rivers that are not at sea level (e.g. a river surface at y=59 showing 63).
+        return heightAt(worldX, worldZ) + 1;
+    }
 
     /** True when the map snapshot has no data at this position (unexplored). */
     public boolean isEmptyAt(int worldX, int worldZ) {
@@ -866,6 +884,45 @@ public final class MapData {
         return renderDistanceOverlay;
     }
 
+    public boolean isContourOverlay() {
+        return contourOverlay;
+    }
+
+    /** Effective contour visibility (the 3D auto-hide override wins; the button shows this). */
+    public boolean isContourEffective() {
+        return contourOverride != null ? contourOverride : contourOverlay;
+    }
+
+    /**
+     * Session-only contour override used while auto-hide-contours-3D is active. Does NOT touch the
+     * saved per-world overlay state, so toggling contours inside 3D is never persisted.
+     */
+    public void setTemporaryContour(boolean value) {
+        if (Boolean.valueOf(value).equals(contourOverride)) return;
+        contourOverride = value;
+        invalidateLiveColorsNow();
+        requestColorRerender();
+    }
+
+    /**
+     * Invalidates the live tile colours immediately. In 3D mode the map is rendered from the live
+     * tile store, so a contour/display-option change must reach that store even if the async colour
+     * path below would rebuild it.
+     */
+    private void invalidateLiveColorsNow() {
+        LiveTileStore live = liveTiles;
+        if (live != null) live.invalidateAllColors();
+    }
+
+    /** Contour lines are a per-world overlay now (bottom-left button), persisted in state.properties. */
+    public void setContourOverlay(boolean value) {
+        if (value == contourOverlay) return;
+        contourOverlay = value;
+        saveUiState();
+        invalidateLiveColorsNow();
+        requestColorRerender();
+    }
+
     public void setBiomeOverlay(boolean value) {
         if (value && !biomeOverlay && isTile2DMode()) {
             invalidateTileBiomeCache();
@@ -886,6 +943,10 @@ public final class MapData {
         saveUiState();
     }
 
+    /** The contour visibility used by the colour pipeline (3D auto-hide override wins). */
+    private boolean effectiveContours() {
+        return isContourEffective();
+    }
     /** Blocks per pixel for the current world: 1 (1:1, sharpest) .. 8 (1:8, coarsest). */
     public double getZoom() {
         return zoom;
@@ -943,6 +1004,8 @@ public final class MapData {
                     if (biomes != null) biomeOverlay = Boolean.parseBoolean(biomes);
                     String distance = props.getProperty("renderDistance");
                     if (distance != null) renderDistanceOverlay = Boolean.parseBoolean(distance);
+                    String contours = props.getProperty("contours");
+                    if (contours != null) contourOverlay = Boolean.parseBoolean(contours);
                     String scale = props.getProperty("mapScale");
                     if (scale != null) {
                         try {
@@ -991,6 +1054,7 @@ public final class MapData {
         }
         biomeOverlay = VoxyMapConfig.SHOW_BIOMES.get();
         renderDistanceOverlay = VoxyMapConfig.SHOW_RENDER_DISTANCE.get();
+        contourOverlay = VoxyMapConfig.DRAW_CONTOURS.get();
         mapScale = VoxyMapConfig.MAP_SCALE.get();
         zoom = VoxyMapConfig.DEFAULT_ZOOM.get();
     }
@@ -1020,6 +1084,7 @@ public final class MapData {
             props.setProperty("style", style);
             props.setProperty("biomes", Boolean.toString(biomeOverlay));
             props.setProperty("renderDistance", Boolean.toString(renderDistanceOverlay));
+            props.setProperty("contours", Boolean.toString(contourOverlay));
             props.setProperty("mapScale", Integer.toString(mapScale));
             props.setProperty("view3d", Boolean.toString(view3d));
             if (view3dCameraSaved) {
@@ -1195,12 +1260,20 @@ public final class MapData {
                     } finally {
                         styleChanging = false;
                         styleChangeStartMs = 0;
+                        if (colorRerenderQueued) {
+                            colorRerenderQueued = false;
+                            requestColorRerender();
+                        }
                     }
                 });
             } catch (Throwable t) {
                 t.printStackTrace();
                 styleChanging = false;
                 styleChangeStartMs = 0;
+                if (colorRerenderQueued) {
+                    colorRerenderQueued = false;
+                    requestColorRerender();
+                }
             }
         });
     }
@@ -1210,7 +1283,13 @@ public final class MapData {
      * contour overlay changes; much cheaper than a full refresh.
      */
     public void requestColorRerender() {
-        if (!isReady() || loading || styleChanging) return;
+        if (!isReady() || loading) return;
+        if (styleChanging) {
+            // Queue instead of dropping: the contour overlay can be toggled while the post-enter/auto-hide
+            // recolour is still running, and dropping it left the 3D view showing the old colour.
+            colorRerenderQueued = true;
+            return;
+        }
         if (isTile2DMode()) {
             LiveTileStore live = ensure2DStore();
             live.invalidateAllColors();
@@ -1232,12 +1311,20 @@ public final class MapData {
                     } finally {
                         styleChanging = false;
                         styleChangeStartMs = 0;
+                        if (colorRerenderQueued) {
+                            colorRerenderQueued = false;
+                            requestColorRerender();
+                        }
                     }
                 });
             } catch (Throwable t) {
                 t.printStackTrace();
                 styleChanging = false;
                 styleChangeStartMs = 0;
+                if (colorRerenderQueued) {
+                    colorRerenderQueued = false;
+                    requestColorRerender();
+                }
             }
         });
     }
@@ -2780,14 +2867,17 @@ public final class MapData {
      * 15: palette v7 changed every block slot, so colours must re-render.
      * 16: palette v8 (dry foliage) and the biome attribution fix change the rendered colours.
      */
-    private static final int COLOR_CACHE_VERSION = 17;
+    private static final int COLOR_CACHE_VERSION = 21;
 
     /** everything that changes the produced pixels; changing any of these invalidates the .vxc */
     private static String colorCacheKey(String style, int sea) {
         return style + "|" + sea + "|" + VoxyMapConfig.MAP_SCALE.get() + "|"
-                + (contourOverride != null ? contourOverride : VoxyMapConfig.DRAW_CONTOURS.get()) + "|"
+                + (contourOverride != null ? contourOverride : INSTANCE.contourOverlay) + "|"
+                + VoxyMapConfig.IGNORE_PLANT_HEIGHT.get() + "|"
                 + VoxyMapConfig.MIN_CONTOUR_AREA.get() + "|"
-                + VoxyMapConfig.CONTOUR_DENSITY.get() + "|" + VoxyMapConfig.DRAW_HILLSHADE.get() + "|"
+                + VoxyMapConfig.CONTOUR_DENSITY.get() + "|"
+                + VoxyMapConfig.DRAW_HILLSHADE.get() + "|"
+                + VoxyMapConfig.LIGHT_STRENGTH.get() + "|" + VoxyMapConfig.LIGHT_AMBIENT.get() + "|"
                 + VoxyMapConfig.DRAW_WATER_DEPTH.get() + "|" + VoxyMapConfig.ADAPTIVE_COLOR_RAMP.get() + "|"
                 + VoxyMapConfig.MIN_MAX_RAMP.get() + "|" + VoxyMapConfig.WATER_BLUR.get() + "|"
                 + VoxyMapConfig.WATER_BLUR_RADIUS.get() + "|" + VoxyMapConfig.WATER_BLUR_PASSES.get() + "|"
@@ -4768,7 +4858,7 @@ public final class MapData {
     private static final ThreadLocal<ContourScratch> CONTOUR_SCRATCH =
             ThreadLocal.withInitial(ContourScratch::new);
 
-    private boolean[] computeContour(int[] topArr, boolean[] isWaterPix, int[] smoothTop,
+    private boolean[] computeContour(int[] topArr, boolean[] isWaterPix,
                                      int lo, int hi, int w, int h, boolean enabled, int[] stackBuf) {
         boolean[] contour = new boolean[w * h];
         if (!enabled) return contour;
@@ -4780,7 +4870,6 @@ public final class MapData {
         if (contourRaw == null || contourRaw.length != cells) contourRaw = scratch.raw = new boolean[cells];
         else Arrays.fill(contourRaw, false);
         final int[] fTopA = topArr;
-        final int[] fSmoothT = smoothTop;
         final boolean[] fWaterC = isWaterPix;
         final boolean[] fRaw = contourRaw;
         final int fwC = w;
@@ -4792,13 +4881,15 @@ public final class MapData {
                 for (int x = 0; x < fwC; x++) {
                     int i = rowBase + x;
                     if (fTopA[i] == Integer.MIN_VALUE || fWaterC[i]) continue;
-                    int tv = fSmoothT[i];
+                    // raw (unsmoothed) heights: contours follow the actual terrain, not an
+                    // averaged height field (the same data the shading now uses)
+                    int tv = fTopA[i];
                     if (tv == Integer.MIN_VALUE) continue;
-                    if (x < fwC - 1 && fSmoothT[i + 1] != Integer.MIN_VALUE
-                            && Math.floorDiv(tv, fInterval) != Math.floorDiv(fSmoothT[i + 1], fInterval)) {
+                    if (x < fwC - 1 && fTopA[i + 1] != Integer.MIN_VALUE
+                            && Math.floorDiv(tv, fInterval) != Math.floorDiv(fTopA[i + 1], fInterval)) {
                         fRaw[i] = true;
-                    } else if (z < fhC - 1 && fSmoothT[i + fwC] != Integer.MIN_VALUE
-                            && Math.floorDiv(tv, fInterval) != Math.floorDiv(fSmoothT[i + fwC], fInterval)) {
+                    } else if (z < fhC - 1 && fTopA[i + fwC] != Integer.MIN_VALUE
+                            && Math.floorDiv(tv, fInterval) != Math.floorDiv(fTopA[i + fwC], fInterval)) {
                         fRaw[i] = true;
                     }
                 }
@@ -4840,10 +4931,10 @@ public final class MapData {
 
     private int[] renderColor(Snapshot s, String style, int sea, boolean rebuildLabels) {
         TerrainCache tc = terrainFor(s, sea);
-        boolean wantContour = contourOverride != null ? contourOverride : VoxyMapConfig.DRAW_CONTOURS.get();
+        boolean wantContour = effectiveContours();
         if (tc.contourEnabled != wantContour) {
             // contour visibility is a separate switch: rebuild only the mask, keep the terrain cache
-            tc.contour = computeContour(tc.topArr, tc.isWaterPix, tc.smoothTop, tc.lo, tc.hi,
+            tc.contour = computeContour(tc.topArr, tc.isWaterPix, tc.lo, tc.hi,
                     tc.width, tc.height, wantContour, null);
             tc.contourEnabled = wantContour;
         }
@@ -4862,8 +4953,6 @@ public final class MapData {
         final int sea;
         final String fingerprint;
         final int[] topArr;
-        final int[] smoothTop;
-        final int[] smoothFloor;
         final boolean[] isWaterPix;
         boolean[] contour;
         boolean contourEnabled;
@@ -4878,15 +4967,13 @@ public final class MapData {
         final int pixelBlocks;
 
         TerrainCache(Snapshot snapshot, int sea, String fingerprint, int[] topArr,
-                     int[] smoothTop, int[] smoothFloor, boolean[] isWaterPix, boolean[] contour,
+                     boolean[] isWaterPix, boolean[] contour,
                      float[] depthMap, int lo, int hi, int rampLo, int rampHi,
                      boolean adaptive, int width, int height, int pixelBlocks) {
             this.snapshot = snapshot;
             this.sea = sea;
             this.fingerprint = fingerprint;
             this.topArr = topArr;
-            this.smoothTop = smoothTop;
-            this.smoothFloor = smoothFloor;
             this.isWaterPix = isWaterPix;
             this.contour = contour;
             this.depthMap = depthMap;
@@ -4923,9 +5010,29 @@ public final class MapData {
     private static final ThreadLocal<Object[]> LIVE_QUERY_CACHE =
             ThreadLocal.withInitial(() -> new Object[]{Long.MIN_VALUE, null});
 
+    /**
+     * Settings that change the rendered 2D colours. The config screen compares this before/after
+     * applying the draft and only schedules a full 2D recolour when something in this set changed;
+     * 3D-only settings (AO, FOV, distances, advanced/voxel toggles) no longer trigger the expensive
+     * terrain re-analysis + recolour.
+     */
+    public static String colorSettingsSignature() {
+        return VoxyMapConfig.DRAW_HILLSHADE.get() + "|"
+                + VoxyMapConfig.LIGHT_STRENGTH.get() + "|" + VoxyMapConfig.LIGHT_AMBIENT.get() + "|"
+                + VoxyMapConfig.CONTOUR_DENSITY.get() + "|"
+                + VoxyMapConfig.IGNORE_PLANT_HEIGHT.get() + "|"
+                + VoxyMapConfig.MIN_CONTOUR_AREA.get() + "|"
+                + VoxyMapConfig.WATER_BLUR.get() + "|" + VoxyMapConfig.WATER_BLUR_RADIUS.get() + "|"
+                + VoxyMapConfig.WATER_BLUR_PASSES.get() + "|" + VoxyMapConfig.DRAW_WATER_DEPTH.get() + "|"
+                + VoxyMapConfig.FILL_HOLES.get() + "|" + VoxyMapConfig.DENOISE.get() + "|"
+                + VoxyMapConfig.ADAPTIVE_COLOR_RAMP.get() + "|" + VoxyMapConfig.MIN_MAX_RAMP.get() + "|"
+                + VoxyMapConfig.BIOME_COLORS.get() + "|" + VoxyMapConfig.SHOW_BIOMES.get() + "|"
+                + VoxyMapConfig.IGNORE_PLANT_HEIGHT.get();
+    }
     /** Settings that shape the terrain analysis; changing any of them invalidates the cache. */
     private static String terrainFingerprint() {
         return VoxyMapConfig.FILL_HOLES.get() + "|" + VoxyMapConfig.DENOISE.get() + "|"
+                + VoxyMapConfig.IGNORE_PLANT_HEIGHT.get() + "|"
                 + VoxyMapConfig.WATER_BLUR.get() + "|" + VoxyMapConfig.WATER_BLUR_RADIUS.get() + "|"
                 + VoxyMapConfig.WATER_BLUR_PASSES.get() + "|" + VoxyMapConfig.ADAPTIVE_COLOR_RAMP.get() + "|"
                 + VoxyMapConfig.MIN_MAX_RAMP.get() + "|" + VoxyMapConfig.CONTOUR_DENSITY.get() + "|"
@@ -4973,6 +5080,8 @@ public final class MapData {
                             if (tv == NO_TOP) {
                                 tv = fl != NO_SOLID ? fl : Integer.MIN_VALUE;
                                 tw = false;
+                            } else {
+                                tv = SurfaceClassTable.INSTANCE.adjustedTop(fPixels[i], tv);
                             }
                             fTop[i] = tv;
                             fWater[i] = tw;
@@ -5096,9 +5205,6 @@ public final class MapData {
         }
 
         progress = 87;
-        int[] smoothFloor = smooth(floorArr, w, h, scratch);
-        int[] smoothTop = smooth(topArr, w, h, scratch);
-
         progress = 89;
 
         // water depth: real where known; missing columns fall back to a deep percentile,
@@ -5370,10 +5476,10 @@ public final class MapData {
         }
         // contour mask from the smoothed land height, then drop small fragments by connected-area size
         int contourInterval = Math.max(10, (hi - lo) / Math.max(1, VoxyMapConfig.CONTOUR_DENSITY.get()));
-        boolean drawContours = contourOverride != null ? contourOverride : VoxyMapConfig.DRAW_CONTOURS.get();
-        boolean[] contour = computeContour(topArr, isWaterPix, smoothTop, lo, hi, w, h, drawContours, next);
+        boolean drawContours = effectiveContours();
+        boolean[] contour = computeContour(topArr, isWaterPix, lo, hi, w, h, drawContours, next);
 
-        TerrainCache built = new TerrainCache(s, sea, fp, topArr, smoothTop, smoothFloor,
+        TerrainCache built = new TerrainCache(s, sea, fp, topArr,
                 isWaterPix, contour, depthMap, lo, hi, rampLo, rampHi,
                 adaptive || VoxyMapConfig.MIN_MAX_RAMP.get(), w, h, pixelBlocks);
         built.contourEnabled = drawContours;
@@ -5391,7 +5497,7 @@ public final class MapData {
             int fl = (int) (packed & 0xFFFF) - 32768;
             return fl != NO_SOLID ? fl : Integer.MIN_VALUE;
         }
-        return tv;
+        return SurfaceClassTable.INSTANCE.adjustedTop(packed, tv);
     }
 
     private static boolean rawWater(long packed) {
@@ -5409,25 +5515,6 @@ public final class MapData {
         if (tv == NO_TOP) tv = fl != NO_SOLID ? fl : Integer.MIN_VALUE;
         if (tv == Integer.MIN_VALUE) return Integer.MIN_VALUE;
         return (tw && fl != NO_SOLID && fl < tv) ? fl : tv;
-    }
-
-    /** 3x3 average of the raw top/floor values around (x,z), matching {@link #smooth}. */
-    private static int smoothSample(long[] pixels, int x, int z, int w, int h, boolean top) {
-        int sum = 0, cnt = 0;
-        for (int dz = -1; dz <= 1; dz++) {
-            int zz = z + dz;
-            if (zz < 0 || zz >= h) continue;
-            for (int dx = -1; dx <= 1; dx++) {
-                int xx = x + dx;
-                if (xx < 0 || xx >= w) continue;
-                int v = top ? rawTop(pixels[zz * w + xx]) : rawFloor(pixels[zz * w + xx]);
-                if (v != Integer.MIN_VALUE) {
-                    sum += v;
-                    cnt++;
-                }
-            }
-        }
-        return cnt == 0 ? Integer.MIN_VALUE : sum / cnt;
     }
 
     /** Adaptive colour-ramp limits; mirrors the block in terrainFor. */
@@ -5547,7 +5634,7 @@ public final class MapData {
             report.colorFallback = "dirty area too large";
             return null;
         }
-        boolean contours = contourOverride != null ? contourOverride : VoxyMapConfig.DRAW_CONTOURS.get();
+        boolean contours = effectiveContours();
         if (contours != tc.contourEnabled) {
             report.colorFallback = "contour mode changed";
             return null;
@@ -5573,16 +5660,6 @@ public final class MapData {
                 tc.isWaterPix[i] = rawWater(p);
             }
         }
-        // smoothing for the rectangle plus one pixel of context
-        int sx0 = Math.max(0, dx0 - 1), sz0 = Math.max(0, dz0 - 1);
-        int sx1 = Math.min(w - 1, dx1 + 1), sz1 = Math.min(h - 1, dz1 + 1);
-        for (int z = sz0; z <= sz1; z++) {
-            for (int x = sx0; x <= sx1; x++) {
-                int i = z * w + x;
-                tc.smoothTop[i] = smoothSample(built.pixels, x, z, w, h, true);
-                tc.smoothFloor[i] = smoothSample(built.pixels, x, z, w, h, false);
-            }
-        }
         // any ramp change recolours the whole map, so it must be rejected before touching colours
         int[] ramp = rampParams(tc.topArr, tc.isWaterPix, sea, w, h);
         if (ramp[0] != tc.lo || ramp[1] != tc.hi || ramp[2] != tc.rampLo || ramp[3] != tc.rampHi) {
@@ -5590,7 +5667,7 @@ public final class MapData {
             return null;
         }
         boolean[] oldContour = tc.contour;
-        boolean[] newContour = computeContour(tc.topArr, tc.isWaterPix, tc.smoothTop, tc.lo, tc.hi, w, h, contours, null);
+        boolean[] newContour = computeContour(tc.topArr, tc.isWaterPix, tc.lo, tc.hi, w, h, contours, null);
         // contour fragments are filtered by connected area, so a local edit can toggle a whole
         // contour line: include every changed mask pixel, or fall back when that area explodes
         int contourDiff = 0;
@@ -5617,8 +5694,8 @@ public final class MapData {
             return null;
         }
         tc.contour = newContour;
-        TerrainCache updated = new TerrainCache(built, sea, tc.fingerprint, tc.topArr, tc.smoothTop,
-                tc.smoothFloor, tc.isWaterPix, tc.contour, tc.depthMap, tc.lo, tc.hi, tc.rampLo, tc.rampHi,
+        TerrainCache updated = new TerrainCache(built, sea, tc.fingerprint, tc.topArr,
+                tc.isWaterPix, tc.contour, tc.depthMap, tc.lo, tc.hi, tc.rampLo, tc.rampHi,
                 tc.adaptive, w, h, built.pixelBlocks);
         updated.contourEnabled = contours;
         terrainCache = updated;
@@ -5757,53 +5834,69 @@ public final class MapData {
      * Hillshade / contour / coast darkening shared by every style. Keeping this in one helper makes
      * the material style use exactly the same terrain shading as the six existing palettes.
      */
+    /**
+     * Directional shading shared by the 2D map colours. The advanced 3D shader mirrors this exact
+     * formula (same light direction, strength, ambient and per-style factor) so both views look
+     * like they are lit by the same sun; see {@link #lightStyleFactor}.
+     */
     private static float shadeAt(TerrainCache tc, String style, int idx, int x, int z, boolean water) {
         final int fw = tc.width;
         final int fh = tc.height;
-        final boolean nautical = "nautical".equals(style);
-        // The material ("blocks") style carries no height ramp, so relief has to come from the
-        // shading alone: it uses a wider amplitude, a shorter slope ramp and wider clamp bounds
-        // than the six height palettes. The other styles keep their tuned numbers.
-        final boolean material = "blocks".equals(style);
-        final float gate = material ? 0.06f : 0.08f;
-        final float ramp = material ? 0.50f : 0.60f;
-        final float landStrength = nautical ? 0.06f : (material ? 0.26f : 0.18f);
-        final float clampLo = material ? 0.74f : 0.78f;
-        final float clampHi = material ? 1.16f : 1.08f;
+        boolean drawHillshade = VoxyMapConfig.DRAW_HILLSHADE.get();
         float shade = 1f;
-        if (VoxyMapConfig.DRAW_HILLSHADE.get() && x > 0 && z > 0 && x < fw - 1 && z < fh - 1) {
+        if (drawHillshade && x > 0 && z > 0 && x < fw - 1 && z < fh - 1) {
             int nb0, nb1, nb2, nb3;
+            // Land uses the raw (unsmoothed) heights: the 3D mesher derives its normals from the raw
+            // surface, so using the 3x3-smoothed field here averaged small relief away and made the
+            // 2D map look flatter than the 3D view.
+            // Water is different: its colour comes from the blurred depthMap (water blur), so the
+            // shading must use the same blurred depth field, otherwise the smooth water colour got
+            // a sharp, noisy hillshade. Depth acts as -height for the normal gradient.
             if (water) {
-                nb0 = tc.smoothFloor[idx - 1];
-                nb1 = tc.smoothFloor[idx + 1];
-                nb2 = tc.smoothFloor[idx - fw];
-                nb3 = tc.smoothFloor[idx + fw];
+                float d0 = tc.depthMap[idx - 1];
+                float d1 = tc.depthMap[idx + 1];
+                float d2 = tc.depthMap[idx - fw];
+                float d3 = tc.depthMap[idx + fw];
+                float wstep = 2f * tc.pixelBlocks;
+                float wnx = (d1 - d0) / wstep;
+                float wnz = (d3 - d2) / wstep;
+                float wl = (float) Math.sqrt(wnx * wnx + 1f + wnz * wnz);
+                float lx2 = -0.55f, ly2 = 0.70f, lz2 = -0.55f;
+                float ll2 = (float) Math.sqrt(lx2 * lx2 + ly2 * ly2 + lz2 * lz2);
+                float dw = (wnx * lx2 + ly2 + wnz * lz2) / (wl * ll2);
+                float strengthW = VoxyMapConfig.LIGHT_STRENGTH.get() / 100f;
+                float ambientW = VoxyMapConfig.LIGHT_AMBIENT.get() / 100f;
+                float scaleW = lightStyleFactor(style, true);
+                float directionalW = 1f + strengthW * scaleW * 1.9f * (dw - ly2 / ll2);
+                directionalW = Math.max(0.42f, Math.min(1.38f, directionalW));
+                shade = ambientW + (1f - ambientW) * directionalW;
+                return shade;
             } else {
-                nb0 = tc.smoothTop[idx - 1];
-                nb1 = tc.smoothTop[idx + 1];
-                nb2 = tc.smoothTop[idx - fw];
-                nb3 = tc.smoothTop[idx + fw];
+                nb0 = tc.topArr[idx - 1];
+                nb1 = tc.topArr[idx + 1];
+                nb2 = tc.topArr[idx - fw];
+                nb3 = tc.topArr[idx + fw];
             }
-            final float lx = -0.55f, ly = 0.70f, lz = -0.55f;
-            final float ll = (float) Math.sqrt(lx * lx + ly * ly + lz * lz);
             if (nb0 != Integer.MIN_VALUE && nb1 != Integer.MIN_VALUE
                     && nb2 != Integer.MIN_VALUE && nb3 != Integer.MIN_VALUE) {
                 float step = 2f * tc.pixelBlocks;
                 float dzdx = (nb1 - nb0) / step;
                 float dzdy = (nb3 - nb2) / step;
-                float slope = (float) Math.sqrt(dzdx * dzdx + dzdy * dzdy);
-                if (slope > gate) {
-                    float nx = -dzdx, ny = 1f, nz = -dzdy;
-                    float nl = (float) Math.sqrt(nx * nx + ny * ny + nz * nz);
-                    float d = (nx * lx + ny * ly + nz * lz) / (nl * ll);
-                    float strength = Math.min(1f, (slope - gate) / ramp);
-                    shade = 1f + (water ? 0.10f : landStrength) * d * strength;
-                }
+                float nx = -dzdx, ny = 1f, nz = -dzdy;
+                float nl = (float) Math.sqrt(nx * nx + ny * ny + nz * nz);
+                final float lx = -0.55f, ly = 0.70f, lz = -0.55f;
+                final float ll = (float) Math.sqrt(lx * lx + ly * ly + lz * lz);
+                float d = (nx * lx + ny * ly + nz * lz) / (nl * ll);
+                float strength = VoxyMapConfig.LIGHT_STRENGTH.get() / 100f;
+                float ambient = VoxyMapConfig.LIGHT_AMBIENT.get() / 100f;
+                float scale = lightStyleFactor(style, water);
+                float directional = 1f + strength * scale * 1.9f * (d - ly / ll);
+                directional = Math.max(0.42f, Math.min(1.38f, directional));
+                shade = ambient + (1f - ambient) * directional;
             }
         }
-        shade = Math.max(clampLo, Math.min(clampHi, shade));
         if (!water) {
-            if (tc.contour[idx]) shade *= nautical ? 0.62f : 0.70f;
+            if (tc.contour[idx]) shade *= "nautical".equals(style) ? 0.62f : 0.70f;
             boolean coast = (x < fw - 1 && tc.isWaterPix[idx + 1]) || (z < fh - 1 && tc.isWaterPix[idx + fw])
                     || (x > 0 && tc.isWaterPix[idx - 1]) || (z > 0 && tc.isWaterPix[idx - fw]);
             if (coast) shade *= 0.70f;
@@ -5811,6 +5904,17 @@ public final class MapData {
         return shade;
     }
 
+    /**
+     * Relative directional-light strength per style. "blocks" is the reference (1.0) because the
+     * advanced 3D view uses exactly the same lighting; the height palettes keep a slightly softer
+     * look and nautical is deliberately nearly flat. Water is shaded from its floor but weakly.
+     */
+    public static float lightStyleFactor(String style, boolean water) {
+        if (water) return 0.4f;
+        if ("nautical".equals(style)) return 0.3f;
+        if ("blocks".equals(style)) return 1.0f;
+        return 0.7f;
+    }
     private static int applyShade(int rgb, float shade) {
         int r = Math.max(0, Math.min(255, (int) (((rgb >> 16) & 0xFF) * shade)));
         int g = Math.max(0, Math.min(255, (int) (((rgb >> 8) & 0xFF) * shade)));
@@ -5819,56 +5923,7 @@ public final class MapData {
     }
 
 
-    private static int[] smooth(int[] arr, int w, int h, int[] tmp) {
-        if (tmp == null || tmp.length != arr.length) tmp = new int[arr.length];
-        int[] out = new int[arr.length];
-        final int[] fArr = arr;
-        final int[] fTmp = tmp;
-        final int[] fOut = out;
-        final int fw = w;
-        final int fh = h;
-        // Two separate banded passes with a latch barrier between them. Doing both passes inside a
-        // single parallelRows call let the vertical pass read the neighbour band's rows before that
-        // band had written its horizontal pass, which produced horizontal seams every band boundary.
-        parallelRows(h, (z0, z1) -> {
-            for (int z = z0; z < z1; z++) {
-                int row = z * fw;
-                for (int x = 0; x < fw; x++) {
-                    int sum = 0, cnt = 0;
-                    for (int dx = -1; dx <= 1; dx++) {
-                        int xx = x + dx;
-                        if (xx < 0 || xx >= fw) continue;
-                        int v = fArr[row + xx];
-                        if (v != Integer.MIN_VALUE) {
-                            sum += v;
-                            cnt++;
-                        }
-                    }
-                    fTmp[row + x] = cnt == 0 ? Integer.MIN_VALUE : sum / cnt;
-                }
-            }
-        });
-        parallelRows(h, (z0, z1) -> {
-            for (int z = z0; z < z1; z++) {
-                for (int x = 0; x < fw; x++) {
-                    int sum = 0, cnt = 0;
-                    for (int dz = -1; dz <= 1; dz++) {
-                        int zz = z + dz;
-                        if (zz < 0 || zz >= fh) continue;
-                        int v = fTmp[zz * fw + x];
-                        if (v != Integer.MIN_VALUE) {
-                            sum += v;
-                            cnt++;
-                        }
-                    }
-                    fOut[z * fw + x] = cnt == 0 ? Integer.MIN_VALUE : sum / cnt;
-                }
-            }
-        });
-        return out;
-    }
+
 }
-
-
 
 
