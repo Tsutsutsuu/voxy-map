@@ -126,7 +126,7 @@ public final class VoxyMapConfig {
     /** Hide the game HUD (hotbar / chat / overlays) while the map is open, exactly like F1. */
     public static final Value<Boolean> HIDE_HUD = new Value<>("hideHud", true);
     /** Show the early-development / feedback notice when the map opens. */
-    public static final Value<Boolean> SHOW_START_NOTICE = new Value<>("showStartNotice", false);
+    public static final Value<Boolean> SHOW_START_NOTICE = new Value<>("showStartNotice", true);
 
     // ---- 3D map view ----
     public static final Value<Double> VERTICAL_SCALE_3D = new Value<>("verticalScale3d", 1.0);
@@ -227,6 +227,13 @@ public final class VoxyMapConfig {
         return Minecraft.getInstance().gameDirectory.toPath().resolve("config").resolve(FILE_NAME);
     }
 
+    /**
+     * Bumped when the shipped defaults change in a way that should replace old config files once.
+     * A config without this marker (or with an older one) is reset to the current defaults.
+     */
+    private static final int CONFIG_VERSION = 1;
+    private static final String VERSION_KEY = "configVersion";
+
     public static void load() {
         Path file = configFile();
         if (!Files.exists(file)) {
@@ -235,7 +242,21 @@ public final class VoxyMapConfig {
         }
         try {
             JsonObject root = GSON.fromJson(Files.readString(file), JsonObject.class);
-            if (root == null) return;
+            if (root == null) {
+                resetToDefaults();
+                save();
+                return;
+            }
+            int version = root.has(VERSION_KEY) ? root.get(VERSION_KEY).getAsInt() : 0;
+            if (version < CONFIG_VERSION) {
+                // Old config (including every config written before versioning existed): replace it
+                // with the current defaults once. save() then writes the new version marker.
+                System.out.println("[voxymap] old config version " + version + " -> resetting to defaults (v"
+                        + CONFIG_VERSION + ")");
+                resetToDefaults();
+                save();
+                return;
+            }
             for (java.lang.reflect.Field f : VoxyMapConfig.class.getDeclaredFields()) {
                 if (f.getType() != Value.class) continue;
                 if (f.isAnnotationPresent(Deprecated.class)) continue;
@@ -253,12 +274,28 @@ public final class VoxyMapConfig {
                 }
             }
         } catch (Exception e) {
-            System.err.println("[voxymap] config file could not be read, using defaults: " + e);
+            System.err.println("[voxymap] config file could not be read, resetting to defaults: " + e);
+            resetToDefaults();
+            save();
+        }
+    }
+
+    private static void resetToDefaults() {
+        for (java.lang.reflect.Field f : VoxyMapConfig.class.getDeclaredFields()) {
+            if (f.getType() != Value.class) continue;
+            if (f.isAnnotationPresent(Deprecated.class)) continue;
+            try {
+                f.setAccessible(true);
+                Value<?> v = (Value<?>) f.get(null);
+                if (v != null) v.set(v.getDefault());
+            } catch (Exception ignored) {
+            }
         }
     }
 
     public static void save() {
         JsonObject root = new JsonObject();
+        root.addProperty(VERSION_KEY, CONFIG_VERSION);
         for (java.lang.reflect.Field f : VoxyMapConfig.class.getDeclaredFields()) {
             if (f.getType() != Value.class) continue;
             if (f.isAnnotationPresent(Deprecated.class)) continue;
