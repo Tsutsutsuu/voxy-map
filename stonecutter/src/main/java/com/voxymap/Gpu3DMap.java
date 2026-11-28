@@ -20,7 +20,6 @@ import com.mojang.blaze3d.vertex.ByteBufferBuilder;
 import com.mojang.blaze3d.vertex.DefaultVertexFormat;
 import com.mojang.blaze3d.vertex.MeshData;
 import com.mojang.blaze3d.vertex.VertexFormat;
-import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.MappableRingBuffer;
 import net.minecraft.client.renderer.Projection;
@@ -28,7 +27,6 @@ import net.minecraft.client.renderer.ProjectionMatrixBuffer;
 import net.minecraft.client.renderer.RenderPipelines;
 import net.minecraft.client.renderer.fog.FogRenderer;
 import net.minecraft.client.renderer.texture.AbstractTexture;
-import net.minecraft.world.attribute.EnvironmentAttributes;
 import org.joml.Matrix4f;
 import org.joml.Vector3f;
 import org.joml.Vector4f;
@@ -98,6 +96,9 @@ public final class Gpu3DMap {
     private static GpuBufferSlice fogPrevious;
     private static ByteBuffer fogStaging;
     private static final int SKY_BLACK = 0xFF050508;
+    /** Fixed clear-noon overworld colours: no weather, daylight or biome variation. */
+    private static final int CLEAR_SKY_COLOR = 0xFF79A7FF;
+    private static final int CLEAR_FOG_COLOR = 0xFFC0D8FF;
     private static final int OVERLAY_SEGMENTS = 64;
     /** Upper bound on the marker tick-line segments (the buffer is sized for this). */
     private static final int MARKER_MAX_SEGMENTS = 96;
@@ -2267,15 +2268,6 @@ public final class Gpu3DMap {
                 && "blocks".equals(MapData.INSTANCE.getStyle());
     }
 
-    /** Clear-day vanilla colours, deliberately without weather/time/sun mixing. */
-    private static int[] skyFogColors(Minecraft mc) {
-        Camera camera = BlazeCompat.mainCamera(mc);
-        float partial = mc.getDeltaTracker().getGameTimeDeltaPartialTick(false);
-        int sky = camera.attributeProbe().getValue(EnvironmentAttributes.SKY_COLOR, partial);
-        int fog = camera.attributeProbe().getValue(EnvironmentAttributes.FOG_COLOR, partial);
-        return new int[] {sky, fog};
-    }
-
     private static int lerpColor(int from, int to, float t) {
         int r0 = (from >> 16) & 0xFF, g0 = (from >> 8) & 0xFF, b0 = from & 0xFF;
         int r1 = (to >> 16) & 0xFF, g1 = (to >> 8) & 0xFF, b1 = to & 0xFF;
@@ -2322,24 +2314,28 @@ public final class Gpu3DMap {
             skyStaging = ByteBuffer.allocateDirect(SKY_MAX_VERTS * SKY_VERTEX_BYTES)
                     .order(ByteOrder.nativeOrder());
         }
-        // Straight down (near top-down): keep the previous black backdrop, no sky.
-        if (cam.pitch <= Math.toRadians(-80.0)) return;
+        // Below the horizon darkens towards black as the camera tilts down. The blend is gradual
+        // (fully coloured above -60 degrees, fully black at -85 degrees), so tilting up from a
+        // top-down view fades from black to the horizon colour instead of switching abruptly.
+        double pitchDeg = Math.toDegrees(cam.pitch);
+        float straight = (float) Math.max(0.0, Math.min(1.0, (-pitchDeg - 60.0) / 25.0));
+        straight = straight * straight * (3f - 2f * straight);
+        int belowColor = lerpColor(fogColor, SKY_BLACK, straight);
         double tanHalfFov = Math.tan(Math.toRadians(fov * 0.5));
         double horizon = -Math.tan(cam.pitch) / Math.max(1e-4, tanHalfFov);
         skyStaging.clear();
         if (horizon >= 1.0) {
-            // Horizon is above the screen: everything visible is below it, so fill the whole
-            // screen with the horizon colour instead of leaving a big black band.
-            skyBand(skyStaging, 1f, -1f, fogColor, fogColor);
+            // Horizon is above the screen: everything visible is below it.
+            skyBand(skyStaging, 1f, -1f, belowColor, belowColor);
         } else if (horizon <= -1.0) {
             // Whole screen is above the horizon: fade sky -> horizon colour top to bottom.
             skyBand(skyStaging, 1f, -1f, skyColor, fogColor);
         } else {
             float hz = (float) horizon;
             skyBand(skyStaging, 1f, hz, skyColor, fogColor);
-            // Below the horizon keep the horizon colour (terrain is drawn over it), so there is
-            // no hard black gap between the sky and the terrain silhouette.
-            skyBand(skyStaging, hz, -1f, fogColor, fogColor);
+            // Fade from the horizon colour at the horizon line to the pitch-dependent below colour
+            // at the bottom of the screen (terrain is drawn over most of it).
+            skyBand(skyStaging, hz, -1f, fogColor, belowColor);
         }
         skyStaging.flip();
         int bytes = skyStaging.remaining();
@@ -2427,14 +2423,11 @@ public final class Gpu3DMap {
         Matrix4f viewProj = new Matrix4f(proj).mul(view);
         ensureDepth(target.width, target.height);
         boolean skyFog = skyFogActive();
-        int skyColor = 0;
-        int horizonColor = 0;
+        int skyColor = CLEAR_SKY_COLOR;
+        int horizonColor = CLEAR_FOG_COLOR;
         float fogStart = 0f;
         float fogEnd = 0f;
         if (skyFog) {
-            int[] colors = skyFogColors(mc);
-            skyColor = colors[0];
-            horizonColor = colors[1];
             // Fog is horizontal only; scale the distances with the camera height/distance so
             // zooming out never hides the terrain edge behind fog.
             float camHeight = Math.max(1f, (float) (cam.eyeY() - cam.targetY));
