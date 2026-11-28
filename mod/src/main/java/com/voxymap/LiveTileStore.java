@@ -237,6 +237,14 @@ public final class LiveTileStore {
     /** Bumped only when tile pixels change; biome labels are keyed by this (not by evictions). */
     private final AtomicInteger biomeVersion = new AtomicInteger();
     private final AtomicInteger colorVersion = new AtomicInteger();
+    /**
+     * Bumped by every {@link #invalidateAllColors()}. It is part of the tile colour identity so a
+     * recolour really produces a *new* hash: the 3D mesh stamp is derived from
+     * {@code tile.colorStyleHash}, and an identical hash meant "nothing changed" even though the
+     * colours had just been re-rendered (the contour overlay toggle inside the 3D view never
+     * repainted because of this).
+     */
+    private final AtomicInteger colorSettingsEpoch = new AtomicInteger();
     private volatile long lastRampChangeMs;
 
     public LiveTileStore(long minWX, long minWZ, int pixelBlocks, Path cacheDir) {
@@ -430,6 +438,7 @@ public final class LiveTileStore {
             tile.textureEpoch = -1;
         }
         colorRequestsThisFrame.set(0);
+        colorSettingsEpoch.incrementAndGet();
         colorVersion.incrementAndGet();
     }
 
@@ -1840,15 +1849,17 @@ public final class LiveTileStore {
      * Colour cache identity. Must stay identical to the hash {@link #pumpFor3D} uses: any
      * render-only flag added here would invalidate the other path's colour jobs.
      */
-    private static int tileColorHash(String style, int sea, int colorEpoch) {
+    private int tileColorHash(String style, int sea, int colorEpoch) {
         // the palette JSON version is part of the identity: editing surface_classes.json must
-        // re-bake colours (and textures) without forcing a pixel-cache rebuild
-        return (((style == null ? 0 : style.hashCode()) * 31 + sea) * 31 + colorEpoch) * 31
-                + SurfaceClassTable.INSTANCE.version();
+        // re-bake colours (and textures) without forcing a pixel-cache rebuild. The colour-settings
+        // epoch makes every explicit invalidation (contour overlay, light strength, biome colours,
+        // ramp change) a new identity, so the 3D stamp changes and the tile is rebuilt + re-uploaded.
+        return ((((style == null ? 0 : style.hashCode()) * 31 + sea) * 31 + colorEpoch) * 31
+                + SurfaceClassTable.INSTANCE.version()) * 31 + colorSettingsEpoch.get();
     }
 
     /** Texture identity: the colour hash plus render-only flags (baked biome borders). */
-    private static int tileTextureHash(String style, int sea, int colorEpoch) {
+    private int tileTextureHash(String style, int sea, int colorEpoch) {
         return tileColorHash(style, sea, colorEpoch) * 31 + (MapData.INSTANCE.isBiomeOverlay() ? 1 : 0);
     }
 
