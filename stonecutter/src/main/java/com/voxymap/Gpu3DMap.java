@@ -3,9 +3,11 @@ package com.voxymap;
 import com.mojang.blaze3d.buffers.GpuBuffer;
 import com.mojang.blaze3d.buffers.GpuBufferSlice;
 import com.mojang.blaze3d.pipeline.DepthStencilState;
+import com.mojang.blaze3d.ProjectionType;
 import com.mojang.blaze3d.pipeline.RenderPipeline;
 import com.mojang.blaze3d.pipeline.RenderTarget;
 import com.mojang.blaze3d.platform.CompareOp;
+import com.mojang.blaze3d.systems.CommandEncoder;
 import com.mojang.blaze3d.systems.RenderPass;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.textures.FilterMode;
@@ -14,9 +16,11 @@ import com.mojang.blaze3d.textures.GpuTexture;
 import com.mojang.blaze3d.textures.GpuTextureView;
 import com.mojang.blaze3d.vertex.BufferBuilder;
 import com.mojang.blaze3d.vertex.ByteBufferBuilder;
+import com.mojang.blaze3d.vertex.DefaultVertexFormat;
 import com.mojang.blaze3d.vertex.MeshData;
 import com.mojang.blaze3d.vertex.VertexFormat;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.renderer.Projection;
 import net.minecraft.client.renderer.ProjectionMatrixBuffer;
 import net.minecraft.client.renderer.RenderPipelines;
 import net.minecraft.client.renderer.texture.AbstractTexture;
@@ -68,6 +72,18 @@ public final class Gpu3DMap {
     private static final RenderPipeline MARKER_PIPELINE = markerPipeline();
     /** Textured world-space pipeline for the player arrow (POSITION_TEX, no depth test). */
     private static final RenderPipeline ARROW_PIPELINE = arrowPipeline();
+    /** Experimental advanced 3D rendering: custom terrain shader, offscreen layer + composite. */
+    private static RenderPipeline advancedPipeline;
+    private static GpuTexture advancedColor;
+    private static GpuTextureView advancedColorView;
+    private static int advancedWidth;
+    private static int advancedHeight;
+    private static ProjectionMatrixBuffer advancedProjection;
+    private static GpuBuffer advancedQuad;
+    private static int advancedQuadWidth;
+    private static int advancedQuadHeight;
+    private static GpuSampler advancedSampler;
+    private static boolean lastAdvancedMode;
     private static final int OVERLAY_SEGMENTS = 64;
     /** Upper bound on the marker tick-line segments (the buffer is sized for this). */
     private static final int MARKER_MAX_SEGMENTS = 96;
@@ -706,6 +722,9 @@ public final class Gpu3DMap {
         stamp = stamp * 31L + (Long.rotateLeft(Double.doubleToLongBits(vscale), 17) ^ (long) pb);
         stamp = stamp * 31L + sea;
         stamp = stamp * 31L + (VoxyMapConfig.GPU_TERRAIN_VOXEL.get() ? 1L : 0L);
+        stamp = stamp * 31L + (VoxyMapConfig.ADVANCED_3D_RENDER.get() ? 1L : 0L);
+        stamp = stamp * 31L + VoxyMapConfig.CONTOUR_DENSITY.get();
+        stamp = stamp * 31L + (VoxyMapConfig.DRAW_CONTOURS.get() ? 1L : 0L);
         // Boundary vertices use the right/bottom neighbour's first pixel. Rebuild this tile when
         // those neighbours change, otherwise two tiles would keep different heights at the seam.
         for (int dz = 0; dz <= 1; dz++) {
@@ -722,7 +741,8 @@ public final class Gpu3DMap {
     private static long overlayKey() {
         // Edge pixels are derived per tile, so only the toggle state matters. There is no
         // viewport-sized biome edge texture to rebuild as the 3D camera moves.
-        return MapData.INSTANCE.isBiomeOverlay() ? 1L : 0L;
+        return (MapData.INSTANCE.isBiomeOverlay() ? 1L : 0L)
+                | (VoxyMapConfig.ADVANCED_3D_RENDER.get() ? 2L : 0L);
     }
 
     private static void refreshOverlayTextures(LiveTileStore live) {
@@ -1005,6 +1025,14 @@ public final class Gpu3DMap {
             return new BuildResult(gen, key, stamp, slot, null, null, 0, step,
                     cx, cz, 0.0, 0.0, System.nanoTime() - buildStart);
         }
+        int uv2x = 240;
+        int uv2y = 240;
+        if (VoxyMapConfig.ADVANCED_3D_RENDER.get()) {
+            uv2x = Math.max(1, Math.min(65535,
+                    (int) Math.round(VoxyMapConfig.CONTOUR_DENSITY.get() * vscale * 16.0)));
+            int widthQ = Math.max(1, (int) Math.round(0.08 * vscale * 16.0));
+            uv2y = VoxyMapConfig.DRAW_CONTOURS.get() ? (1 | (widthQ << 1)) : 0;
+        }
         VertexFormat format = BlazeCompat.vertexFormat(PIPELINE);
         if (format == null) return null;
         ByteBufferBuilder alloc = new ByteBufferBuilder(Math.max(1024, s.vi * format.getVertexSize()));
@@ -1013,7 +1041,7 @@ public final class Gpu3DMap {
             bb.addVertex(s.px[i], s.py[i], s.pz[i])
                     .setColor(255, 255, 255, 255)
                     .setUv(s.pu[i], s.pv[i])
-                    .setUv2(240, 240);
+                    .setUv2(uv2x, uv2y);
         }
         MeshData mesh = bb.buildOrThrow();
         ByteBuffer vdata = copy(mesh.vertexBuffer());
@@ -1333,6 +1361,14 @@ public final class Gpu3DMap {
             return new BuildResult(gen, key, stamp, slot, null, null, 0, step,
                     cx, cz, 0.0, 0.0, System.nanoTime() - buildStart);
         }
+        int uv2x = 240;
+        int uv2y = 240;
+        if (VoxyMapConfig.ADVANCED_3D_RENDER.get()) {
+            uv2x = Math.max(1, Math.min(65535,
+                    (int) Math.round(VoxyMapConfig.CONTOUR_DENSITY.get() * vscale * 16.0)));
+            int widthQ = Math.max(1, (int) Math.round(0.08 * vscale * 16.0));
+            uv2y = VoxyMapConfig.DRAW_CONTOURS.get() ? (1 | (widthQ << 1)) : 0;
+        }
         VertexFormat format = BlazeCompat.vertexFormat(PIPELINE);
         if (format == null) return null;
         ByteBufferBuilder alloc = new ByteBufferBuilder(Math.max(1024, vi * format.getVertexSize()));
@@ -1342,7 +1378,7 @@ public final class Gpu3DMap {
             bb.addVertex(px[i], py[i], pz[i])
                     .setColor(255, 255, 255, 255)
                     .setUv(pu[i], pv[i])
-                    .setUv2(240, 240);
+                    .setUv2(uv2x, uv2y);
         }
         MeshData mesh = bb.buildOrThrow();
         ByteBuffer vdata = copy(mesh.vertexBuffer());
@@ -1411,8 +1447,12 @@ public final class Gpu3DMap {
                                           Slot slot, int[] rgb, LiveTileStore.LiveTile tile,
                                           LiveTileStore live) {
         MapData data = MapData.INSTANCE;
-        boolean biomes = data.isBiomeOverlay();
+        boolean advanced = VoxyMapConfig.ADVANCED_3D_RENDER.get() && BlazeCompat.advanced3dSupported();
+        boolean biomes = !advanced && data.isBiomeOverlay();
         long[] pixels = tile.pixels;
+        int basePb = live != null ? live.pixelBlocks() : data.getPixelBlocks();
+        long baseWX = tile.minWX;
+        long baseWZ = tile.minWZ;
         LiveTileStore.LiveTile right = biomes && live != null ? live.get(tile.tx + 1, tile.tz) : null;
         LiveTileStore.LiveTile bottom = biomes && live != null ? live.get(tile.tx, tile.tz + 1) : null;
         long[] rightPixels = right == null ? null : right.pixels;
@@ -1427,7 +1467,11 @@ public final class Gpu3DMap {
             int row = y * LiveTileStore.TILE_PIXELS;
             for (int x = 0; x < CELL; x++) {
                 int c = rgb[row + x];
-                if (biomes && pixels != null) {
+                if (advanced) {
+                    long packed = pixels == null ? VoxyMerge.LONG_EMPTY : pixels[row + x];
+                    c = advancedBaseColor(packed,
+                            (int) (baseWX + (long) x * basePb), (int) (baseWZ + (long) y * basePb));
+                } else if (biomes && pixels != null) {
                     long packed = pixels[row + x];
                     if (packed != VoxyMerge.LONG_EMPTY) {
                         int biome = (int) ((packed >>> 53) & 0x1FF);
@@ -1458,7 +1502,7 @@ public final class Gpu3DMap {
                 cell.put((byte) ((c >> 16) & 0xFF));
                 cell.put((byte) ((c >> 8) & 0xFF));
                 cell.put((byte) (c & 0xFF));
-                cell.put((byte) 0xFF);
+                cell.put((byte) ((c >>> 24) & 0xFF));
             }
         }
         cell.flip();
@@ -2066,6 +2110,10 @@ public final class Gpu3DMap {
         Matrix4f view = cam.viewMatrix();
         Matrix4f viewProj = new Matrix4f(proj).mul(view);
         ensureDepth(target.width, target.height);
+        boolean advanced = VoxyMapConfig.ADVANCED_3D_RENDER.get() && BlazeCompat.advanced3dSupported();
+        if (advanced) {
+            ensureAdvancedTarget(target.width, target.height);
+        }
         overlayIndexCount = 0;
         // One encoder for the whole 3D frame: the overlay upload, the terrain pass and the
         // ring fence all ride in it, so the mod does not add a submit of its own.
@@ -2079,8 +2127,10 @@ public final class Gpu3DMap {
                     com.mojang.blaze3d.ProjectionType.PERSPECTIVE);
             GpuBufferSlice transforms = RenderSystem.getDynamicUniforms()
                     .writeTransform(view, COLOR_MODULATOR, MODEL_OFFSET, TEXTURE_MATRIX);
-            try (RenderPass pass = BlazeCompat.beginTerrainPass(frameEncoder, target, depthView)) {
-                pass.setPipeline(PIPELINE);
+            try (RenderPass pass = advanced
+                        ? BlazeCompat.beginOffscreenPass(frameEncoder, advancedColorView, depthView)
+                        : BlazeCompat.beginTerrainPass(frameEncoder, target, depthView)) {
+                pass.setPipeline(advanced ? advancedPipeline() : PIPELINE);
                 RenderSystem.bindDefaultUniforms(pass);
                 pass.setUniform("DynamicTransforms", transforms);
                 // Full-bright is intentional: the terrain re-uses the 2D map colours, which are
@@ -2121,6 +2171,10 @@ public final class Gpu3DMap {
                 if (drawOverlay) drawOverlay(pass, transforms);
                 drawTrack(pass, transforms);
             }
+            if (advanced) {
+                compositeAdvanced(frameEncoder, target,
+                        mc.getWindow().getGuiScaledWidth(), mc.getWindow().getGuiScaledHeight());
+            }
             // The fence is taken after the draws, so the next reuse of this slot waits for them.
             if (overlaySlotInUse >= 0) {
                 overlayFences[overlaySlotInUse] = BlazeCompat.createFence(frameEncoder);
@@ -2131,6 +2185,116 @@ public final class Gpu3DMap {
         }
         // frame counter for the perf panel / the scripted acceptance test's 3D settle detection
         MapPerf.INSTANCE.rasterFrame(System.nanoTime() - rasterStartNs, trisDrawn);
+    }
+
+    /** Base (unshaded) colour for the experimental advanced 3D atlas; 0 for empty columns. */
+    private static int advancedBaseColor(long packed, int worldX, int worldZ) {
+        if (packed == VoxyMerge.LONG_EMPTY) return 0;
+        int top = (int) ((packed >>> 24) & 0xFFFF) - 32768;
+        int floor = (int) (packed & 0xFFFF) - 32768;
+        if (top == VoxyMerge.NO_TOP && floor == VoxyMerge.NO_SOLID) return 0;
+        int biome = (int) ((packed >>> 53) & 0x1FF);
+        int rgb;
+        if ((packed & (1L << 52)) != 0) {
+            rgb = BiomeTintTable.INSTANCE.water(biome);
+        } else {
+            int slot = (int) ((packed >>> 40) & SurfaceClassTable.SLOT_MASK);
+            switch (SurfaceClassTable.INSTANCE.tintOf(slot)) {
+                case SurfaceClassTable.TINT_GRASS ->
+                        rgb = BiomeTintTable.INSTANCE.grass(biome, worldX, worldZ);
+                case SurfaceClassTable.TINT_FOLIAGE -> rgb = BiomeTintTable.INSTANCE.foliage(biome);
+                case SurfaceClassTable.TINT_DRY_FOLIAGE ->
+                        rgb = BiomeTintTable.INSTANCE.dryFoliage(biome);
+                default -> rgb = SurfaceClassTable.INSTANCE.colorOf(slot);
+            }
+        }
+        return 0xFF000000 | (rgb & 0xFFFFFF);
+    }
+
+    /** Lazily created custom terrain pipeline for the experimental advanced 3D renderer. */
+    private static RenderPipeline advancedPipeline() {
+        RenderPipeline p = advancedPipeline;
+        if (p == null) {
+            p = BlazeCompat.advancedTerrainPipeline();
+            advancedPipeline = p;
+        }
+        return p;
+    }
+
+    /** Offscreen colour target for the advanced 3D layer; recreated on window resize. */
+    private static void ensureAdvancedTarget(int width, int height) {
+        if (advancedColor != null && advancedWidth == width && advancedHeight == height) return;
+        if (advancedColorView != null) {
+            advancedColorView.close();
+            advancedColorView = null;
+        }
+        if (advancedColor != null) {
+            advancedColor.close();
+            advancedColor = null;
+        }
+        advancedColor = BlazeCompat.createOffscreenColorTexture("voxymap_adv3d_color", width, height);
+        advancedColorView = RenderSystem.getDevice().createTextureView(advancedColor);
+        advancedWidth = width;
+        advancedHeight = height;
+        if (advancedProjection == null) {
+            advancedProjection = new ProjectionMatrixBuffer("voxymap_adv3d");
+        }
+        if (advancedSampler == null) {
+            advancedSampler = RenderSystem.getSamplerCache().getClampToEdge(FilterMode.NEAREST);
+        }
+    }
+
+    /** Fullscreen composite quad in GUI coordinates (POSITION_TEX_COLOR, built once per size). */
+    private static void ensureAdvancedQuad(int width, int height) {
+        if (advancedQuad != null && advancedQuadWidth == width && advancedQuadHeight == height) return;
+        if (advancedQuad != null) {
+            advancedQuad.close();
+            advancedQuad = null;
+        }
+        ByteBufferBuilder alloc = new ByteBufferBuilder(256);
+        BufferBuilder bb = BlazeCompat.newQuadBufferBuilder(alloc,
+                DefaultVertexFormat.POSITION_TEX_COLOR);
+        float w = width;
+        float h = height;
+        // GUI coordinates grow downwards; render-target textures are sampled with v=1 at the top.
+        bb.addVertex(0.0f, 0.0f, 0.0f).setUv(0.0f, 1.0f).setColor(255, 255, 255, 255);
+        bb.addVertex(0.0f, h, 0.0f).setUv(0.0f, 0.0f).setColor(255, 255, 255, 255);
+        bb.addVertex(w, h, 0.0f).setUv(1.0f, 0.0f).setColor(255, 255, 255, 255);
+        bb.addVertex(w, 0.0f, 0.0f).setUv(1.0f, 1.0f).setColor(255, 255, 255, 255);
+        MeshData mesh = bb.buildOrThrow();
+        ByteBuffer data = copy(mesh.vertexBuffer());
+        mesh.close();
+        alloc.close();
+        advancedQuad = RenderSystem.getDevice().createBuffer(
+                () -> "voxymap_adv3d_quad", GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_COPY_DST, data);
+        advancedQuadWidth = width;
+        advancedQuadHeight = height;
+    }
+
+    /** Draws the offscreen advanced 3D layer over the main target (GUI projection, no depth). */
+    private static void compositeAdvanced(CommandEncoder encoder, RenderTarget target, int width, int height) {
+        if (advancedColorView == null || width <= 0 || height <= 0) return;
+        ensureAdvancedQuad(width, height);
+        RenderSystem.backupProjectionMatrix();
+        try {
+            Projection projection = new Projection();
+            projection.setupOrtho(1000.0f, 11000.0f, width, height, true);
+            RenderSystem.setProjectionMatrix(advancedProjection.getBuffer(projection),
+                    ProjectionType.ORTHOGRAPHIC);
+            try (RenderPass pass = BlazeCompat.beginCompositePass(encoder, target.getColorTextureView())) {
+                pass.setPipeline(RenderPipelines.GUI_TEXTURED);
+                RenderSystem.bindDefaultUniforms(pass);
+                GpuBufferSlice transforms = RenderSystem.getDynamicUniforms()
+                        .writeTransform(new Matrix4f().setTranslation(0.0f, 0.0f, -11000.0f),
+                                COLOR_MODULATOR, MODEL_OFFSET, TEXTURE_MATRIX);
+                pass.setUniform("DynamicTransforms", transforms);
+                pass.bindTexture("Sampler0", advancedColorView, advancedSampler);
+                BlazeCompat.setVertexBuffer(pass, 0, advancedQuad);
+                BlazeCompat.drawNonIndexed(pass, 4);
+            }
+        } finally {
+            RenderSystem.restoreProjectionMatrix();
+        }
     }
 
     private static boolean boxVisible(Matrix4f m, double centerX, double centerZ,
@@ -2183,6 +2347,8 @@ public final class Gpu3DMap {
                 lastBuildNanos / 1_000_000.0, lastUploadNanos / 1_000_000.0,
                 lastUploadTiles, lastAtlasPages, lastGpuBytes / (1024.0 * 1024.0),
                 lastAtlasBytes / (1024.0 * 1024.0), lastDepthBytes / (1024.0 * 1024.0)));
+        out.add("adv3d: " + (VoxyMapConfig.ADVANCED_3D_RENDER.get() ? "on" : "off")
+                + "  layer=" + advancedWidth + "x" + advancedHeight + "  supported=" + BlazeCompat.advanced3dSupported());
         return out;
     }
 
@@ -2227,6 +2393,26 @@ public final class Gpu3DMap {
         lastTotal = 0;
         lastBuildNanos = 0;
         lastUploadNanos = 0;
+        if (advancedColorView != null) {
+            advancedColorView.close();
+            advancedColorView = null;
+        }
+        if (advancedColor != null) {
+            advancedColor.close();
+            advancedColor = null;
+        }
+        advancedWidth = 0;
+        advancedHeight = 0;
+        if (advancedQuad != null) {
+            advancedQuad.close();
+            advancedQuad = null;
+        }
+        advancedQuadWidth = 0;
+        advancedQuadHeight = 0;
+        if (advancedProjection != null) {
+            advancedProjection.close();
+            advancedProjection = null;
+        }
         // overlay/arrow ring: close every slot and its fence
         for (int slot = 0; slot < OVERLAY_SLOTS; slot++) {
             BlazeCompat.awaitAndCloseFence(overlayFences[slot]);

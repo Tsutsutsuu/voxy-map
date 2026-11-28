@@ -209,6 +209,10 @@ public final class MapSelfTest {
             VoxyMapConfig.DRAW_HILLSHADE.set(false);
             VoxyMapConfig.DRAW_CONTOURS.set(false);
         }
+        if (Boolean.getBoolean("voxymap.selftest.advanced3d")) {
+            VoxyMapConfig.ADVANCED_3D_RENDER.set(true);
+            log("experimental advanced 3D rendering enabled for this run");
+        }
         if (Boolean.getBoolean("voxymap.selftest.voxel3d")) {
             VoxyMapConfig.GPU_TERRAIN_VOXEL.set(true);
             log("experimental voxel 3D terrain enabled for this run");

@@ -138,6 +138,12 @@ public final class VoxyMapConfig {
      * walls) instead of the interpolated height field. Side faces reuse the top face colour.
      */
     public static final Value<Boolean> GPU_TERRAIN_VOXEL = new Value<>("gpuTerrainVoxel", false);
+    /**
+     * Experimental "advanced 3D rendering": the 3D terrain uses a base-colour-only atlas (no baked
+     * hillshade/contours), draws into an offscreen layer, and a custom shader supplies lighting,
+     * ambient occlusion and contour lines. Off by default; the 2D map pipeline is untouched.
+     */
+    public static final Value<Boolean> ADVANCED_3D_RENDER = new Value<>("advanced3dRender", false);
     public static final Value<Integer> GPU3D_BUILD_THREADS = new Value<>("gpu3dBuildThreads", 0);
     public static final Value<Integer> GPU3D_BATCH_BUILD = new Value<>("gpu3dBatchBuild", 10);
     public static final Value<Boolean> KEEP_3D_TILES_IN_2D = new Value<>("keep3dTilesIn2d", true);

@@ -39,6 +39,7 @@ param(
     [switch]$NoShading,
     [switch]$DebugFallback,
     [switch]$Voxel3d,
+    [switch]$Advanced3d,
     [switch]$DisableFallbackFix,
     [switch]$DeleteWorld,
     [int]$TimeoutSec = 420,
@@ -286,6 +287,7 @@ if ($RunSeconds -le 0) {
     if ($NoShading) { $extraJvm.Add('-Dvoxymap.selftest.noShading=true') }
     if ($DebugFallback) { $extraJvm.Add('-Dvoxymap.debugFallback=true') }
     if ($Voxel3d) { $extraJvm.Add('-Dvoxymap.selftest.voxel3d=true') }
+    if ($Advanced3d) { $extraJvm.Add('-Dvoxymap.selftest.advanced3d=true') }
     if ($DisableFallbackFix) { $extraJvm.Add('-Dvoxymap.debugDisableFallbackFix=true') }
 } else {
     Write-Host "Part A mode: no selftest properties, killing the process tree after ${RunSeconds}s"

@@ -70,6 +70,24 @@ public final class BlazeCompat {
         //?}
     }
 
+    /** Mesh builder for the fullscreen composite quad (QUADS topology differs between versions). */
+    public static BufferBuilder newQuadBufferBuilder(ByteBufferBuilder alloc, VertexFormat format) {
+        //? if >=26.2 {
+        return new BufferBuilder(alloc, com.mojang.blaze3d.PrimitiveTopology.QUADS, format);
+        //?} else {
+        /*return new BufferBuilder(alloc, VertexFormat.Mode.QUADS, format);*/
+        //?}
+    }
+
+    /** Non-indexed draw (argument shape differs between versions). */
+    public static void drawNonIndexed(RenderPass pass, int vertexCount) {
+        //? if >=26.2 {
+        pass.draw(vertexCount, 1, 0, 0);
+        //?} else {
+        /*pass.draw(vertexCount, 1);*/
+        //?}
+    }
+
     /** Mesh builder for the terrain tiles (mode enum differs between versions). */
     public static BufferBuilder newBufferBuilder(ByteBufferBuilder alloc, VertexFormat format) {
         //? if >=26.2 {
@@ -260,6 +278,77 @@ public final class BlazeCompat {
         return mc.gameRenderer.mainRenderTarget();
         //?} else {
         /*return mc.getMainRenderTarget();*/
+        //?}
+    }
+
+    /**
+     * True when this version can run the experimental advanced 3D rendering path (offscreen layer,
+     * custom terrain shader). 26.2 only for now; 26.1.2/NeoForge are wired up in a later task.
+     */
+    public static boolean advanced3dSupported() {
+        //? if >=26.2 {
+        return true;
+        //?} else {
+        /*return false;*/
+        //?}
+    }
+
+    /**
+     * Custom terrain pipeline for advanced 3D rendering: same BLOCK vertex format as the vanilla
+     * chunk pipeline (position/color/uv0/uv2), but the mod's own shader so lighting/AO/contours can
+     * run there. Registered once; the shader lives in {@code assets/voxymap/shaders/core/terrain3d}.
+     */
+    public static RenderPipeline advancedTerrainPipeline() {
+        //? if >=26.2 {
+        return RenderPipelines.register(RenderPipeline.builder(RenderPipelines.GLOBALS_SNIPPET)
+                .withBindGroupLayout(net.minecraft.client.renderer.BindGroupLayouts.MATRICES_PROJECTION)
+                .withBindGroupLayout(net.minecraft.client.renderer.BindGroupLayouts.SAMPLER0)
+                .withLocation("pipeline/voxymap_terrain3d")
+                .withVertexShader(net.minecraft.resources.Identifier.fromNamespaceAndPath("voxymap", "core/terrain3d"))
+                .withFragmentShader(net.minecraft.resources.Identifier.fromNamespaceAndPath("voxymap", "core/terrain3d"))
+                .withVertexBinding(0, DefaultVertexFormat.BLOCK)
+                .withPrimitiveTopology(com.mojang.blaze3d.PrimitiveTopology.QUADS)
+                .withDepthStencilState(DepthStencilState.DEFAULT)
+                .build());
+        //?} else {
+        /*return RenderPipelines.SOLID_BLOCK;*/
+        //?}
+    }
+
+    /** Colour target for the offscreen advanced 3D layer (sampled by the composite pass). */
+    public static GpuTexture createOffscreenColorTexture(String label, int width, int height) {
+        //? if >=26.2 {
+        return RenderSystem.getDevice().createTexture(label,
+                GpuTexture.USAGE_TEXTURE_BINDING | GpuTexture.USAGE_RENDER_ATTACHMENT,
+                com.mojang.blaze3d.GpuFormat.RGBA8_UNORM, width, height, 1, 1);
+        //?} else {
+        /*return RenderSystem.getDevice().createTexture(label,
+                GpuTexture.USAGE_TEXTURE_BINDING | GpuTexture.USAGE_RENDER_ATTACHMENT,
+                com.mojang.blaze3d.textures.TextureFormat.RGBA8, width, height, 1, 1);*/
+        //?}
+    }
+
+    /** Render pass that draws the advanced 3D terrain into its offscreen layer (transparent clear). */
+    public static RenderPass beginOffscreenPass(CommandEncoder encoder, GpuTextureView colorView,
+                                                GpuTextureView depthView) {
+        //? if >=26.2 {
+        return encoder.createRenderPass(() -> "voxymap_adv3d_layer", colorView,
+                java.util.Optional.of(new org.joml.Vector4f(0.0f, 0.0f, 0.0f, 0.0f)),
+                depthView, java.util.OptionalDouble.of(0.0));
+        //?} else {
+        /*return encoder.createRenderPass(() -> "voxymap_adv3d_layer", colorView,
+                java.util.OptionalInt.of(0), depthView, java.util.OptionalDouble.of(1.0));*/
+        //?}
+    }
+
+    /** Render pass over the main target for the fullscreen composite of the advanced 3D layer. */
+    public static RenderPass beginCompositePass(CommandEncoder encoder, GpuTextureView mainColorView) {
+        //? if >=26.2 {
+        return encoder.createRenderPass(() -> "voxymap_adv3d_composite", mainColorView,
+                java.util.Optional.empty(), null, java.util.OptionalDouble.empty());
+        //?} else {
+        /*return encoder.createRenderPass(() -> "voxymap_adv3d_composite", mainColorView,
+                java.util.OptionalInt.empty(), null, java.util.OptionalDouble.empty());*/
         //?}
     }
 
