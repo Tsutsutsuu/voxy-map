@@ -82,7 +82,7 @@ public final class MapData {
      * still render the old 58-colour mapping.
      * 13: palette v8 (dry foliage) + surface-biome attribution fix changed pixel data again.
      */
-    private static final int CACHE_VERSION = 13;
+    private static final int CACHE_VERSION = 14;
     private static final int FALLBACK_SEA = 63;
 
     static final class Snapshot {
@@ -647,7 +647,7 @@ public final class MapData {
         int top = (int) ((p >>> 24) & 0xFFFF) - 32768;
         int floor = (int) (p & 0xFFFF) - 32768;
         if (top == NO_TOP) return floor != NO_SOLID ? floor : seaLevel();
-        return top;
+        return SurfaceClassTable.INSTANCE.adjustedTop(p, top);
     }
 
 
@@ -2818,12 +2818,13 @@ public final class MapData {
      * 15: palette v7 changed every block slot, so colours must re-render.
      * 16: palette v8 (dry foliage) and the biome attribution fix change the rendered colours.
      */
-    private static final int COLOR_CACHE_VERSION = 20;
+    private static final int COLOR_CACHE_VERSION = 21;
 
     /** everything that changes the produced pixels; changing any of these invalidates the .vxc */
     private static String colorCacheKey(String style, int sea) {
         return style + "|" + sea + "|" + VoxyMapConfig.MAP_SCALE.get() + "|"
                 + (contourOverride != null ? contourOverride : INSTANCE.contourOverlay) + "|"
+                + VoxyMapConfig.IGNORE_PLANT_HEIGHT.get() + "|"
                 + VoxyMapConfig.MIN_CONTOUR_AREA.get() + "|"
                 + VoxyMapConfig.CONTOUR_DENSITY.get() + "|"
                 + VoxyMapConfig.DRAW_HILLSHADE.get() + "|"
@@ -4952,16 +4953,19 @@ public final class MapData {
         return VoxyMapConfig.DRAW_HILLSHADE.get() + "|"
                 + VoxyMapConfig.LIGHT_STRENGTH.get() + "|" + VoxyMapConfig.LIGHT_AMBIENT.get() + "|"
                 + VoxyMapConfig.CONTOUR_DENSITY.get() + "|"
+                + VoxyMapConfig.IGNORE_PLANT_HEIGHT.get() + "|"
                 + VoxyMapConfig.MIN_CONTOUR_AREA.get() + "|"
                 + VoxyMapConfig.WATER_BLUR.get() + "|" + VoxyMapConfig.WATER_BLUR_RADIUS.get() + "|"
                 + VoxyMapConfig.WATER_BLUR_PASSES.get() + "|" + VoxyMapConfig.DRAW_WATER_DEPTH.get() + "|"
                 + VoxyMapConfig.FILL_HOLES.get() + "|" + VoxyMapConfig.DENOISE.get() + "|"
                 + VoxyMapConfig.ADAPTIVE_COLOR_RAMP.get() + "|" + VoxyMapConfig.MIN_MAX_RAMP.get() + "|"
-                + VoxyMapConfig.BIOME_COLORS.get() + "|" + VoxyMapConfig.SHOW_BIOMES.get();
+                + VoxyMapConfig.BIOME_COLORS.get() + "|" + VoxyMapConfig.SHOW_BIOMES.get() + "|"
+                + VoxyMapConfig.IGNORE_PLANT_HEIGHT.get();
     }
     /** Settings that shape the terrain analysis; changing any of them invalidates the cache. */
     private static String terrainFingerprint() {
         return VoxyMapConfig.FILL_HOLES.get() + "|" + VoxyMapConfig.DENOISE.get() + "|"
+                + VoxyMapConfig.IGNORE_PLANT_HEIGHT.get() + "|"
                 + VoxyMapConfig.WATER_BLUR.get() + "|" + VoxyMapConfig.WATER_BLUR_RADIUS.get() + "|"
                 + VoxyMapConfig.WATER_BLUR_PASSES.get() + "|" + VoxyMapConfig.ADAPTIVE_COLOR_RAMP.get() + "|"
                 + VoxyMapConfig.MIN_MAX_RAMP.get() + "|" + VoxyMapConfig.CONTOUR_DENSITY.get() + "|"
@@ -5009,6 +5013,8 @@ public final class MapData {
                             if (tv == NO_TOP) {
                                 tv = fl != NO_SOLID ? fl : Integer.MIN_VALUE;
                                 tw = false;
+                            } else {
+                                tv = SurfaceClassTable.INSTANCE.adjustedTop(fPixels[i], tv);
                             }
                             fTop[i] = tv;
                             fWater[i] = tw;
@@ -5424,7 +5430,7 @@ public final class MapData {
             int fl = (int) (packed & 0xFFFF) - 32768;
             return fl != NO_SOLID ? fl : Integer.MIN_VALUE;
         }
-        return tv;
+        return SurfaceClassTable.INSTANCE.adjustedTop(packed, tv);
     }
 
     private static boolean rawWater(long packed) {
@@ -5844,6 +5850,5 @@ public final class MapData {
 
 
 }
-
 
 

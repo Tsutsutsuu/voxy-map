@@ -73,6 +73,8 @@ public final class SurfaceClassTable {
         /** factor of the first class carrying each tint type (index by tint constant). */
         final int[] tintFactor = {0xFFFFFF, 0xFFFFFF, 0xFFFFFF, 0xFFFFFF, 0xFFFFFF};
         final byte[] tint = new byte[MAX_SLOTS];
+        /** block height above the ground for grass-plant classes (0 = not a plant). */
+        final int[] plantHeight = new int[MAX_SLOTS];
         final Map<String, Integer> classSlot = new HashMap<>();
         final Map<String, Integer> exact = new HashMap<>();
         final Map<String, Integer> snowyOverrides = new HashMap<>();
@@ -114,6 +116,23 @@ public final class SurfaceClassTable {
      * vanilla tint colour in {@code hex}; the map must render {@code tint * factor} because in
      * game the tint multiplies the (grayscale) block texture, whose average is ~58%.
      */
+    /** Height (blocks) of a grass-plant class, or 0 when the class is not an ignored plant. */
+    public int plantHeightOf(int slot) {
+        State s = state();
+        return slot > 0 && slot < MAX_SLOTS ? s.plantHeight[slot] : 0;
+    }
+
+    /** Height of the top material of a packed column (0 = not an ignored plant). */
+    public int plantHeightOfPacked(long packed) {
+        return plantHeightOf((int) ((packed >>> 40) & 0xFF));
+    }
+
+    /** Applies the ignore-plant-height option to a column top block Y. */
+    public int adjustedTop(long packed, int top) {
+        if (!VoxyMapConfig.IGNORE_PLANT_HEIGHT.get()) return top;
+        int height = plantHeightOfPacked(packed);
+        return height > 0 ? top - height : top;
+    }
     public int factorOf(int slot) {
         State s = state();
         return slot > 0 && slot < MAX_SLOTS ? s.factor[slot] : 0xFFFFFF;
@@ -386,6 +405,9 @@ public final class SurfaceClassTable {
                     int factor = parseHex(def.has("factor") ? def.get("factor").getAsString() : "#FFFFFF");
                     s.factor[slot] = factor;
                     s.colors[slot] = mulColor(color, factor);
+                    if (def.has("plantHeight")) {
+                        s.plantHeight[slot] = def.get("plantHeight").getAsInt();
+                    }
                     if (def.has("tint")) {
                         int tintType = TINT_NONE;
                         switch (def.get("tint").getAsString()) {

@@ -161,6 +161,7 @@ public class MapConfigScreen extends Screen {
         add(Group.MAP, "waterBlurRadius", VoxyMapConfig.WATER_BLUR_RADIUS, 1, 16, null);
         add(Group.MAP, "waterBlurPasses", VoxyMapConfig.WATER_BLUR_PASSES, 1, 5, null);
         add(Group.MAP, "denoise", VoxyMapConfig.DENOISE, 0, 0, null);
+        add(Group.MAP, "ignorePlantHeight", VoxyMapConfig.IGNORE_PLANT_HEIGHT, 0, 0, null);
         add(Group.MAP, "fillHoles", VoxyMapConfig.FILL_HOLES, 0, 0, null);
         section(Group.MAP, "voxymap.config.section.xaero");
         add(Group.MAP, "xaeroWaypoints", VoxyMapConfig.XAERO_WAYPOINTS, 0, 0, null);

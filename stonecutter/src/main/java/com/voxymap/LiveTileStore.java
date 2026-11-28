@@ -64,7 +64,7 @@ public final class LiveTileStore {
      * the empty surface-class table and saved with grey FALLBACK slots. v16 files may contain such
      * slots (they can never be recoloured away), so they have to be rebuilt once.
      */
-    private static final int CACHE_VERSION = 17;
+    private static final int CACHE_VERSION = 18;
     private static final ExecutorService CACHE_IO = Executors.newFixedThreadPool(2, r -> {
         Thread t = new Thread(r, "voxymap-tile-cache");
         t.setDaemon(true);

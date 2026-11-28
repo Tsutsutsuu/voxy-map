@@ -1,5 +1,5 @@
 {
-  "version": 8,
+  "version": 9,
   "note": "Surface material classes. Land colour = class colour times hillshade; water pixels use the current palette. v7: 200-colour palette (existing 58 colours kept, 142 added) and a regenerated block->colour mapping.",
   "fallbackClass": "FALLBACK",
   "classes": {
@@ -8,6 +8,7 @@
       "tint": "grass",
       "factor": "#939393"
     },
+
     "FOLIAGE": {
       "hex": "#59AE30",
       "tint": "foliage",
@@ -608,7 +609,18 @@
       "tint": "dry_foliage",
       "factor": "#ABABAB"
     },
-    "FALLBACK": {
+    "GRASS_PLANT_1": {
+      "hex": "#91BD59",
+      "tint": "grass",
+      "factor": "#939393",
+      "plantHeight": 1
+    },
+    "GRASS_PLANT_2": {
+      "hex": "#91BD59",
+      "tint": "grass",
+      "factor": "#939393",
+      "plantHeight": 2
+    },    "FALLBACK": {
       "hex": "#8C8C8C"
     }
   },
@@ -762,7 +774,7 @@
     "minecraft:bubble_coral_fan": "CONCRETE_MAGENTA",
     "minecraft:bubble_coral_wall_fan": "CONCRETE_MAGENTA",
     "minecraft:budding_amethyst": "COLOR_140",
-    "minecraft:bush": "GRASS",
+    "minecraft:bush": "GRASS_PLANT_1",
     "minecraft:cactus": "WOOL_GREEN",
     "minecraft:cactus_flower": "COLOR_139",
     "minecraft:cake": "COLOR_155",
@@ -1015,7 +1027,7 @@
     "minecraft:exposed_cut_copper_stairs": "COLOR_096",
     "minecraft:exposed_lightning_rod": "COLOR_096",
     "minecraft:farmland": "DIRT",
-    "minecraft:fern": "GRASS",
+    "minecraft:fern": "GRASS_PLANT_1",
     "minecraft:fire": "COLOR_150",
     "minecraft:fire_coral": "COLOR_131",
     "minecraft:fire_coral_block": "COLOR_131",
@@ -1127,7 +1139,7 @@
     "minecraft:lapis_block": "COLOR_153",
     "minecraft:lapis_ore": "TERRACOTTA_LIGHT_BLUE",
     "minecraft:large_amethyst_bud": "COLOR_113",
-    "minecraft:large_fern": "GRASS",
+    "minecraft:large_fern": "GRASS_PLANT_2",
     "minecraft:lava": "LAVA",
     "minecraft:lava_cauldron": "LAVA",
     "minecraft:leaf_litter": "DRY_FOLIAGE",
@@ -1532,7 +1544,7 @@
     "minecraft:sea_pickle": "COLOR_138",
     "minecraft:seagrass": "COLOR_103",
     "minecraft:short_dry_grass": "COLOR_158",
-    "minecraft:short_grass": "GRASS",
+    "minecraft:short_grass": "GRASS_PLANT_1",
     "minecraft:shroomlight": "COLOR_112",
     "minecraft:shulker_box": "COLOR_143",
     "minecraft:skeleton_skull": "COLOR_163",
@@ -1635,7 +1647,7 @@
     "minecraft:suspicious_sand": "SAND",
     "minecraft:sweet_berry_bush": "COLOR_116",
     "minecraft:tall_dry_grass": "COLOR_093",
-    "minecraft:tall_grass": "GRASS",
+    "minecraft:tall_grass": "GRASS_PLANT_2",
     "minecraft:tall_seagrass": "COLOR_103",
     "minecraft:target": "COLOR_159",
     "minecraft:terracotta": "TERRACOTTA",

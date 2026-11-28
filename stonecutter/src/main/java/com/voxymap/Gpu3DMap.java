@@ -742,6 +742,7 @@ public final class Gpu3DMap {
         stamp = stamp * 31L + sea;
         stamp = stamp * 31L + (VoxyMapConfig.GPU_TERRAIN_VOXEL.get() ? 1L : 0L);
         stamp = stamp * 31L + (VoxyMapConfig.ADVANCED_3D_RENDER.get() ? 1L : 0L);
+        stamp = stamp * 31L + (VoxyMapConfig.IGNORE_PLANT_HEIGHT.get() ? 1L : 0L);
         stamp = stamp * 31L + VoxyMapConfig.ADVANCED_3D_AO.get();
         // Boundary vertices use the right/bottom neighbour's first pixel. Rebuild this tile when
         // those neighbours change, otherwise two tiles would keep different heights at the seam.
@@ -825,6 +826,7 @@ public final class Gpu3DMap {
                         : (int) ((packed >>> 24) & 0xFFFF) - 32768;
                 int floor = packed == VoxyMerge.LONG_EMPTY ? VoxyMerge.NO_SOLID
                         : (int) (packed & 0xFFFF) - 32768;
+                top = SurfaceClassTable.INSTANCE.adjustedTop(packed, top);
                 boolean e = packed == VoxyMerge.LONG_EMPTY
                         || (top == VoxyMerge.NO_TOP && floor == VoxyMerge.NO_SOLID);
                 boolean w = !e && (packed & (1L << 52)) != 0;
@@ -1188,6 +1190,7 @@ public final class Gpu3DMap {
                 : (int) ((packed >>> 24) & 0xFFFF) - 32768;
         int floor = packed == VoxyMerge.LONG_EMPTY ? VoxyMerge.NO_SOLID
                 : (int) (packed & 0xFFFF) - 32768;
+        top = SurfaceClassTable.INSTANCE.adjustedTop(packed, top);
         if (packed == VoxyMerge.LONG_EMPTY || (top == VoxyMerge.NO_TOP && floor == VoxyMerge.NO_SOLID)) {
             return Float.NaN;
         }
@@ -1457,6 +1460,7 @@ public final class Gpu3DMap {
                         : (int) ((packed >>> 24) & 0xFFFF) - 32768;
                 int floor = packed == VoxyMerge.LONG_EMPTY ? VoxyMerge.NO_SOLID
                         : (int) (packed & 0xFFFF) - 32768;
+                top = SurfaceClassTable.INSTANCE.adjustedTop(packed, top);
                 boolean e = packed == VoxyMerge.LONG_EMPTY
                         || (top == VoxyMerge.NO_TOP && floor == VoxyMerge.NO_SOLID);
                 float y;

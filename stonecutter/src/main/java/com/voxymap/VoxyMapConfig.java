@@ -75,6 +75,11 @@ public final class VoxyMapConfig {
     public static final Value<Boolean> DRAW_CONTOURS = new Value<>("drawContours", true);
     public static final Value<Boolean> DRAW_HILLSHADE = new Value<>("drawHillshade", true);
     /**
+     * Ignore the height of grass-like plants (short/tall grass, fern/large fern, bush) in the height
+     * data. One-block plants subtract 1, two-block plants subtract 2.
+     */
+    public static final Value<Boolean> IGNORE_PLANT_HEIGHT = new Value<>("ignorePlantHeight", false);
+    /**
      * Biome-tinted colours for the "blocks" style: grass/foliage use the biome colour (vanilla
      * {@code Biome#getGrassColor(x,z)} / {@code getFoliageColor()}) and water is multiplied by the
      * biome water colour. Off = the palette's static class colours and plain current water.
