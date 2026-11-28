@@ -725,8 +725,6 @@ public final class Gpu3DMap {
         stamp = stamp * 31L + sea;
         stamp = stamp * 31L + (VoxyMapConfig.GPU_TERRAIN_VOXEL.get() ? 1L : 0L);
         stamp = stamp * 31L + (VoxyMapConfig.ADVANCED_3D_RENDER.get() ? 1L : 0L);
-        stamp = stamp * 31L + VoxyMapConfig.CONTOUR_DENSITY.get();
-        stamp = stamp * 31L + (VoxyMapConfig.DRAW_CONTOURS.get() ? 1L : 0L);
         // Boundary vertices use the right/bottom neighbour's first pixel. Rebuild this tile when
         // those neighbours change, otherwise two tiles would keep different heights at the seam.
         for (int dz = 0; dz <= 1; dz++) {
@@ -1027,14 +1025,6 @@ public final class Gpu3DMap {
             return new BuildResult(gen, key, stamp, slot, null, null, 0, step,
                     cx, cz, 0.0, 0.0, System.nanoTime() - buildStart);
         }
-        int uv2x = 240;
-        int uv2y = 240;
-        if (VoxyMapConfig.ADVANCED_3D_RENDER.get()) {
-            uv2x = Math.max(1, Math.min(65535,
-                    (int) Math.round(VoxyMapConfig.CONTOUR_DENSITY.get() * vscale * 16.0)));
-            int widthQ = Math.max(1, (int) Math.round(0.08 * vscale * 16.0));
-            uv2y = VoxyMapConfig.DRAW_CONTOURS.get() ? (1 | (widthQ << 1)) : 0;
-        }
         VertexFormat format = BlazeCompat.vertexFormat(PIPELINE);
         if (format == null) return null;
         ByteBufferBuilder alloc = new ByteBufferBuilder(Math.max(1024, s.vi * format.getVertexSize()));
@@ -1043,7 +1033,7 @@ public final class Gpu3DMap {
             bb.addVertex(s.px[i], s.py[i], s.pz[i])
                     .setColor(255, 255, 255, 255)
                     .setUv(s.pu[i], s.pv[i])
-                    .setUv2(uv2x, uv2y);
+                    .setUv2(240, 240);
         }
         MeshData mesh = bb.buildOrThrow();
         ByteBuffer vdata = copy(mesh.vertexBuffer());
@@ -1363,14 +1353,6 @@ public final class Gpu3DMap {
             return new BuildResult(gen, key, stamp, slot, null, null, 0, step,
                     cx, cz, 0.0, 0.0, System.nanoTime() - buildStart);
         }
-        int uv2x = 240;
-        int uv2y = 240;
-        if (VoxyMapConfig.ADVANCED_3D_RENDER.get()) {
-            uv2x = Math.max(1, Math.min(65535,
-                    (int) Math.round(VoxyMapConfig.CONTOUR_DENSITY.get() * vscale * 16.0)));
-            int widthQ = Math.max(1, (int) Math.round(0.08 * vscale * 16.0));
-            uv2y = VoxyMapConfig.DRAW_CONTOURS.get() ? (1 | (widthQ << 1)) : 0;
-        }
         VertexFormat format = BlazeCompat.vertexFormat(PIPELINE);
         if (format == null) return null;
         ByteBufferBuilder alloc = new ByteBufferBuilder(Math.max(1024, vi * format.getVertexSize()));
@@ -1380,7 +1362,7 @@ public final class Gpu3DMap {
             bb.addVertex(px[i], py[i], pz[i])
                     .setColor(255, 255, 255, 255)
                     .setUv(pu[i], pv[i])
-                    .setUv2(uv2x, uv2y);
+                    .setUv2(240, 240);
         }
         MeshData mesh = bb.buildOrThrow();
         ByteBuffer vdata = copy(mesh.vertexBuffer());
@@ -1452,9 +1434,7 @@ public final class Gpu3DMap {
         boolean advanced = VoxyMapConfig.ADVANCED_3D_RENDER.get() && BlazeCompat.advanced3dSupported();
         boolean biomes = !advanced && data.isBiomeOverlay();
         long[] pixels = tile.pixels;
-        int basePb = live != null ? live.pixelBlocks() : data.getPixelBlocks();
-        long baseWX = tile.minWX;
-        long baseWZ = tile.minWZ;
+
         LiveTileStore.LiveTile right = biomes && live != null ? live.get(tile.tx + 1, tile.tz) : null;
         LiveTileStore.LiveTile bottom = biomes && live != null ? live.get(tile.tx, tile.tz + 1) : null;
         long[] rightPixels = right == null ? null : right.pixels;
@@ -1469,11 +1449,7 @@ public final class Gpu3DMap {
             int row = y * LiveTileStore.TILE_PIXELS;
             for (int x = 0; x < CELL; x++) {
                 int c = rgb[row + x];
-                if (advanced) {
-                    long packed = pixels == null ? VoxyMerge.LONG_EMPTY : pixels[row + x];
-                    c = advancedBaseColor(packed,
-                            (int) (baseWX + (long) x * basePb), (int) (baseWZ + (long) y * basePb));
-                } else if (biomes && pixels != null) {
+                if (biomes && pixels != null) {
                     long packed = pixels[row + x];
                     if (packed != VoxyMerge.LONG_EMPTY) {
                         int biome = (int) ((packed >>> 53) & 0x1FF);
@@ -1504,7 +1480,7 @@ public final class Gpu3DMap {
                 cell.put((byte) ((c >> 16) & 0xFF));
                 cell.put((byte) ((c >> 8) & 0xFF));
                 cell.put((byte) (c & 0xFF));
-                cell.put((byte) ((c >>> 24) & 0xFF));
+                cell.put((byte) 0xFF);
             }
         }
         cell.flip();
@@ -2187,30 +2163,6 @@ public final class Gpu3DMap {
         }
         // frame counter for the perf panel / the scripted acceptance test's 3D settle detection
         MapPerf.INSTANCE.rasterFrame(System.nanoTime() - rasterStartNs, trisDrawn);
-    }
-
-    /** Base (unshaded) colour for the experimental advanced 3D atlas; 0 for empty columns. */
-    private static int advancedBaseColor(long packed, int worldX, int worldZ) {
-        if (packed == VoxyMerge.LONG_EMPTY) return 0;
-        int top = (int) ((packed >>> 24) & 0xFFFF) - 32768;
-        int floor = (int) (packed & 0xFFFF) - 32768;
-        if (top == VoxyMerge.NO_TOP && floor == VoxyMerge.NO_SOLID) return 0;
-        int biome = (int) ((packed >>> 53) & 0x1FF);
-        int rgb;
-        if ((packed & (1L << 52)) != 0) {
-            rgb = BiomeTintTable.INSTANCE.water(biome);
-        } else {
-            int slot = (int) ((packed >>> 40) & SurfaceClassTable.SLOT_MASK);
-            switch (SurfaceClassTable.INSTANCE.tintOf(slot)) {
-                case SurfaceClassTable.TINT_GRASS ->
-                        rgb = BiomeTintTable.INSTANCE.grass(biome, worldX, worldZ);
-                case SurfaceClassTable.TINT_FOLIAGE -> rgb = BiomeTintTable.INSTANCE.foliage(biome);
-                case SurfaceClassTable.TINT_DRY_FOLIAGE ->
-                        rgb = BiomeTintTable.INSTANCE.dryFoliage(biome);
-                default -> rgb = SurfaceClassTable.INSTANCE.colorOf(slot);
-            }
-        }
-        return 0xFF000000 | (rgb & 0xFFFFFF);
     }
 
     /** Lazily created custom terrain pipeline for the experimental advanced 3D renderer. */

@@ -128,7 +128,7 @@
   "voxymap.config.desc.gpuTerrainSkirtDepth": "精度の継ぎ目を隠すための、タイル境界での垂直スカートの深さ。",
   "voxymap.config.desc.gpuTerrainHysteresisPct": "精度変更時のヒステリシス率。再構築の頻発を防ぎます。",
 "voxymap.config.desc.gpuTerrainVoxel": "近景（最高精度）の3Dタイルだけをブロック状のボクセル柱で描画し、中景・遠景はスムーズな地形のままにします。試験的機能で既定はオフです。",
-"voxymap.config.desc.advanced3dRender": "ベースカラーのアトラス＋シェーダーによるライティング/AO/等高線をオフスクリーンで描画します。試験的機能で既定はオフです。",
+"voxymap.config.desc.advanced3dRender": "3Dアトラスにベースカラー・海岸線・水深・等高線を焼き込み（山影なし）、ライティング/AOはシェーダーで付与します。試験的機能で既定はオフです。",
   "voxymap.config.desc.gpu3dBuildThreads": "バックグラウンドでタイルを構築するスレッド数。0 = 自動。",
   "voxymap.config.desc.gpu3dBatchBuild": "1 フレームあたりに送信するタイル構築の最大数。",
   "voxymap.config.desc.keep3dTilesIn2d": "2D に戻った後も GPU タイルを保持し、再入場を速くします（VRAM を消費）。",

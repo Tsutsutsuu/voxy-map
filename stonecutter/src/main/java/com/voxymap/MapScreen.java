@@ -1238,6 +1238,10 @@ public class MapScreen extends Screen {
     private void restore3dOverrides() {
         MapData data = MapData.INSTANCE;
         data.skipBiomeLabels = false;
+        if (MapData.hillshadeOverride != null) {
+            MapData.hillshadeOverride = null;
+            data.requestColorRerender();
+        }
         if (MapData.contourOverride != null) {
             MapData.contourOverride = null;
             data.requestColorRerender();
@@ -1252,6 +1256,21 @@ public class MapScreen extends Screen {
     private void apply3dOverrides() {
         MapData data = MapData.INSTANCE;
         data.skipBiomeLabels = true;
+        if (BlazeCompat.advanced3dSupported() && VoxyMapConfig.ADVANCED_3D_RENDER.get()) {
+            // Advanced 3D bakes base colour + coastline + water depth + contours, but the shader
+            // supplies lighting, so hillshade must not be baked into its atlas. Keep contours.
+            boolean changed = false;
+            if (MapData.hillshadeOverride == null) {
+                MapData.hillshadeOverride = Boolean.FALSE;
+                changed = true;
+            }
+            if (MapData.contourOverride != null) {
+                MapData.contourOverride = null;
+                changed = true;
+            }
+            if (changed) data.requestColorRerender();
+            return;
+        }
         if (VoxyMapConfig.AUTO_HIDE_CONTOURS_3D.get()
                 && VoxyMapConfig.DRAW_CONTOURS.get() && MapData.contourOverride == null) {
             // contours are a 2D decoration: hide them in 3D (cheap colour-only re-render)
@@ -2994,4 +3013,3 @@ public class MapScreen extends Screen {
         return true;
     }
 }
-

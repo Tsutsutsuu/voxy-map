@@ -279,6 +279,8 @@ public final class MapData {
     private volatile int worldEpoch;
     /** temporary override for the contour setting (the 3D view hides them); null = use config */
     public static volatile Boolean contourOverride;
+    /** Temporary override for hillshade; null = use config. The advanced 3D renderer bakes base colour/coastline/water depth/contours but supplies lighting itself. */
+    public static volatile Boolean hillshadeOverride;
     /** bumped on every texture upload request; stale async builds compare against it */
     /** 3D view: skip building biome labels during colour renders */
     public volatile boolean skipBiomeLabels;
@@ -1295,6 +1297,7 @@ public final class MapData {
         view3dDistance = 1500f;
         skipBiomeLabels = false;
         contourOverride = null;
+        hillshadeOverride = null;
         pixelBlocksOverride = 0;
         allowOversize = false;
         // do not persist per-world UI state until the new world's storage is known
@@ -2802,7 +2805,8 @@ public final class MapData {
         return style + "|" + sea + "|" + VoxyMapConfig.MAP_SCALE.get() + "|"
                 + (contourOverride != null ? contourOverride : VoxyMapConfig.DRAW_CONTOURS.get()) + "|"
                 + VoxyMapConfig.MIN_CONTOUR_AREA.get() + "|"
-                + VoxyMapConfig.CONTOUR_DENSITY.get() + "|" + VoxyMapConfig.DRAW_HILLSHADE.get() + "|"
+                + VoxyMapConfig.CONTOUR_DENSITY.get() + "|"
+                + (hillshadeOverride != null ? hillshadeOverride : VoxyMapConfig.DRAW_HILLSHADE.get()) + "|"
                 + VoxyMapConfig.DRAW_WATER_DEPTH.get() + "|" + VoxyMapConfig.ADAPTIVE_COLOR_RAMP.get() + "|"
                 + VoxyMapConfig.MIN_MAX_RAMP.get() + "|" + VoxyMapConfig.WATER_BLUR.get() + "|"
                 + VoxyMapConfig.WATER_BLUR_RADIUS.get() + "|" + VoxyMapConfig.WATER_BLUR_PASSES.get() + "|"
@@ -5760,7 +5764,9 @@ public final class MapData {
         final float clampLo = material ? 0.74f : 0.78f;
         final float clampHi = material ? 1.16f : 1.08f;
         float shade = 1f;
-        if (VoxyMapConfig.DRAW_HILLSHADE.get() && x > 0 && z > 0 && x < fw - 1 && z < fh - 1) {
+        boolean drawHillshade = hillshadeOverride != null
+                ? hillshadeOverride : VoxyMapConfig.DRAW_HILLSHADE.get();
+        if (drawHillshade && x > 0 && z > 0 && x < fw - 1 && z < fh - 1) {
             int nb0, nb1, nb2, nb3;
             if (water) {
                 nb0 = tc.smoothFloor[idx - 1];
