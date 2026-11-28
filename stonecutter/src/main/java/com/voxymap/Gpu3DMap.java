@@ -812,8 +812,6 @@ public final class Gpu3DMap {
                 float y;
                 if (e) {
                     y = 0f;
-                } else if (w) {
-                    y = (float) seaY;
                 } else if (top == VoxyMerge.NO_TOP) {
                     // top-face convention, same as the smooth mesher (land is one block above the
                     // stored block Y; water already uses its surface level)
@@ -1089,7 +1087,6 @@ public final class Gpu3DMap {
         if (packed == VoxyMerge.LONG_EMPTY || (top == VoxyMerge.NO_TOP && floor == VoxyMerge.NO_SOLID)) {
             return Float.NaN;
         }
-        if ((packed & (1L << 52)) != 0) return (float) (sea * vscale);
         return (float) ((top == VoxyMerge.NO_TOP ? floor + 1 : top + 1) * vscale);
     }
 
@@ -1280,13 +1277,10 @@ public final class Gpu3DMap {
                 float y;
                 if (e) {
                     y = 0f;
-                } else if ((packed & (1L << 52)) != 0) {
-                    y = (float) (sea * vscale);
                 } else if (top == VoxyMerge.NO_TOP) {
-                    // heightAt()/Voxy "top" is the top block's own Y; the mesh draws the surface at
-                    // its top face, so land is one block above the stored block coordinate (water
-                    // already uses its surface level, hence the old mixed convention showed land one
-                    // block below water and one below the player's feet).
+                    // Surface = top face of the highest non-air block. Water columns store their
+                    // real water surface (not sea level), so lakes/rivers above or below sea level
+                    // are drawn at the correct height as well.
                     y = (float) ((floor + 1) * vscale);
                 } else {
                     y = (float) ((top + 1) * vscale);

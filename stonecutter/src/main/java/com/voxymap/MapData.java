@@ -661,7 +661,9 @@ public final class MapData {
      */
     public int surfaceYAt(int worldX, int worldZ) {
         if (isEmptyAt(worldX, worldZ)) return seaLevel();
-        if (isWaterAt(worldX, worldZ)) return seaLevel();
+        // heightAt() is the highest non-air block Y. Every column (land and water alike) is drawn
+        // at its top face, i.e. +1. The old code forced every water column to seaLevel(), which is
+        // wrong for lakes/rivers that are not at sea level (e.g. a river surface at y=59 showing 63).
         return heightAt(worldX, worldZ) + 1;
     }
 
