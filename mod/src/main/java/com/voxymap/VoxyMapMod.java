@@ -7,6 +7,7 @@ import net.neoforged.bus.api.IEventBus;
 import net.neoforged.fml.ModContainer;
 import net.neoforged.fml.common.Mod;
 import net.neoforged.fml.config.ModConfig;
+import net.neoforged.fml.event.lifecycle.FMLClientSetupEvent;
 import net.neoforged.neoforge.client.event.ClientPlayerNetworkEvent;
 import net.neoforged.neoforge.client.event.ClientTickEvent;
 import net.neoforged.neoforge.client.event.RegisterKeyMappingsEvent;
@@ -23,7 +24,12 @@ public class VoxyMapMod {
 
     public VoxyMapMod(IEventBus modBus, ModContainer container) {
         modBus.addListener(this::registerKeys);
+        // Read the raw TOML before NeoForge loads it: once loaded, a missing `configVersion` key is
+        // rewritten with its default and the "old config" state would be lost.
+        VoxyMapConfig.inspectConfigFile();
         container.registerConfig(ModConfig.Type.CLIENT, VoxyMapConfig.SPEC);
+        // Applies the 26.2 config-version rule (one-time reset of an older config file).
+        modBus.addListener((FMLClientSetupEvent event) -> VoxyMapConfig.load());
         // "config" button on the mod list entry opens our own config screen (same UI as Fabric)
         container.registerExtensionPoint(IConfigScreenFactory.class,
                 (modContainer, parent) -> new MapConfigScreen(parent));

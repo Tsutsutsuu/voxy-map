@@ -77,6 +77,12 @@ public final class VoxyMapConfig {
     public static final Value<Integer> WATER_BLUR_PASSES;
     public static final Value<Boolean> DENOISE;
     public static final Value<Boolean> FILL_HOLES;
+    /** Ignore the height of grass-like plants (grass/fern/bush) in the height data. */
+    public static final Value<Boolean> IGNORE_PLANT_HEIGHT;
+    /** Directional-light strength (0-100) shared by the 2D shading and the advanced 3D view. */
+    public static final Value<Integer> LIGHT_STRENGTH;
+    /** Ambient fraction (0-100) mixed into the shared directional light; higher = flatter. */
+    public static final Value<Integer> LIGHT_AMBIENT;
 
     // ---- data and refresh ----------------------------------------------------------------------
     public static final Value<Boolean> LIVE_TILES;
@@ -101,6 +107,14 @@ public final class VoxyMapConfig {
     public static final Value<Integer> GPU_TERRAIN_FAR_STEP;
     public static final Value<Integer> GPU_TERRAIN_SKIRT_DEPTH;
     public static final Value<Integer> GPU_TERRAIN_HYSTERESIS_PCT;
+    /** Experimental: blocky voxel columns (flat tops + side walls) for near tiles. */
+    public static final Value<Boolean> GPU_TERRAIN_VOXEL;
+    /** Experimental advanced 3D: per-vertex AO + shaded side walls on the shared 2D texture. */
+    public static final Value<Boolean> ADVANCED_3D_RENDER;
+    /** Ambient-occlusion strength (0-100); 0 = off. */
+    public static final Value<Integer> ADVANCED_3D_AO;
+    /** Fixed far distance of the advanced 3D blocks-style fog, in world blocks. */
+    public static final Value<Integer> FOG_DISTANCE_3D;
     public static final Value<Double> PLAYER_MARKER_HEIGHT_3D;
     public static final Value<Double> PLAYER_MARKER_SCALE_3D;
     public static final Value<Integer> BIOME_LABEL_3D_RANGE;
@@ -120,6 +134,19 @@ public final class VoxyMapConfig {
     public static final Value<Boolean> DEBUG_REFRESH_CHAT;
     public static final Value<Boolean> DEBUG_VOXY_EVENTS;
     public static final Value<Boolean> DEBUG_TILE_TRACE;
+
+    // ---- config metadata -----------------------------------------------------------------------
+    /**
+     * Bumped when the shipped defaults change in a way that should replace old config files once.
+     * A TOML file without the marker (or with an older one) is reset to the current defaults.
+     * Ordinary default tweaks, new options and description edits must NOT bump this.
+     */
+    private static final int CONFIG_VERSION = 1;
+    /** Stored copy of {@link #CONFIG_VERSION}; written to the TOML file. */
+    public static final Value<Integer> CONFIG_VERSION_VALUE;
+    /** True when the TOML on disk predates {@code configVersion} (checked before the spec loads). */
+    private static boolean legacyConfigFile;
+    private static boolean configChecked;
 
     static {
         ModConfigSpec.Builder b = new ModConfigSpec.Builder();
@@ -181,6 +208,10 @@ public final class VoxyMapConfig {
                 .define("landMaxRamp", true), true);
         DRAW_HILLSHADE = new Value<>(b.comment("Apply hillshade to the terrain")
                 .define("drawHillshade", true), true);
+        LIGHT_STRENGTH = new Value<>(b.comment("Sun light strength (0 = flat)")
+                .defineInRange("lightStrength", 30, 0, 100), 30);
+        LIGHT_AMBIENT = new Value<>(b.comment("Ambient light (0-100); higher = softer contrast")
+                .defineInRange("lightAmbient", 20, 0, 100), 20);
         BIOME_COLORS = new Value<>(b.comment("Tint grass, leaves and water by biome in the block-color style")
                 .define("biomeColors", true), true);
         DRAW_WATER_DEPTH = new Value<>(b.comment("Colour water by bathymetry depth")
@@ -194,17 +225,20 @@ public final class VoxyMapConfig {
         CONTOUR_DENSITY = new Value<>(b.comment("How many contour lines span the land height range")
                 .defineInRange("contourDensity", 12, 1, 24), 12);
         MIN_CONTOUR_AREA = new Value<>(b.comment("Drop contour fragments smaller than this many pixels")
-                .defineInRange("minContourArea", 40, 0, 1000), 40);
+                .defineInRange("minContourArea", 256, 0, 1000), 256);
         WATER_BLUR = new Value<>(b.comment("Blur the water depth to smooth out sea-floor speckles")
                 .define("waterBlur", true), true);
         WATER_BLUR_RADIUS = new Value<>(b.comment("Water blur radius in map pixels")
                 .defineInRange("waterBlurRadius", 4, 1, 16), 4);
         WATER_BLUR_PASSES = new Value<>(b.comment("Water blur passes (more = smoother)")
-                .defineInRange("waterBlurPasses", 2, 1, 5), 2);
+                .defineInRange("waterBlurPasses", 1, 1, 5), 1);
         DENOISE = new Value<>(b.comment("Remove isolated height outliers on land")
                 .define("denoise", false), false);
         FILL_HOLES = new Value<>(b.comment("Fill small interior data holes with the local median")
                 .define("fillHoles", false), false);
+        IGNORE_PLANT_HEIGHT = new Value<>(b.comment(
+                "Ignore the height of grass, ferns and bushes so only the ground below them is shown")
+                .define("ignorePlantHeight", false), false);
         b.pop();
 
         b.comment("Data and refresh / 数据与刷新").push("data");
@@ -238,7 +272,7 @@ public final class VoxyMapConfig {
         REMEMBER_3D_VIEW = new Value<>(b.comment("Remember the 3D camera per world")
                 .define("remember3dView", true), true);
         GPU_TERRAIN_NEAR_DISTANCE = new Value<>(b.comment("Near mesh precision distance (blocks)")
-                .defineInRange("gpuTerrainNearDistance", 512, 64, 4096), 512);
+                .defineInRange("gpuTerrainNearDistance", 768, 64, 4096), 768);
         GPU_TERRAIN_MID_DISTANCE = new Value<>(b.comment("Mid mesh precision distance (blocks)")
                 .defineInRange("gpuTerrainMidDistance", 2048, 256, 16384), 2048);
         GPU_TERRAIN_NEAR_STEP = new Value<>(b.comment("Near mesh step (map pixels per vertex, must divide 256)")
@@ -251,14 +285,26 @@ public final class VoxyMapConfig {
                 .defineInRange("gpuTerrainSkirtDepth", 16, 0, 64), 16);
         GPU_TERRAIN_HYSTERESIS_PCT = new Value<>(b.comment("Distance hysteresis percent between mesh steps")
                 .defineInRange("gpuTerrainHysteresisPct", 15, 0, 50), 15);
+        GPU_TERRAIN_VOXEL = new Value<>(b.comment(
+                "Experimental: show near 3D terrain as blocky voxel columns (flat tops + side walls)")
+                .define("gpuTerrainVoxel", true), true);
+        ADVANCED_3D_RENDER = new Value<>(b.comment(
+                "Advanced 3D rendering: ambient occlusion and shaded sides, plus sky and fog for the blocks style")
+                .define("advanced3dRender", true), true);
+        ADVANCED_3D_AO = new Value<>(b.comment("Ambient occlusion strength (0 = off)")
+                .defineInRange("advanced3dAo", 50, 0, 100), 50);
+        FOG_DISTANCE_3D = new Value<>(b.comment(
+                "How far the horizontal fog of the advanced 3D view reaches, in blocks (blocks style only)")
+                .defineInRange("fogDistance3d", 7000, 1000, 60000), 7000);
         PLAYER_MARKER_HEIGHT_3D = new Value<>(b.comment("3D player marker height above the terrain")
                 .defineInRange("playerMarkerHeight3d", 50.0, 0.0, 200.0), 50.0);
         PLAYER_MARKER_SCALE_3D = new Value<>(b.comment("3D player marker scale")
                 .defineInRange("playerMarkerScale3d", 2.5, 0.0, 5.0), 2.5);
         BIOME_LABEL_3D_RANGE = new Value<>(b.comment("Horizontal range (blocks) for 3D biome labels")
                 .defineInRange("biomeLabel3dRange", 3000, 200, 20000), 3000);
-        AUTO_HIDE_CONTOURS_3D = new Value<>(b.comment("Hide the 2D contour lines while in the 3D view")
-                .define("autoHideContours3d", false), false);
+        AUTO_HIDE_CONTOURS_3D = new Value<>(b.comment(
+                "Temporarily hide the contour lines while in the 3D view, without changing the saved setting")
+                .define("autoHideContours3d", true), true);
         KEEP_3D_TILES_IN_2D = new Value<>(b.comment("Keep built GPU terrain when returning to 2D")
                 .define("keep3dTilesIn2d", true), true);
         b.pop();
@@ -267,11 +313,11 @@ public final class VoxyMapConfig {
         TILE_RESIDENT_CAP = new Value<>(b.comment("Soft resident tile cap")
                 .defineInRange("tileResidentCap", 1024, 64, 65536), 1024);
         GPU_TEXTURE_BUDGET_MB = new Value<>(b.comment("Tile-texture VRAM budget in MB (shared 2D/3D estimate)")
-                .defineInRange("gpuTextureBudgetMb", 472, 16, 4096), 472);
+                .defineInRange("gpuTextureBudgetMb", 512, 16, 4096), 512);
         GPU3D_BUILD_THREADS = new Value<>(b.comment("3D mesh build threads (0 = automatic)")
                 .defineInRange("gpu3dBuildThreads", 0, 0, 16), 0);
         GPU3D_BATCH_BUILD = new Value<>(b.comment("3D mesh uploads per frame")
-                .defineInRange("gpu3dBatchBuild", 10, 1, 32), 10);
+                .defineInRange("gpu3dBatchBuild", 16, 1, 32), 16);
         SKIP_WORLD_RENDER = new Value<>(b.comment("Skip rendering the world while the map is open")
                 .define("skipWorldRender", true), true);
         RELEASE_TEXTURES_ON_CLOSE = new Value<>(b.comment("Release map textures when closing the map")
@@ -287,6 +333,14 @@ public final class VoxyMapConfig {
                 .define("debugVoxyEvents", false), false);
         DEBUG_TILE_TRACE = new Value<>(b.comment("Write a per-tile lifecycle trace to logs/")
                 .define("debugTileTrace", false), false);
+        b.pop();
+
+        // Kept out of the config screen: the loader loads/validates the TOML before the client
+        // reaches the menu, so this only records which defaults the file was written with.
+        b.comment("Config metadata / 配置元数据（请勿手动修改）").push("meta");
+        CONFIG_VERSION_VALUE = new Value<>(b.comment(
+                "Config version; an older value (or a file without this key) resets every option once")
+                .defineInRange("configVersion", CONFIG_VERSION, 0, 10000), CONFIG_VERSION);
         b.pop();
 
         SPEC = b.build();
@@ -337,10 +391,46 @@ public final class VoxyMapConfig {
     }
 
     /**
-     * No-op on NeoForge: the loader loads/validates the TOML before the client reaches the menu.
-     * Kept so the ported 26.2 sources that call it stay unchanged.
+     * Records whether the TOML on disk predates {@code configVersion}. Must run before the spec is
+     * registered: once NeoForge has loaded the file it rewrites missing keys with their defaults,
+     * so the raw file is the only place that still knows the config is old.
+     */
+    public static void inspectConfigFile() {
+        try {
+            java.nio.file.Path file = net.neoforged.fml.loading.FMLPaths.CONFIGDIR.get()
+                    .resolve("voxymap-client.toml");
+            if (java.nio.file.Files.isRegularFile(file)) {
+                String text = java.nio.file.Files.readString(file);
+                legacyConfigFile = !text.contains("configVersion");
+            }
+        } catch (Throwable t) {
+            System.err.println("[voxymap] could not inspect the config file: " + t);
+        }
+    }
+
+    /**
+     * Implements the 26.2 config-version rule on the TOML backend: a file written by an older build
+     * (no marker, or a lower {@code configVersion}) is replaced by the current defaults exactly once.
+     * Called after the spec has loaded, so setting values here is legal.
      */
     public static void load() {
-        // nothing to do
+        if (configChecked) return;
+        configChecked = true;
+        int stored = CONFIG_VERSION_VALUE.get();
+        if (!legacyConfigFile && stored >= CONFIG_VERSION) return;
+        System.out.println("[voxymap] old config version " + (legacyConfigFile ? "<missing>" : stored)
+                + " -> resetting to defaults (v" + CONFIG_VERSION + ")");
+        for (java.lang.reflect.Field f : VoxyMapConfig.class.getDeclaredFields()) {
+            if (f.getType() != Value.class) continue;
+            if (f.isAnnotationPresent(Deprecated.class)) continue;
+            try {
+                f.setAccessible(true);
+                Value<?> v = (Value<?>) f.get(null);
+                if (v != null && v != CONFIG_VERSION_VALUE) v.set(v.getDefault());
+            } catch (Exception ignored) {
+            }
+        }
+        CONFIG_VERSION_VALUE.set(CONFIG_VERSION);
+        SPEC.save();
     }
 }
