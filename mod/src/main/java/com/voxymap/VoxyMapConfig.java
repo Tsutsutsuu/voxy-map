@@ -295,7 +295,7 @@ public final class VoxyMapConfig {
                 .defineInRange("advanced3dAo", 50, 0, 100), 50);
         FOG_DISTANCE_3D = new Value<>(b.comment(
                 "How far the horizontal fog of the advanced 3D view reaches, in blocks (blocks style only)")
-                .defineInRange("fogDistance3d", 7000, 1000, 60000), 7000);
+                .defineInRange("fogDistance3d", 10000, 1000, 60000), 10000);
         PLAYER_MARKER_HEIGHT_3D = new Value<>(b.comment("3D player marker height above the terrain")
                 .defineInRange("playerMarkerHeight3d", 50.0, 0.0, 200.0), 50.0);
         PLAYER_MARKER_SCALE_3D = new Value<>(b.comment("3D player marker scale")

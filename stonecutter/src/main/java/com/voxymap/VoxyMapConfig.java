@@ -151,7 +151,7 @@ public final class VoxyMapConfig {
     /** Ambient-occlusion strength (0-100) for the experimental advanced 3D features; 0 = off. */
     public static final Value<Integer> ADVANCED_3D_AO = new Value<>("advanced3dAo", 50);
     /** Fixed far distance of the advanced 3D blocks-style fog, in world blocks. */
-    public static final Value<Integer> FOG_DISTANCE_3D = new Value<>("fogDistance3d", 7000);
+    public static final Value<Integer> FOG_DISTANCE_3D = new Value<>("fogDistance3d", 10000);
     /**
      * Directional-light strength (0-100) shared by the 2D map shading and the advanced 3D
      * renderer; 0 = completely flat. Moving this recolours the 2D map and re-lights 3D.
