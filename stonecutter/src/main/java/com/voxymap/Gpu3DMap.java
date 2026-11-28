@@ -981,7 +981,7 @@ public final class Gpu3DMap {
                 double u = (sx + Math.min(texMax, x) + 0.5) / ATLAS;
                 double v0 = (sy + (double) Math.min(texMax + 1, gz * step)) / ATLAS;
                 double v1 = (sy + (double) Math.min(texMax + 1, (gz + run) * step)) / ATLAS;
-                s.curAo = advancedLook ? (int) (aoCell[i] * 0.68f) : 255;
+                wallColors(s, aoCell[i], 0.62f, advancedLook); // east: shadow side
                 voxWallX(s, xEdge, ny, y, z0, z1, u, v0, v1, true);
                 minY = Math.min(minY, ny);
                 gz += run;
@@ -1007,7 +1007,7 @@ public final class Gpu3DMap {
                 double u = (sx + Math.min(texMax, x) + 0.5) / ATLAS;
                 double v0 = (sy + (double) Math.min(texMax + 1, gz * step)) / ATLAS;
                 double v1 = (sy + (double) Math.min(texMax + 1, (gz + run) * step)) / ATLAS;
-                s.curAo = advancedLook ? (int) (aoCell[i] * 0.68f) : 255;
+                wallColors(s, aoCell[i], 0.86f, advancedLook); // west: lit side
                 voxWallX(s, xEdge, ny, y, z0, z1, u, v0, v1, true);
                 minY = Math.min(minY, ny);
                 gz += run;
@@ -1036,7 +1036,7 @@ public final class Gpu3DMap {
                 double v = (sy + Math.min(texMax, z) + 0.5) / ATLAS;
                 double u0 = (sx + (double) Math.min(texMax + 1, gx * step)) / ATLAS;
                 double u1 = (sx + (double) Math.min(texMax + 1, (gx + run) * step)) / ATLAS;
-                s.curAo = advancedLook ? (int) (aoCell[i] * 0.85f) : 255;
+                wallColors(s, aoCell[i], 0.64f, advancedLook); // south: shadow side
                 voxWallZ(s, zEdge, ny, y, x0, x1, v, u0, u1, true);
                 minY = Math.min(minY, ny);
                 gx += run;
@@ -1062,7 +1062,7 @@ public final class Gpu3DMap {
                 double v = (sy + Math.min(texMax, z) + 0.5) / ATLAS;
                 double u0 = (sx + (double) Math.min(texMax + 1, gx * step)) / ATLAS;
                 double u1 = (sx + (double) Math.min(texMax + 1, (gx + run) * step)) / ATLAS;
-                s.curAo = advancedLook ? (int) (aoCell[i] * 0.85f) : 255;
+                wallColors(s, aoCell[i], 0.84f, advancedLook); // north: lit side
                 voxWallZ(s, zEdge, ny, y, x0, x1, v, u0, u1, true);
                 minY = Math.min(minY, ny);
                 gx += run;
@@ -1092,7 +1092,7 @@ public final class Gpu3DMap {
                 double u = (sx + Math.min(texMax, gx * step) + 0.5) / ATLAS;
                 double v = (sy + Math.min(texMax, gz * step) + 0.5) / ATLAS;
                 float low = (float) (y - skirt);
-                s.curAo = advancedLook ? (int) (aoCell[i] * 0.55f) : 255;
+                wallColors(s, aoCell[i], 0.55f, advancedLook); // skirt
                 if (west) {
                     voxWallX(s, x0, low, y, z0, z1, u, v, v, true);
                 }
@@ -1217,6 +1217,20 @@ public final class Gpu3DMap {
         float amount = (strength / 100f) * 0.75f * (occ / (occ + 0.6f));
         return Math.max(40, Math.round(255f * (1f - amount)));
     }
+    /**
+     * Wall colours: a direction-dependent face factor (sun comes from the north-west, so the west
+     * and north walls are the lit sides) plus a vertical gradient (bottom ~18% darker than the top).
+     */
+    private static void wallColors(VoxelScratch s, int ao, float factor, boolean advancedLook) {
+        if (!advancedLook) {
+            s.curAoLow = 255;
+            s.curAoHigh = 255;
+            return;
+        }
+        int high = Math.max(40, Math.round(ao * factor));
+        s.curAoHigh = high;
+        s.curAoLow = Math.max(40, Math.round(high * 0.82f));
+    }
     private static void voxAdd(VoxelScratch s, double x, double y, double z, double u, double v) {
         s.ensureVerts(s.vi + 1);
         s.col[s.vi] = s.curAo;
@@ -1240,8 +1254,10 @@ public final class Gpu3DMap {
     private static void voxWallX(VoxelScratch s, double xEdge, float yLow, float yHigh,
                                  double z0, double z1, double u, double v0, double v1, boolean cullSafe) {
         int b = s.vi;
+        s.curAo = s.curAoLow;
         voxAdd(s, xEdge, yLow, z0, u, v0);
         voxAdd(s, xEdge, yLow, z1, u, v1);
+        s.curAo = s.curAoHigh;
         voxAdd(s, xEdge, yHigh, z0, u, v0);
         voxAdd(s, xEdge, yHigh, z1, u, v1);
         voxTri(s, b, b + 1, b + 2);
@@ -1256,8 +1272,10 @@ public final class Gpu3DMap {
     private static void voxWallZ(VoxelScratch s, double zEdge, float yLow, float yHigh,
                                  double x0, double x1, double v, double u0, double u1, boolean cullSafe) {
         int b = s.vi;
+        s.curAo = s.curAoLow;
         voxAdd(s, x0, yLow, zEdge, u0, v);
         voxAdd(s, x1, yLow, zEdge, u1, v);
+        s.curAo = s.curAoHigh;
         voxAdd(s, x0, yHigh, zEdge, u0, v);
         voxAdd(s, x1, yHigh, zEdge, u1, v);
         voxTri(s, b, b + 1, b + 2);
@@ -1281,6 +1299,8 @@ public final class Gpu3DMap {
         byte[] vao = new byte[0];
         int vi, ii;
         int curAo = 255;
+        int curAoLow = 255;
+        int curAoHigh = 255;
 
         static VoxelScratch get(int cells) {
             VoxelScratch s = LOCAL.get();
@@ -1295,6 +1315,8 @@ public final class Gpu3DMap {
                 s.vao = new byte[cells * 4];
             }
             s.curAo = 255;
+            s.curAoLow = 255;
+            s.curAoHigh = 255;
             s.vi = 0;
             s.ii = 0;
             return s;
