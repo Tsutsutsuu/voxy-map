@@ -78,19 +78,25 @@ public final class Gpu3DMap {
     private static final RenderPipeline MARKER_PIPELINE = markerPipeline();
     /** Textured world-space pipeline for the player arrow (POSITION_TEX, no depth test). */
     private static final RenderPipeline ARROW_PIPELINE = arrowPipeline();
-    /** Sky sphere: depth test+write at a far radius, so the nearest surface wins per pixel. */
-    private static final RenderPipeline SKY_PIPELINE = skyPipeline();
-    /** Blocks-style advanced 3D sky/fog: horizontal-fog terrain pipeline and sky sphere. */
+    /** Procedural screen-space sky (NDC gradient bands) and blocks-style horizontal fog. */
+    private static RenderPipeline skyPipelineSafe() {
+        try {
+            return BlazeCompat.advancedSkyPipeline();
+        } catch (Throwable t) {
+            System.out.println("[voxymap] sky pipeline unavailable: " + t);
+            return null;
+        }
+    }
+    private static final RenderPipeline SKY_PIPELINE = skyPipelineSafe();
     private static RenderPipeline terrain3dPipeline;
-    private static GpuBuffer skyMesh;
+    private static GpuBuffer skyVbo;
+    private static ByteBuffer skyStaging;
     private static int skyVertexCount;
-    private static int skyMeshSkyColor = Integer.MIN_VALUE;
-    private static int skyMeshFogColor = Integer.MIN_VALUE;
+    private static final int SKY_MAX_VERTS = 12;
     private static MappableRingBuffer fogRing;
     private static GpuBufferSlice fogSlice;
     private static GpuBufferSlice fogPrevious;
     private static ByteBuffer fogStaging;
-    private static final float SKY_RADIUS = 50000f;
     private static final int SKY_BLACK = 0xFF050508;
     private static final int OVERLAY_SEGMENTS = 64;
     /** Upper bound on the marker tick-line segments (the buffer is sized for this). */
@@ -167,23 +173,6 @@ public final class Gpu3DMap {
      * forced to ALWAYS_PASS so the marker line draws over the terrain.
      */
 
-    /** Depth-test-free sky sphere pipeline with culling enabled (the sphere uses inward winding). */
-    private static RenderPipeline skyPipeline() {
-        try {
-            return RenderPipelines.register(RenderPipeline.builder(RenderPipelines.DEBUG_FILLED_SNIPPET)
-                    .withLocation("pipeline/voxymap_sky")
-                    // Depth test + write at a far radius: only the nearest sphere surface survives
-                    // per pixel. Explicit triangle topology: the quad topology needs an index
-                    // buffer, and drawing the sky non-indexed left every other triangle missing.
-                    .withDepthStencilState(DepthStencilState.DEFAULT)
-                    .withPrimitiveTopology(com.mojang.blaze3d.PrimitiveTopology.TRIANGLES)
-                    .withCull(false)
-                    .build());
-        } catch (Throwable t) {
-            System.out.println("[voxymap] sky pipeline unavailable: " + t);
-            return null;
-        }
-    }
     private static RenderPipeline markerPipeline() {
         try {
             return RenderPipelines.register(RenderPipeline.builder(RenderPipelines.DEBUG_FILLED_SNIPPET)
@@ -2296,84 +2285,72 @@ public final class Gpu3DMap {
         return 0xFF000000 | (r << 16) | (g << 8) | b;
     }
 
-    /** Horizon colour at y=0, fading into the zenith sky colour above a ~10 degree band. */
-    private static int skyVertexColor(float y, int skyColor, int fogColor) {
-        if (y <= -0.15f) return SKY_BLACK;
-        if (y < 0f) {
-            // Keep the horizon colour a little below the equator so the black lower hemisphere
-            // starts lower (a ~8 degree haze band).
-            float t = -y / 0.15f;
-            t = t * t * (3f - 2f * t);
-            return lerpColor(fogColor, SKY_BLACK, t);
-        }
-        float t = Math.min(1f, y / 0.18f);
-        t = t * t * (3f - 2f * t);
-        return lerpColor(fogColor, skyColor, t);
+    /** Number of bytes per POSITION_COLOR vertex (3 floats + RGBA). */
+    private static final int SKY_VERTEX_BYTES = 16;
+
+    private static void skyVertex(ByteBuffer buf, float x, float y, int argb) {
+        buf.putFloat(x).putFloat(y).putFloat(0f);
+        buf.put((byte) ((argb >> 16) & 0xFF)).put((byte) ((argb >> 8) & 0xFF))
+                .put((byte) (argb & 0xFF)).put((byte) 0xFF);
     }
 
-    private static void addSkyVertex(BufferBuilder bb, float x, float y, float z, int argb) {
-        bb.addVertex(x, y, z).setColor((argb >> 16) & 0xFF, (argb >> 8) & 0xFF, argb & 0xFF, 255);
+    /** Two triangles filling the horizontal band from y0 (top colour) to y1 (bottom colour). */
+    private static void skyBand(ByteBuffer buf, float y0, float y1, int topColor, int bottomColor) {
+        skyVertex(buf, -1f, y0, topColor);
+        skyVertex(buf, 1f, y0, topColor);
+        skyVertex(buf, 1f, y1, bottomColor);
+        skyVertex(buf, -1f, y0, topColor);
+        skyVertex(buf, 1f, y1, bottomColor);
+        skyVertex(buf, -1f, y1, bottomColor);
     }
 
-    private static void ensureSkyMesh(CommandEncoder encoder, int skyColor, int fogColor) {
-        if (skyMesh != null && skyColor == skyMeshSkyColor && fogColor == skyMeshFogColor) return;
-        if (skyMesh != null) {
-            skyMesh.close();
-            skyMesh = null;
+    /**
+     * Builds the procedural screen-space sky for this frame. The horizon's NDC y comes from the
+     * camera pitch and the FOV, so no sphere geometry (and no depth/culling tricks) are involved.
+     * Everything is uploaded before the render pass opens.
+     */
+    private static void prepareSky(CommandEncoder encoder, float fov, Map3D.Camera cam,
+                                   int skyColor, int fogColor) {
+        skyVertexCount = 0;
+        if (SKY_PIPELINE == null) return;
+        if (skyVbo == null) {
+            skyVbo = RenderSystem.getDevice().createBuffer(
+                    () -> "voxymap_3d_sky", GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_COPY_DST,
+                    SKY_MAX_VERTS * SKY_VERTEX_BYTES);
         }
-        final int latSteps = 60;
-        final int lonSteps = 72;
-        float radius = SKY_RADIUS;
-        ByteBufferBuilder alloc = new ByteBufferBuilder(1 << 16);
-        BufferBuilder bb = BlazeCompat.newBufferBuilder(alloc, DefaultVertexFormat.POSITION_COLOR);
-        int vertices = 0;
-        for (int i = 0; i < latSteps; i++) {
-            double pa = Math.toRadians(-90.0 + i * 180.0 / latSteps);
-            double pb = Math.toRadians(-90.0 + (i + 1) * 180.0 / latSteps);
-            float ya = (float) Math.sin(pa), yb = (float) Math.sin(pb);
-            float ra = (float) Math.cos(pa), rb = (float) Math.cos(pb);
-            boolean below = Math.toDegrees(pb) <= 0.0;
-            for (int j = 0; j < lonSteps; j++) {
-                double ta = Math.PI * 2.0 * j / lonSteps;
-                double tb = Math.PI * 2.0 * (j + 1) / lonSteps;
-                float xa0 = (float) (ra * Math.sin(ta)), za0 = (float) (ra * Math.cos(ta));
-                float xa1 = (float) (ra * Math.sin(tb)), za1 = (float) (ra * Math.cos(tb));
-                float xb0 = (float) (rb * Math.sin(ta)), zb0 = (float) (rb * Math.cos(ta));
-                float xb1 = (float) (rb * Math.sin(tb)), zb1 = (float) (rb * Math.cos(tb));
-                int ca = below ? SKY_BLACK : skyVertexColor(ya, skyColor, fogColor);
-                int cb = below ? SKY_BLACK : skyVertexColor(yb, skyColor, fogColor);
-                // Two explicit triangles per grid cell (no index buffer needed).
-                addSkyVertex(bb, xb0 * radius, yb * radius, zb0 * radius, cb);
-                addSkyVertex(bb, xb1 * radius, yb * radius, zb1 * radius, cb);
-                addSkyVertex(bb, xa1 * radius, ya * radius, za1 * radius, ca);
-                addSkyVertex(bb, xb0 * radius, yb * radius, zb0 * radius, cb);
-                addSkyVertex(bb, xa1 * radius, ya * radius, za1 * radius, ca);
-                addSkyVertex(bb, xa0 * radius, ya * radius, za0 * radius, ca);
-                vertices += 6;
+        if (skyStaging == null) {
+            skyStaging = ByteBuffer.allocateDirect(SKY_MAX_VERTS * SKY_VERTEX_BYTES)
+                    .order(ByteOrder.nativeOrder());
+        }
+        double tanHalfFov = Math.tan(Math.toRadians(fov * 0.5));
+        double horizon = -Math.tan(cam.pitch) / Math.max(1e-4, tanHalfFov);
+        // Looking down far enough that the horizon is above the screen: no sky is visible.
+        if (horizon >= 1.0) return;
+        skyStaging.clear();
+        if (horizon <= -1.0) {
+            // Whole screen is above the horizon: fade sky -> horizon colour top to bottom.
+            skyBand(skyStaging, 1f, -1f, skyColor, fogColor);
+        } else {
+            float hz = (float) horizon;
+            skyBand(skyStaging, 1f, hz, skyColor, fogColor);
+            float low = Math.max(-1f, hz - 0.15f);
+            if (low < hz) {
+                skyBand(skyStaging, hz, low, fogColor, SKY_BLACK);
             }
         }
-        MeshData mesh = bb.buildOrThrow();
-        ByteBuffer data = copy(mesh.vertexBuffer());
-        mesh.close();
-        alloc.close();
-        skyMesh = upload(encoder, "voxymap_3d_sky", GpuBuffer.USAGE_VERTEX, data);
-        skyVertexCount = vertices;
-        skyMeshSkyColor = skyColor;
-        skyMeshFogColor = fogColor;
+        skyStaging.flip();
+        int bytes = skyStaging.remaining();
+        if (bytes == 0) return;
+        encoder.writeToBuffer(new GpuBufferSlice(skyVbo, 0L, bytes), skyStaging);
+        skyVertexCount = bytes / SKY_VERTEX_BYTES;
     }
 
-    private static void drawSky(RenderPass pass, Matrix4f view, Map3D.Camera cam) {
-        if (skyMesh == null || SKY_PIPELINE == null) return;
+    private static void drawSky(RenderPass pass) {
+        if (SKY_PIPELINE == null || skyVertexCount == 0) return;
         pass.setPipeline(SKY_PIPELINE);
-        RenderSystem.bindDefaultUniforms(pass);
-        Vector3f offset = new Vector3f((float) cam.eyeX(), (float) cam.eyeY(), (float) cam.eyeZ());
-        GpuBufferSlice skyTransforms = RenderSystem.getDynamicUniforms()
-                .writeTransform(view, COLOR_MODULATOR, offset, TEXTURE_MATRIX);
-        pass.setUniform("DynamicTransforms", skyTransforms);
-        BlazeCompat.setVertexBuffer(pass, 0, skyMesh);
+        BlazeCompat.setVertexBuffer(pass, 0, skyVbo);
         BlazeCompat.drawNonIndexed(pass, skyVertexCount);
     }
-
     private static void beginFog(float start, float end, int color) {
         if (fogRing == null) {
             fogRing = new MappableRingBuffer(() -> "voxymap_3d_fog", 130, FogRenderer.FOG_UBO_SIZE);
@@ -2480,7 +2457,7 @@ public final class Gpu3DMap {
                 // The sky buffer upload and the fog-buffer map must happen BEFORE the render pass:
                 // writing/mapping GPU buffers while a pass is open is illegal and aborted the pass.
                 try {
-                    ensureSkyMesh(frameEncoder, skyColor, horizonColor);
+                    prepareSky(frameEncoder, fov, cam, skyColor, horizonColor);
                     beginFog(fogStart, fogEnd, horizonColor);
                     fogStarted = true;
                 } catch (Throwable t) {
@@ -2489,7 +2466,7 @@ public final class Gpu3DMap {
             }
             try (RenderPass pass = BlazeCompat.beginTerrainPass(frameEncoder, target, depthView)) {
                 if (fogStarted) {
-                    drawSky(pass, view, cam);
+                    drawSky(pass);
                 }
                 pass.setPipeline(skyFog ? terrain3dPipeline() : PIPELINE);
                 RenderSystem.bindDefaultUniforms(pass);
@@ -2643,13 +2620,11 @@ public final class Gpu3DMap {
         lastTotal = 0;
         lastBuildNanos = 0;
         lastUploadNanos = 0;
-        if (skyMesh != null) {
-            skyMesh.close();
-            skyMesh = null;
+        if (skyVbo != null) {
+            skyVbo.close();
+            skyVbo = null;
         }
         skyVertexCount = 0;
-        skyMeshSkyColor = Integer.MIN_VALUE;
-        skyMeshFogColor = Integer.MIN_VALUE;
         if (fogRing != null) {
             fogRing.close();
             fogRing = null;

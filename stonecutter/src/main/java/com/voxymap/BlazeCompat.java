@@ -298,6 +298,23 @@ public final class BlazeCompat {
      * chunk pipeline (position/color/uv0/uv2), but the mod's own shader so lighting/AO/contours can
      * run there. Registered once; the shader lives in {@code assets/voxymap/shaders/core/terrain3d}.
      */
+    /** Procedural screen-space sky: NDC positions + colours, no uniforms, no depth. */
+    public static RenderPipeline advancedSkyPipeline() {
+        //? if >=26.2 {
+        return RenderPipelines.register(RenderPipeline.builder()
+                .withLocation("pipeline/voxymap_sky")
+                .withVertexShader(net.minecraft.resources.Identifier.fromNamespaceAndPath("voxymap", "core/sky"))
+                .withFragmentShader(net.minecraft.resources.Identifier.fromNamespaceAndPath("voxymap", "core/sky"))
+                .withVertexBinding(0, DefaultVertexFormat.POSITION_COLOR)
+                .withPrimitiveTopology(com.mojang.blaze3d.PrimitiveTopology.TRIANGLES)
+                .withColorTargetState(new ColorTargetState(BlendFunction.TRANSLUCENT))
+                .withDepthStencilState(new DepthStencilState(CompareOp.ALWAYS_PASS, false))
+                .withCull(false)
+                .build());
+        //?} else {
+        /*return null;*/
+        //?}
+    }
     /**
      * Terrain pipeline with the mod's small shader, used by the advanced 3D view for the
      * blocks-style sky/fog (horizontal fog only). Same BLOCK vertex format and draw state as the
