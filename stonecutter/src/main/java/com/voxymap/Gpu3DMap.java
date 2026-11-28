@@ -99,8 +99,6 @@ public final class Gpu3DMap {
     /** Fixed clear-noon overworld colours: no weather, daylight or biome variation. */
     private static final int CLEAR_SKY_COLOR = 0xFF79A7FF;
     private static final int CLEAR_FOG_COLOR = 0xFFC0D8FF;
-    /** Fixed far distance of the 3D fog; only the start distance varies with camera height. */
-    private static final float FOG_END = 20000f;
     private static final int OVERLAY_SEGMENTS = 64;
     /** Upper bound on the marker tick-line segments (the buffer is sized for this). */
     private static final int MARKER_MAX_SEGMENTS = 96;
@@ -2449,8 +2447,8 @@ public final class Gpu3DMap {
                 groundY = data.surfaceYAt(gx, gz);
             }
             float camHeight = Math.max(1f, (float) (cam.eyeY() - groundY));
-            fogEnd = FOG_END;
-            fogStart = Math.max(600f, Math.min(FOG_END * 0.85f, camHeight * 2.0f));
+            fogEnd = Math.max(1000f, Math.min(60000f, VoxyMapConfig.FOG_DISTANCE_3D.get()));
+            fogStart = Math.max(600f, Math.min(fogEnd * 0.85f, camHeight * 2.0f));
         }
         overlayIndexCount = 0;
         // One encoder for the whole 3D frame: the overlay upload, the terrain pass and the
