@@ -133,7 +133,7 @@
   "voxymap.config.desc.gpuTerrainSkirtDepth": "Profundidad vertical del faldón en los bordes de tesela para ocultar las costuras de precisión.",
   "voxymap.config.desc.gpuTerrainHysteresisPct": "Porcentaje de histéresis para los cambios de precisión; evita reconstrucciones constantes.",
 "voxymap.config.desc.gpuTerrainVoxel": "Solo las teselas 3D cercanas (máxima precisión) se dibujan como columnas de vóxeles; las lejanas mantienen el terreno suave. Experimental, desactivado por defecto.",
-"voxymap.config.desc.advanced3dRender": "El atlas 3D incluye color base, costa, profundidad del agua y curvas (sin hillshade); la iluminación/AO la aporta el shader. Experimental, desactivado por defecto.",
+"voxymap.config.desc.advanced3dRender": "El 3D usa la misma textura de color 2D (con el sombreado ya incluido) y solo añade AO por vértice y caras laterales más oscuras. Experimental, desactivado por defecto.",
 "voxymap.config.desc.advanced3dAo": "Oscurece valles, acantilados y esquinas en el renderizado 3D avanzado (0 = desactivado).",
   "voxymap.config.desc.gpu3dBuildThreads": "Hilos de construcción de teselas en segundo plano. 0 = automático.",
   "voxymap.config.desc.gpu3dBatchBuild": "Número máximo de construcciones de tesela enviadas por fotograma.",

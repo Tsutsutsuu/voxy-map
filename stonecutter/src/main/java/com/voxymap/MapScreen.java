@@ -1238,10 +1238,6 @@ public class MapScreen extends Screen {
     private void restore3dOverrides() {
         MapData data = MapData.INSTANCE;
         data.skipBiomeLabels = false;
-        if (MapData.hillshadeOverride != null) {
-            MapData.hillshadeOverride = null;
-            data.requestColorRerender();
-        }
         if (MapData.contourOverride != null) {
             MapData.contourOverride = null;
             data.requestColorRerender();
@@ -1256,32 +1252,16 @@ public class MapScreen extends Screen {
     private void apply3dOverrides() {
         MapData data = MapData.INSTANCE;
         data.skipBiomeLabels = true;
-        if (BlazeCompat.advanced3dSupported() && VoxyMapConfig.ADVANCED_3D_RENDER.get()) {
-            // Advanced 3D bakes base colour + coastline + water depth + contours, but the shader
-            // supplies lighting, so hillshade must not be baked into its atlas. Contours follow the
-            // player's "auto-hide contours in 3D" setting exactly like the normal 3D view.
-            boolean changed = false;
-            if (MapData.hillshadeOverride == null) {
-                MapData.hillshadeOverride = Boolean.FALSE;
-                changed = true;
+        // 3D now renders the normal 2D coloured texture (baked hillshade included) and only adds
+        // per-vertex AO + side-face darkening, so the hillshade no longer needs a 3D-only override.
+        // The optional "hide contours in 3D" still needs a temporary colour-only re-render.
+        if (VoxyMapConfig.AUTO_HIDE_CONTOURS_3D.get() && VoxyMapConfig.DRAW_CONTOURS.get()) {
+            if (!Boolean.FALSE.equals(MapData.contourOverride)) {
+                MapData.contourOverride = Boolean.FALSE;
+                data.requestColorRerender();
             }
-            Boolean wantedContours = (VoxyMapConfig.AUTO_HIDE_CONTOURS_3D.get()
-                    && VoxyMapConfig.DRAW_CONTOURS.get()) ? Boolean.FALSE : null;
-            if (!java.util.Objects.equals(MapData.contourOverride, wantedContours)) {
-                MapData.contourOverride = wantedContours;
-                changed = true;
-            }
-            if (changed) data.requestColorRerender();
-            return;
-        }
-        if (VoxyMapConfig.AUTO_HIDE_CONTOURS_3D.get()
-                && VoxyMapConfig.DRAW_CONTOURS.get() && MapData.contourOverride == null) {
-            // contours are a 2D decoration: hide them in 3D (cheap colour-only re-render)
-            MapData.contourOverride = Boolean.FALSE;
-            data.requestColorRerender();
         }
     }
-
     /**
      * Keeps overlay/picking FOV in sync with the value {@code Gpu3DMap} reads for the terrain pass
      * every frame, so a FOV change made in the config screen applies immediately and consistently.

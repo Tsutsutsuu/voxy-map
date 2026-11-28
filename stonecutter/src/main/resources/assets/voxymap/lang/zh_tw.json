@@ -133,7 +133,7 @@
   "voxymap.config.desc.gpuTerrainSkirtDepth": "圖磚邊緣向下的裙邊高度，用於遮住精度接縫。",
   "voxymap.config.desc.gpuTerrainHysteresisPct": "精度切換的滯回百分比，避免相機輕微移動就反覆重建。",
 "voxymap.config.desc.gpuTerrainVoxel": "只把近景（最高精度）的 3D 瓦片渲染成方塊柱體素，中景/遠景仍用平滑地形。實驗性功能，預設關閉。",
-"voxymap.config.desc.advanced3dRender": "3D 貼圖使用基礎色 + 海岸線 + 水深刻度 + 等高線（不含山影），光照/AO 由著色器提供。實驗性功能，預設關閉。",
+"voxymap.config.desc.advanced3dRender": "3D 與 2D 使用同一張彩色貼圖（含烘焙山影），額外疊加逐格 AO 和側面明暗。實驗性功能，預設關閉。",
 "voxymap.config.desc.advanced3dAo": "讓進階 3D 渲染中的山谷、懸崖和牆角變暗（0 = 關閉）。",
   "voxymap.config.desc.gpu3dBuildThreads": "背景圖磚建構執行緒數，0 為自動。",
   "voxymap.config.desc.gpu3dBatchBuild": "每個影格最多提交多少個圖磚建構任務。",

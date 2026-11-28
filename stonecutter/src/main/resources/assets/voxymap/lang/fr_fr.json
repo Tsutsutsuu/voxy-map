@@ -133,7 +133,7 @@
   "voxymap.config.desc.gpuTerrainSkirtDepth": "Profondeur verticale de la jupe aux bords des tuiles pour masquer les coutures de précision.",
   "voxymap.config.desc.gpuTerrainHysteresisPct": "Pourcentage d'hystérésis pour les changements de précision ; évite les reconstructions incessantes.",
 "voxymap.config.desc.gpuTerrainVoxel": "Seules les tuiles 3D proches (précision maximale) sont rendues en colonnes de voxels ; les tuiles lointaines gardent le terrain lisse. Expérimental, désactivé par défaut.",
-"voxymap.config.desc.advanced3dRender": "L'atlas 3D contient la couleur de base, le littoral, la profondeur de l'eau et les courbes (sans hillshade) ; l'éclairage/AO vient du shader. Expérimental, désactivé par défaut.",
+"voxymap.config.desc.advanced3dRender": "La 3D utilise la même texture colorée 2D (ombrage inclus) et ajoute seulement l'AO par sommet et des faces latérales plus sombres. Expérimental, désactivé par défaut.",
 "voxymap.config.desc.advanced3dAo": "Assombrit les vallées, falaises et coins dans le rendu 3D avancé (0 = désactivé).",
   "voxymap.config.desc.gpu3dBuildThreads": "Threads de construction des tuiles en arrière-plan. 0 = automatique.",
   "voxymap.config.desc.gpu3dBatchBuild": "Nombre maximal de constructions de tuiles soumises par image.",

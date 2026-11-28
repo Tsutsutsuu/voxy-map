@@ -133,7 +133,7 @@
   "voxymap.config.desc.gpuTerrainSkirtDepth": "Vertikale Saumtiefe an Kachelrändern, um Präzisionsnähte zu verbergen.",
   "voxymap.config.desc.gpuTerrainHysteresisPct": "Hysterese-Prozent für Präzisionswechsel; vermeidet ständiges Neubauen.",
 "voxymap.config.desc.gpuTerrainVoxel": "Nur nahe (höchstpräzise) 3D-Kacheln als blockige Voxelsäulen rendern; mittlere/ferne Kacheln behalten das glatte Gelände. Experimentell, standardmäßig aus.",
-"voxymap.config.desc.advanced3dRender": "Backt Grundfarbe, Küstenlinie, Wassertiefe und Konturen in den 3D-Atlas (ohne Hillshade); Beleuchtung/AO kommen vom Shader. Experimentell, standardmäßig aus.",
+"voxymap.config.desc.advanced3dRender": "3D nutzt dieselbe farbige 2D-Textur (inkl. gebackenem Hillshade) und fügt nur Vertex-AO und dunklere Seitenflächen hinzu. Experimentell, standardmäßig aus.",
 "voxymap.config.desc.advanced3dAo": "Dunkelt Täler, Klippen und Wandecken im erweiterten 3D-Rendering ab (0 = aus).",
   "voxymap.config.desc.gpu3dBuildThreads": "Threads für den Kachelbau im Hintergrund. 0 = automatisch.",
   "voxymap.config.desc.gpu3dBatchBuild": "Maximale Anzahl an Kachelbauten pro Frame.",

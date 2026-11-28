@@ -279,8 +279,6 @@ public final class MapData {
     private volatile int worldEpoch;
     /** temporary override for the contour setting (the 3D view hides them); null = use config */
     public static volatile Boolean contourOverride;
-    /** Temporary override for hillshade; null = use config. The advanced 3D renderer bakes base colour/coastline/water depth/contours but supplies lighting itself. */
-    public static volatile Boolean hillshadeOverride;
     /** bumped on every texture upload request; stale async builds compare against it */
     /** 3D view: skip building biome labels during colour renders */
     public volatile boolean skipBiomeLabels;
@@ -1299,7 +1297,6 @@ public final class MapData {
         view3dDistance = 1500f;
         skipBiomeLabels = false;
         contourOverride = null;
-        hillshadeOverride = null;
         pixelBlocksOverride = 0;
         allowOversize = false;
         // do not persist per-world UI state until the new world's storage is known
@@ -2800,7 +2797,7 @@ public final class MapData {
      * 15: palette v7 changed every block slot, so colours must re-render.
      * 16: palette v8 (dry foliage) and the biome attribution fix change the rendered colours.
      */
-    private static final int COLOR_CACHE_VERSION = 19;
+    private static final int COLOR_CACHE_VERSION = 20;
 
     /** everything that changes the produced pixels; changing any of these invalidates the .vxc */
     private static String colorCacheKey(String style, int sea) {
@@ -2808,7 +2805,7 @@ public final class MapData {
                 + (contourOverride != null ? contourOverride : VoxyMapConfig.DRAW_CONTOURS.get()) + "|"
                 + VoxyMapConfig.MIN_CONTOUR_AREA.get() + "|"
                 + VoxyMapConfig.CONTOUR_DENSITY.get() + "|"
-                + (hillshadeOverride != null ? hillshadeOverride : VoxyMapConfig.DRAW_HILLSHADE.get()) + "|"
+                + VoxyMapConfig.DRAW_HILLSHADE.get() + "|"
                 + VoxyMapConfig.LIGHT_STRENGTH.get() + "|" + VoxyMapConfig.LIGHT_AMBIENT.get() + "|"
                 + VoxyMapConfig.DRAW_WATER_DEPTH.get() + "|" + VoxyMapConfig.ADAPTIVE_COLOR_RAMP.get() + "|"
                 + VoxyMapConfig.MIN_MAX_RAMP.get() + "|" + VoxyMapConfig.WATER_BLUR.get() + "|"
@@ -5763,8 +5760,7 @@ public final class MapData {
     private static float shadeAt(TerrainCache tc, String style, int idx, int x, int z, boolean water) {
         final int fw = tc.width;
         final int fh = tc.height;
-        boolean drawHillshade = hillshadeOverride != null
-                ? hillshadeOverride : VoxyMapConfig.DRAW_HILLSHADE.get();
+        boolean drawHillshade = VoxyMapConfig.DRAW_HILLSHADE.get();
         float shade = 1f;
         if (drawHillshade && x > 0 && z > 0 && x < fw - 1 && z < fh - 1) {
             int nb0, nb1, nb2, nb3;

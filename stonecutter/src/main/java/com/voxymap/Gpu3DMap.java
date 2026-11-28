@@ -60,8 +60,6 @@ public final class Gpu3DMap {
         return Math.max(1, Math.min(32, VoxyMapConfig.GPU3D_BATCH_BUILD.get()));
     }
     private static final Vector4f COLOR_MODULATOR = new Vector4f(1f, 1f, 1f, 1f);
-    /** Advanced 3D light parameters: r = sun strength, g = ambient, packed into ColorModulator. */
-    private static final Vector4f LIGHT_PARAMS = new Vector4f(0.6f, 0.25f, 0f, 1f);
     private static final Vector3f MODEL_OFFSET = new Vector3f();
     private static final Matrix4f TEXTURE_MATRIX = new Matrix4f();
     private static final RenderPipeline PIPELINE = RenderPipelines.SOLID_BLOCK;
@@ -867,23 +865,6 @@ public final class Gpu3DMap {
             for (int gx = 0; gx < grid; gx++) {
                 int i = gz * grid + gx;
                 int base = i * 4;
-                float nX = 0f, nZ = 0f;
-                if (!empty[i]) {
-                    float hW = hb[(gz + 1) * gw2 + gx];
-                    float hE = hb[(gz + 1) * gw2 + gx + 2];
-                    float hN = hb[gz * gw2 + gx + 1];
-                    float hS = hb[(gz + 2) * gw2 + gx + 1];
-                    float spacing = Math.max(1f, (float) (step * pb));
-                    nX = -(hE - hW) / (2f * spacing);
-                    nZ = -(hS - hN) / (2f * spacing);
-                    float len = (float) Math.sqrt(nX * nX + 1f + nZ * nZ);
-                    nX /= len;
-                    nZ /= len;
-                }
-                s.nxc[i] = nX;
-                s.nzc[i] = nZ;
-                s.nkey[i] = (Math.round((nX * 0.5f + 0.5f) * 255f) << 8)
-                        | Math.round((nZ * 0.5f + 0.5f) * 255f);
                 if (!useAo || empty[i] || water[i]) {
                     vao[base] = (byte) 0xFF;
                     vao[base + 1] = (byte) 0xFF;
@@ -914,7 +895,7 @@ public final class Gpu3DMap {
                 int w = 1;
                 while (gx + w < grid) {
                     int i = i0 + w;
-                    if (empty[i] || visited[i] || h[i] != y0 || s.nkey[i] != s.nkey[i0] || !sameAo(vao, i, i0)) break;
+                    if (empty[i] || visited[i] || h[i] != y0 || !sameAo(vao, i, i0)) break;
                     w++;
                 }
                 int d = 1;
@@ -923,7 +904,7 @@ public final class Gpu3DMap {
                     int row = (gz + d) * grid + gx;
                     for (int k = 0; k < w; k++) {
                         int i = row + k;
-                        if (empty[i] || visited[i] || h[i] != y0 || s.nkey[i] != s.nkey[i0] || !sameAo(vao, i, i0)) break outer;
+                        if (empty[i] || visited[i] || h[i] != y0 || !sameAo(vao, i, i0)) break outer;
                     }
                     d++;
                 }
@@ -940,13 +921,13 @@ public final class Gpu3DMap {
                 double v0 = (sy + (double) Math.min(texMax + 1, gz * step)) / ATLAS;
                 double v1 = (sy + (double) Math.min(texMax + 1, (gz + d) * step)) / ATLAS;
                 int b = s.vi;
-                s.curColor = packLitColor(s.nxc[i0], s.nzc[i0], vao[aoBase] & 0xFF);
+                s.curAo = vao[aoBase] & 0xFF;
                 voxAdd(s, wx0, y0, wz0, u0, v0);
-                s.curColor = packLitColor(s.nxc[i0], s.nzc[i0], vao[aoBase + 2] & 0xFF);
+                s.curAo = vao[aoBase + 2] & 0xFF;
                 voxAdd(s, wx0, y0, wz1, u0, v1);
-                s.curColor = packLitColor(s.nxc[i0], s.nzc[i0], vao[aoBase + 1] & 0xFF);
+                s.curAo = vao[aoBase + 1] & 0xFF;
                 voxAdd(s, wx1, y0, wz0, u1, v0);
-                s.curColor = packLitColor(s.nxc[i0], s.nzc[i0], vao[aoBase + 3] & 0xFF);
+                s.curAo = vao[aoBase + 3] & 0xFF;
                 voxAdd(s, wx1, y0, wz1, u1, v1);
                 voxTri(s, b, b + 1, b + 2);
                 voxTri(s, b + 2, b + 1, b + 3);
@@ -977,7 +958,7 @@ public final class Gpu3DMap {
                 double u = (sx + Math.min(texMax, x) + 0.5) / ATLAS;
                 double v0 = (sy + (double) Math.min(texMax + 1, gz * step)) / ATLAS;
                 double v1 = (sy + (double) Math.min(texMax + 1, (gz + run) * step)) / ATLAS;
-                s.curColor = packLitColor(1f, 0f, aoCell[i]);
+                s.curAo = (int) (aoCell[i] * 0.68f);
                 voxWallX(s, xEdge, ny, y, z0, z1, u, v0, v1, true);
                 minY = Math.min(minY, ny);
                 gz += run;
@@ -1003,7 +984,7 @@ public final class Gpu3DMap {
                 double u = (sx + Math.min(texMax, x) + 0.5) / ATLAS;
                 double v0 = (sy + (double) Math.min(texMax + 1, gz * step)) / ATLAS;
                 double v1 = (sy + (double) Math.min(texMax + 1, (gz + run) * step)) / ATLAS;
-                s.curColor = packLitColor(-1f, 0f, aoCell[i]);
+                s.curAo = (int) (aoCell[i] * 0.68f);
                 voxWallX(s, xEdge, ny, y, z0, z1, u, v0, v1, true);
                 minY = Math.min(minY, ny);
                 gz += run;
@@ -1032,7 +1013,7 @@ public final class Gpu3DMap {
                 double v = (sy + Math.min(texMax, z) + 0.5) / ATLAS;
                 double u0 = (sx + (double) Math.min(texMax + 1, gx * step)) / ATLAS;
                 double u1 = (sx + (double) Math.min(texMax + 1, (gx + run) * step)) / ATLAS;
-                s.curColor = packLitColor(0f, 1f, aoCell[i]);
+                s.curAo = (int) (aoCell[i] * 0.85f);
                 voxWallZ(s, zEdge, ny, y, x0, x1, v, u0, u1, true);
                 minY = Math.min(minY, ny);
                 gx += run;
@@ -1058,7 +1039,7 @@ public final class Gpu3DMap {
                 double v = (sy + Math.min(texMax, z) + 0.5) / ATLAS;
                 double u0 = (sx + (double) Math.min(texMax + 1, gx * step)) / ATLAS;
                 double u1 = (sx + (double) Math.min(texMax + 1, (gx + run) * step)) / ATLAS;
-                s.curColor = packLitColor(0f, -1f, aoCell[i]);
+                s.curAo = (int) (aoCell[i] * 0.85f);
                 voxWallZ(s, zEdge, ny, y, x0, x1, v, u0, u1, true);
                 minY = Math.min(minY, ny);
                 gx += run;
@@ -1088,7 +1069,7 @@ public final class Gpu3DMap {
                 double u = (sx + Math.min(texMax, gx * step) + 0.5) / ATLAS;
                 double v = (sy + Math.min(texMax, gz * step) + 0.5) / ATLAS;
                 float low = (float) (y - skirt);
-                s.curColor = packLitColor(0f, 0f, aoCell[i]);
+                s.curAo = (int) (aoCell[i] * 0.55f);
                 if (west) {
                     voxWallX(s, x0, low, y, z0, z1, u, v, v, true);
                 }
@@ -1115,7 +1096,7 @@ public final class Gpu3DMap {
         BufferBuilder bb = BlazeCompat.newBufferBuilder(alloc, format);
         for (int i = 0; i < s.vi; i++) {
             bb.addVertex(s.px[i], s.py[i], s.pz[i])
-                    .setColor((s.col[i] >> 16) & 0xFF, (s.col[i] >> 8) & 0xFF, s.col[i] & 0xFF, 255)
+                    .setColor(s.col[i], s.col[i], s.col[i], 255)
                     .setUv(s.pu[i], s.pv[i])
                     .setUv2(240, 240);
         }
@@ -1203,14 +1184,6 @@ public final class Gpu3DMap {
                 && vao[oa + 2] == vao[ob + 2] && vao[oa + 3] == vao[ob + 3];
     }
 
-    /** Encode a heightfield normal (y >= 0) and its AO byte into a BLOCK vertex colour. */
-    private static int packLitColor(float nx, float nz, int ao) {
-        if (!VoxyMapConfig.ADVANCED_3D_RENDER.get()) return 0xFFFFFF;
-        int ex = Math.round((Math.max(-1f, Math.min(1f, nx)) * 0.5f + 0.5f) * 255f);
-        int ez = Math.round((Math.max(-1f, Math.min(1f, nz)) * 0.5f + 0.5f) * 255f);
-        return (ex << 16) | (ez << 8) | (ao & 0xFF);
-    }
-
     /**
      * Ambient-occlusion tint (0..255) for one terrain sample. Valleys, cliff feet and wall corners
      * are surrounded by higher columns, so they accumulate occlusion and get darker; the tint is
@@ -1240,7 +1213,7 @@ public final class Gpu3DMap {
 
     private static void voxAdd(VoxelScratch s, double x, double y, double z, double u, double v) {
         s.ensureVerts(s.vi + 1);
-        s.col[s.vi] = s.curColor;
+        s.col[s.vi] = s.curAo;
         s.px[s.vi] = (float) x;
         s.py[s.vi] = (float) y;
         s.pz[s.vi] = (float) z;
@@ -1300,10 +1273,8 @@ public final class Gpu3DMap {
         int[] aoCell = new int[0];
         float[] hb = new float[0];
         byte[] vao = new byte[0];
-        float[] nxc = new float[0], nzc = new float[0];
-        int[] nkey = new int[0];
         int vi, ii;
-        int curColor = 0xFFFFFF;
+        int curAo = 255;
 
         static VoxelScratch get(int cells) {
             VoxelScratch s = LOCAL.get();
@@ -1316,11 +1287,8 @@ public final class Gpu3DMap {
                 int g = (int) Math.round(Math.sqrt(cells));
                 s.hb = new float[(g + 2) * (g + 2)];
                 s.vao = new byte[cells * 4];
-                s.nxc = new float[cells];
-                s.nzc = new float[cells];
-                s.nkey = new int[cells];
             }
-            s.curColor = 0xFFFFFF;
+            s.curAo = 255;
             s.vi = 0;
             s.ii = 0;
             return s;
@@ -1459,24 +1427,11 @@ public final class Gpu3DMap {
                 pz[vi] = wz;
                 pu[vi] = (sx + Math.min(texMax, x) + 0.5f) / ATLAS;
                 pv[vi] = v;
-                if (!e && VoxyMapConfig.ADVANCED_3D_RENDER.get()) {
-                    float hL = voxNeighborY(tile, pixels, live, x - step, z, sea, vscale, texMax);
-                    float hR = voxNeighborY(tile, pixels, live, x + step, z, sea, vscale, texMax);
-                    float hN = voxNeighborY(tile, pixels, live, x, z - step, sea, vscale, texMax);
-                    float hS = voxNeighborY(tile, pixels, live, x, z + step, sea, vscale, texMax);
-                    if (Float.isNaN(hL)) hL = y;
-                    if (Float.isNaN(hR)) hR = y;
-                    if (Float.isNaN(hN)) hN = y;
-                    if (Float.isNaN(hS)) hS = y;
-                    float spacing = Math.max(1f, (float) (step * pb));
-                    float nx = -(hR - hL) / (2f * spacing);
-                    float nz = -(hS - hN) / (2f * spacing);
-                    float len = (float) Math.sqrt(nx * nx + 1f + nz * nz);
-                    int ao = ambientOcclusion(tile, pixels, live, x, z, step, sea, vscale, texMax, y);
-                    col[vi] = packLitColor(nx / len, nz / len, ao);
-                } else {
-                    col[vi] = 0xFFFFFF;
-                }
+                // The 3D atlas IS the 2D coloured texture (including its baked hillshade), so the
+                // vertex colour only carries the 3D-only AO; no per-vertex lighting any more.
+                col[vi] = !e && VoxyMapConfig.ADVANCED_3D_RENDER.get()
+                        ? ambientOcclusion(tile, pixels, live, x, z, step, sea, vscale, texMax, y)
+                        : 255;
                 empty[vi++] = e;
                 if (!e) {
                     minY = Math.min(minY, y);
@@ -1543,7 +1498,7 @@ public final class Gpu3DMap {
         for (int i = 0; i < vi; i++) {
             // BLOCK has no Normal element in 26.2, so setNormal would be a no-op.
             bb.addVertex(px[i], py[i], pz[i])
-                    .setColor((col[i] >> 16) & 0xFF, (col[i] >> 8) & 0xFF, col[i] & 0xFF, 255)
+                    .setColor(col[i], col[i], col[i], 255)
                     .setUv(pu[i], pv[i])
                     .setUv2(240, 240);
         }
@@ -2287,22 +2242,12 @@ public final class Gpu3DMap {
                     com.mojang.blaze3d.ProjectionType.PERSPECTIVE);
             GpuBufferSlice transforms = RenderSystem.getDynamicUniforms()
                     .writeTransform(view, COLOR_MODULATOR, MODEL_OFFSET, TEXTURE_MATRIX);
-            GpuBufferSlice litTransforms = transforms;
-            if (advanced) {
-                String style = MapData.INSTANCE.getStyle();
-                LIGHT_PARAMS.set(
-                        VoxyMapConfig.LIGHT_STRENGTH.get() / 100f,
-                        VoxyMapConfig.LIGHT_AMBIENT.get() / 100f,
-                        MapData.lightStyleFactor(style, false), 1f);
-                litTransforms = RenderSystem.getDynamicUniforms()
-                        .writeTransform(view, LIGHT_PARAMS, MODEL_OFFSET, TEXTURE_MATRIX);
-            }
             try (RenderPass pass = advanced
                         ? BlazeCompat.beginOffscreenPass(frameEncoder, advancedColorView, depthView)
                         : BlazeCompat.beginTerrainPass(frameEncoder, target, depthView)) {
                 pass.setPipeline(advanced ? advancedPipeline() : PIPELINE);
                 RenderSystem.bindDefaultUniforms(pass);
-                pass.setUniform("DynamicTransforms", litTransforms);
+                pass.setUniform("DynamicTransforms", transforms);
                 // Full-bright is intentional: the terrain re-uses the 2D map colours, which are
                 // not lit. We are inside GameRenderer's UI-lightmap window (it sets
                 // useUiLightmap = true right before GuiRenderer.render), so lightmap() is the
@@ -2337,9 +2282,6 @@ public final class Gpu3DMap {
                                 + " atlas=" + (lastAtlasBytes >> 20) + "MB"
                                 + " mesh=" + (lastGpuBytes >> 20) + "MB");
                     }
-                }
-                if (advanced) {
-                    pass.setUniform("DynamicTransforms", transforms);
                 }
                 if (drawOverlay) drawOverlay(pass, transforms);
                 drawTrack(pass, transforms);
