@@ -2800,7 +2800,7 @@ public final class MapData {
      * 15: palette v7 changed every block slot, so colours must re-render.
      * 16: palette v8 (dry foliage) and the biome attribution fix change the rendered colours.
      */
-    private static final int COLOR_CACHE_VERSION = 16;
+    private static final int COLOR_CACHE_VERSION = 17;
 
     /** everything that changes the produced pixels; changing any of these invalidates the .vxc */
     private static String colorCacheKey(String style, int sea) {
@@ -2809,6 +2809,7 @@ public final class MapData {
                 + VoxyMapConfig.MIN_CONTOUR_AREA.get() + "|"
                 + VoxyMapConfig.CONTOUR_DENSITY.get() + "|"
                 + (hillshadeOverride != null ? hillshadeOverride : VoxyMapConfig.DRAW_HILLSHADE.get()) + "|"
+                + VoxyMapConfig.LIGHT_STRENGTH.get() + "|" + VoxyMapConfig.LIGHT_AMBIENT.get() + "|"
                 + VoxyMapConfig.DRAW_WATER_DEPTH.get() + "|" + VoxyMapConfig.ADAPTIVE_COLOR_RAMP.get() + "|"
                 + VoxyMapConfig.MIN_MAX_RAMP.get() + "|" + VoxyMapConfig.WATER_BLUR.get() + "|"
                 + VoxyMapConfig.WATER_BLUR_RADIUS.get() + "|" + VoxyMapConfig.WATER_BLUR_PASSES.get() + "|"
@@ -5752,22 +5753,17 @@ public final class MapData {
      * Hillshade / contour / coast darkening shared by every style. Keeping this in one helper makes
      * the material style use exactly the same terrain shading as the six existing palettes.
      */
+    /**
+     * Directional shading shared by the 2D map colours. The advanced 3D shader mirrors this exact
+     * formula (same light direction, strength, ambient and per-style factor) so both views look
+     * like they are lit by the same sun; see {@link #lightStyleFactor}.
+     */
     private static float shadeAt(TerrainCache tc, String style, int idx, int x, int z, boolean water) {
         final int fw = tc.width;
         final int fh = tc.height;
-        final boolean nautical = "nautical".equals(style);
-        // The material ("blocks") style carries no height ramp, so relief has to come from the
-        // shading alone: it uses a wider amplitude, a shorter slope ramp and wider clamp bounds
-        // than the six height palettes. The other styles keep their tuned numbers.
-        final boolean material = "blocks".equals(style);
-        final float gate = material ? 0.06f : 0.08f;
-        final float ramp = material ? 0.50f : 0.60f;
-        final float landStrength = nautical ? 0.06f : (material ? 0.26f : 0.18f);
-        final float clampLo = material ? 0.74f : 0.78f;
-        final float clampHi = material ? 1.16f : 1.08f;
-        float shade = 1f;
         boolean drawHillshade = hillshadeOverride != null
                 ? hillshadeOverride : VoxyMapConfig.DRAW_HILLSHADE.get();
+        float shade = 1f;
         if (drawHillshade && x > 0 && z > 0 && x < fw - 1 && z < fh - 1) {
             int nb0, nb1, nb2, nb3;
             if (water) {
@@ -5781,26 +5777,26 @@ public final class MapData {
                 nb2 = tc.smoothTop[idx - fw];
                 nb3 = tc.smoothTop[idx + fw];
             }
-            final float lx = -0.55f, ly = 0.70f, lz = -0.55f;
-            final float ll = (float) Math.sqrt(lx * lx + ly * ly + lz * lz);
             if (nb0 != Integer.MIN_VALUE && nb1 != Integer.MIN_VALUE
                     && nb2 != Integer.MIN_VALUE && nb3 != Integer.MIN_VALUE) {
                 float step = 2f * tc.pixelBlocks;
                 float dzdx = (nb1 - nb0) / step;
                 float dzdy = (nb3 - nb2) / step;
-                float slope = (float) Math.sqrt(dzdx * dzdx + dzdy * dzdy);
-                if (slope > gate) {
-                    float nx = -dzdx, ny = 1f, nz = -dzdy;
-                    float nl = (float) Math.sqrt(nx * nx + ny * ny + nz * nz);
-                    float d = (nx * lx + ny * ly + nz * lz) / (nl * ll);
-                    float strength = Math.min(1f, (slope - gate) / ramp);
-                    shade = 1f + (water ? 0.10f : landStrength) * d * strength;
-                }
+                float nx = -dzdx, ny = 1f, nz = -dzdy;
+                float nl = (float) Math.sqrt(nx * nx + ny * ny + nz * nz);
+                final float lx = -0.55f, ly = 0.70f, lz = -0.55f;
+                final float ll = (float) Math.sqrt(lx * lx + ly * ly + lz * lz);
+                float d = (nx * lx + ny * ly + nz * lz) / (nl * ll);
+                float strength = VoxyMapConfig.LIGHT_STRENGTH.get() / 100f;
+                float ambient = VoxyMapConfig.LIGHT_AMBIENT.get() / 100f;
+                float scale = lightStyleFactor(style, water);
+                float directional = 1f + strength * scale * 1.9f * (d - ly / ll);
+                directional = Math.max(0.42f, Math.min(1.38f, directional));
+                shade = ambient + (1f - ambient) * directional;
             }
         }
-        shade = Math.max(clampLo, Math.min(clampHi, shade));
         if (!water) {
-            if (tc.contour[idx]) shade *= nautical ? 0.62f : 0.70f;
+            if (tc.contour[idx]) shade *= "nautical".equals(style) ? 0.62f : 0.70f;
             boolean coast = (x < fw - 1 && tc.isWaterPix[idx + 1]) || (z < fh - 1 && tc.isWaterPix[idx + fw])
                     || (x > 0 && tc.isWaterPix[idx - 1]) || (z > 0 && tc.isWaterPix[idx - fw]);
             if (coast) shade *= 0.70f;
@@ -5808,6 +5804,17 @@ public final class MapData {
         return shade;
     }
 
+    /**
+     * Relative directional-light strength per style. "blocks" is the reference (1.0) because the
+     * advanced 3D view uses exactly the same lighting; the height palettes keep a slightly softer
+     * look and nautical is deliberately nearly flat. Water is shaded from its floor but weakly.
+     */
+    public static float lightStyleFactor(String style, boolean water) {
+        if (water) return 0.4f;
+        if ("nautical".equals(style)) return 0.3f;
+        if ("blocks".equals(style)) return 1.0f;
+        return 0.7f;
+    }
     private static int applyShade(int rgb, float shade) {
         int r = Math.max(0, Math.min(255, (int) (((rgb >> 16) & 0xFF) * shade)));
         int g = Math.max(0, Math.min(255, (int) (((rgb >> 8) & 0xFF) * shade)));

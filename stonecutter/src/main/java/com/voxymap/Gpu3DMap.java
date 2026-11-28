@@ -2289,10 +2289,11 @@ public final class Gpu3DMap {
                     .writeTransform(view, COLOR_MODULATOR, MODEL_OFFSET, TEXTURE_MATRIX);
             GpuBufferSlice litTransforms = transforms;
             if (advanced) {
+                String style = MapData.INSTANCE.getStyle();
                 LIGHT_PARAMS.set(
-                        VoxyMapConfig.ADVANCED_3D_LIGHT.get() / 100f,
-                        VoxyMapConfig.ADVANCED_3D_AMBIENT.get() / 100f,
-                        0f, 1f);
+                        VoxyMapConfig.LIGHT_STRENGTH.get() / 100f,
+                        VoxyMapConfig.LIGHT_AMBIENT.get() / 100f,
+                        MapData.lightStyleFactor(style, false), 1f);
                 litTransforms = RenderSystem.getDynamicUniforms()
                         .writeTransform(view, LIGHT_PARAMS, MODEL_OFFSET, TEXTURE_MATRIX);
             }

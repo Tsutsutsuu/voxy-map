@@ -146,10 +146,13 @@ public final class VoxyMapConfig {
     public static final Value<Boolean> ADVANCED_3D_RENDER = new Value<>("advanced3dRender", false);
     /** Ambient-occlusion strength (0-100) for the experimental advanced 3D renderer; 0 = off. */
     public static final Value<Integer> ADVANCED_3D_AO = new Value<>("advanced3dAo", 50);
-    /** Directional-light strength (0-100) for the experimental advanced 3D renderer. */
-    public static final Value<Integer> ADVANCED_3D_LIGHT = new Value<>("advanced3dLight", 60);
-    /** Ambient light (0-100) mixed into the advanced 3D directional lighting; higher = flatter. */
-    public static final Value<Integer> ADVANCED_3D_AMBIENT = new Value<>("advanced3dAmbient", 25);
+    /**
+     * Directional-light strength (0-100) shared by the 2D map shading and the advanced 3D
+     * renderer; 0 = completely flat. Moving this recolours the 2D map and re-lights 3D.
+     */
+    public static final Value<Integer> LIGHT_STRENGTH = new Value<>("lightStrength", 30);
+    /** Ambient fraction (0-100) mixed into the shared directional light; higher = flatter. */
+    public static final Value<Integer> LIGHT_AMBIENT = new Value<>("lightAmbient", 20);
     public static final Value<Integer> GPU3D_BUILD_THREADS = new Value<>("gpu3dBuildThreads", 0);
     public static final Value<Integer> GPU3D_BATCH_BUILD = new Value<>("gpu3dBatchBuild", 10);
     public static final Value<Boolean> KEEP_3D_TILES_IN_2D = new Value<>("keep3dTilesIn2d", true);

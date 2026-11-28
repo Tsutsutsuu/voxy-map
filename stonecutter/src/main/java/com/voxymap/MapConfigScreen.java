@@ -147,6 +147,8 @@ public class MapConfigScreen extends Screen {
         add(Group.MAP, "adaptiveColorRamp", VoxyMapConfig.ADAPTIVE_COLOR_RAMP, 0, 0, null);
         add(Group.MAP, "landMaxRamp", VoxyMapConfig.MIN_MAX_RAMP, 0, 0, null);
         add(Group.MAP, "drawHillshade", VoxyMapConfig.DRAW_HILLSHADE, 0, 0, null);
+        add(Group.MAP, "lightStrength", VoxyMapConfig.LIGHT_STRENGTH, 0, 100, null);
+        add(Group.MAP, "lightAmbient", VoxyMapConfig.LIGHT_AMBIENT, 0, 100, null);
         add(Group.MAP, "biomeColors", VoxyMapConfig.BIOME_COLORS, 0, 0, null);
         add(Group.MAP, "drawWaterDepth", VoxyMapConfig.DRAW_WATER_DEPTH, 0, 0, null);
         add(Group.MAP, "autoSeaLevel", VoxyMapConfig.AUTO_SEA_LEVEL, 0, 0, null);
@@ -204,8 +206,6 @@ public class MapConfigScreen extends Screen {
         add(Group.THREE_D, "gpuTerrainVoxel", VoxyMapConfig.GPU_TERRAIN_VOXEL, 0, 0, null);
         add(Group.THREE_D, "advanced3dRender", VoxyMapConfig.ADVANCED_3D_RENDER, 0, 0, null);
         add(Group.THREE_D, "advanced3dAo", VoxyMapConfig.ADVANCED_3D_AO, 0, 100, null);
-        add(Group.THREE_D, "advanced3dLight", VoxyMapConfig.ADVANCED_3D_LIGHT, 0, 100, null);
-        add(Group.THREE_D, "advanced3dAmbient", VoxyMapConfig.ADVANCED_3D_AMBIENT, 0, 100, null);
         section(Group.THREE_D, "voxymap.config.section.markerLabels");
         add(Group.THREE_D, "playerMarkerHeight3d", VoxyMapConfig.PLAYER_MARKER_HEIGHT_3D, 0, 200, null);
         add(Group.THREE_D, "playerMarkerScale3d", VoxyMapConfig.PLAYER_MARKER_SCALE_3D, 0, 5, null);

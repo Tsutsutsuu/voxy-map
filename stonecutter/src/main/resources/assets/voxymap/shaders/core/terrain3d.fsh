@@ -34,11 +34,13 @@ void main() {
 
     float strength = clamp(ColorModulator.r, 0.0, 1.0);
     float ambient = clamp(ColorModulator.g, 0.0, 1.0);
+    // per-style relative strength matches the baked 2D shading (blocks = 1.0)
+    float styleFactor = clamp(ColorModulator.b, 0.0, 2.0);
 
     float diffuse = max(0.0, dot(vec3(nxz.x, ny, nxz.y), LIGHT_DIR));
     // Same directional bias as the 2D hillshade: a flat surface stays at its base colour,
     // surfaces facing the light brighten and surfaces facing away darken.
-    float shade = 1.0 + strength * 1.9 * (diffuse - LIGHT_DIR.y);
+    float shade = 1.0 + strength * styleFactor * 1.9 * (diffuse - LIGHT_DIR.y);
     shade = clamp(shade, 0.42, 1.38);
     shade = ambient + (1.0 - ambient) * shade;
 
