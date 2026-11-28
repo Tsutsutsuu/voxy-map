@@ -93,6 +93,13 @@ public final class MapSelfTest {
     private static long firstPaintMs = -1L;
     private static int probeTick;
     private static final List<String> probeLines = Collections.synchronizedList(new ArrayList<>());
+    /**
+     * Optional camera pitch (degrees below the horizon) applied right after entering 3D, so the
+     * screenshot shows the horizon: the sky gradient and the horizontal fog are only visible when
+     * the camera is not looking straight down. 0 = leave the default top-down entry angle.
+     */
+    private static int tilt3dDeg;
+
     /** Probe-mode screenshot times (ms after map open), e.g. 4000,10000,20000. */
     private static long[] shotAtMs = new long[0];
     private static int shotIndex;
@@ -213,6 +220,7 @@ public final class MapSelfTest {
             VoxyMapConfig.ADVANCED_3D_RENDER.set(true);
             log("experimental advanced 3D rendering enabled for this run");
         }
+        tilt3dDeg = Integer.getInteger("voxymap.selftest.tilt3d", 0);
         if (Boolean.getBoolean("voxymap.selftest.voxel3d")) {
             VoxyMapConfig.GPU_TERRAIN_VOXEL.set(true);
             log("experimental voxel 3D terrain enabled for this run");
@@ -619,6 +627,25 @@ public final class MapSelfTest {
         }
     }
 
+    /**
+     * Pitches the 3D camera below the horizon through {@code MapScreen.cam3d}, so the next
+     * screenshot contains the sky, the horizon and the fog band (the automated entry is top-down).
+     */
+    private static void applyTilt3d(MapScreen screen, int degrees) {
+        try {
+            java.lang.reflect.Field camField = MapScreen.class.getDeclaredField("cam3d");
+            camField.setAccessible(true);
+            Object cam = camField.get(screen);
+            if (cam == null) return;
+            java.lang.reflect.Field pitchField = cam.getClass().getField("pitch");
+            pitchField.setFloat(cam, (float) Math.toRadians(-Math.abs(degrees)));
+            log("3D camera tilted to " + degrees + " degrees below the horizon before the screenshot");
+        } catch (Throwable t) {
+            warnings.add("could not tilt the 3D camera: " + t);
+            log(warnings.get(warnings.size() - 1));
+        }
+    }
+
     private static void threeD(Minecraft mc, long now) {
         MapScreen screen = mapScreen(mc);
         if (screen == null) {
@@ -632,6 +659,7 @@ public final class MapSelfTest {
                 d3Entered = true;
                 d3Stage = STAGE_APPLY;
                 resetSettle();
+                if (tilt3dDeg != 0) applyTilt3d(screen, tilt3dDeg);
             }
             if (now - phaseStartMs > 20_000L) {
                 addError("map screen did not enter 3D");
