@@ -67,7 +67,7 @@ Voxy 的 RocksDB LOD 存储
   - NeoForge 1.21.1：复用主目标自带的 **24bit 定点深度 + 标准 Z**（clear 1.0 / LEQUAL），近平面取 4.0 以保住远景深度精度（相机最近 64 格，不会裁到地形）。
 - 高级 3D 外观（`advanced3dRender`，默认开）：地形直接复用 2D 彩色贴图（含烘焙好的山影），只在其上叠加**逐格 AO** 与**侧面方向光 + 垂直渐变**；离屏 pass 与自定义复合四边形已删除（0.5.4 前的一次性能改动），磁盘/显存都只走同一份 atlas。
 - 体素地形（`gpuTerrainVoxel`，默认开，仅近景 step）：每格一个平面顶 + 相邻更低时的垂直侧墙；顶面按"等高 + 同 AO"贪心合并，侧墙按朝向给系数 西 0.92 / 北 0.90 / 东 0.74 / 南 0.76，底部再暗 18%；瓦片边界只画一侧裙边，已有侧墙覆盖处跳过，避免共面 z-fighting。
-- 程序化屏幕空间天空：按 pitch + FOV 求地平线 NDC，画两条渐变带（天空色 → 地平线色 → 下方色），无几何体、无深度写入；相机离地 4000 格起在 1000 格内淡出为黑天并关闭雾。
+- 程序化屏幕空间天空：按 pitch + FOV 求地平线 NDC，画两条渐变带（天空色 → 地平线色 → 下方色），无几何体、无深度写入；相机离地 3000 格起在 1000 格内淡出为黑天并关闭雾。
 - 水平雾（blocks 样式）：终点固定为 `fogDistance3d`（默认 10000 格），起点随相机离地高度（约 2× 高度，最小 600），俯视 85° 附近平滑关闭；只取水平（XZ）距离，所以高度与俯仰不会加雾。
 - 版本适配：Fabric 26.1.2 的天空与雾只是**调用形状**不同（`RenderPipelines.BLOCK_SNIPPET` 取代 bind group layout、`CommandEncoder.mapBuffer` 取代 `GpuBuffer.map`、`pass.draw(firstVertex, vertexCount)` 的参数顺序与 26.2 相反），差异全部收在 `BlazeCompat`，三个平台观感一致。
 - 渲染距离带：贴地 +1.05 的黄色半透明三角带，64 段/边，每帧动态更新（混合、深度测试、不写深度）。
@@ -208,7 +208,7 @@ Voxy's RocksDB LOD storage
   - NeoForge 1.21.1: the main target's **24-bit fixed-point depth + standard Z** (clear 1.0 / LEQUAL); near plane 4.0 keeps far-depth precision (the camera never gets closer than 64 blocks).
 - Advanced 3D look (`advanced3dRender`, on by default): the terrain re-uses the 2D coloured texture (baked hillshade included) and only adds **per-cell AO** plus **directional side walls with a vertical gradient**. The offscreen pass and its composite quad are gone, so disk and VRAM only ever hold the one shared atlas.
 - Voxel terrain (`gpuTerrainVoxel`, on by default, near step only): one flat top per cell plus vertical side walls wherever a neighbour is lower; tops are greedily merged over equal height + equal AO, walls use 西/west 0.92, north 0.90, east 0.74, south 0.76 face factors with a bottom that is another 18% darker. Each tile border emits exactly one skirt and skips it where a wall already covers the edge (no coplanar z-fighting).
-- Procedural screen-space sky: the horizon's NDC y is derived from pitch + FOV and drawn as two gradient bands (sky → horizon → below-horizon colour), with no geometry and no depth write. Above 4000 blocks of camera height it fades to a black sky over 1000 blocks and fog turns off.
+- Procedural screen-space sky: the horizon's NDC y is derived from pitch + FOV and drawn as two gradient bands (sky → horizon → below-horizon colour), with no geometry and no depth write. Above 3000 blocks of camera height it fades to a black sky over 1000 blocks and fog turns off.
 - Horizontal fog (blocks style only): the end distance is the fixed `fogDistance3d` (10000 blocks by default), the start follows the camera's height above the terrain (about 2× that height, minimum 600) and it fades out near the 85° top-down view. Only the horizontal (XZ) distance counts, so height and pitch never add fog.
 - Version adaptation: Fabric 26.1.2's sky and fog only differ in **call shapes** (`RenderPipelines.BLOCK_SNIPPET` instead of bind-group layouts, `CommandEncoder.mapBuffer` instead of `GpuBuffer.map`, and `pass.draw(firstVertex, vertexCount)` has the reverse argument order), all isolated in `BlazeCompat`; the three platforms look the same.
 - Render-distance ribbon: translucent yellow triangle strip hugging the terrain at +1.05, 64 segments per side, updated every frame (blended, depth-tested, no depth write).

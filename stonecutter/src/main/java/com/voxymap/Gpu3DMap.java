@@ -100,7 +100,7 @@ public final class Gpu3DMap {
     private static final int CLEAR_SKY_COLOR = 0xFF79A7FF;
     private static final int CLEAR_FOG_COLOR = 0xFFC0D8FF;
     /** Above this camera height (with a 1000 block fade) fog is off and the sky goes black. */
-    private static final float HIGH_CAMERA_START = 4000f;
+    private static final float HIGH_CAMERA_START = 3000f;
     private static final float HIGH_CAMERA_FADE = 1000f;
     private static final int OVERLAY_SEGMENTS = 64;
     /** Upper bound on the marker tick-line segments (the buffer is sized for this). */
@@ -2493,7 +2493,7 @@ public final class Gpu3DMap {
                 groundY = data.surfaceYAt(gx, gz);
             }
             float camHeight = Math.max(1f, (float) (cam.eyeY() - groundY));
-            // High camera: over a 1000 block band above 4000 blocks, turn the fog off and fade the
+            // High camera: over a 1000 block band above 3000 blocks, turn the fog off and fade the
             // whole sky (above and below the horizon) to black.
             float highFade = (camHeight - HIGH_CAMERA_START) / HIGH_CAMERA_FADE;
             highFade = Math.max(0f, Math.min(1f, highFade));
